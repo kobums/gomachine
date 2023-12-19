@@ -1,0 +1,7 @@
+{
+  "database": "gym",
+  "user": "gym",
+  "server": "141.164.56.77",
+  "password": "gymdb",
+  "language": "dart"
+}

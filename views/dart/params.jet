@@ -1,0 +1,19 @@
+import 'package:json_annotation/json_annotation.dart';
+
+part '{{partName}}_params.g.dart';
+
+@JsonSerializable()
+class {{name}}Params {
+  {{range items}}
+  {{if .Type == "double" || .Type == "String" || .Type == "int" || .Type == "bool"}}final {{.Type}}? {{.Name|lower}};{{else}}{{name}}{{.Type}} {{.Name|lower}};{{end}}{{end}}
+
+  const {{name}}Params({
+    {{range i, v := items}}{{if i > 0}},{{end}}
+    this.{{v.Name|lower}}{{end}},
+  });
+
+  factory {{name}}Params.fromJson(Map<String, dynamic> json) =>
+      _${{name}}ParamsFromJson(json);
+
+  Map<String, dynamic> toJson() => _${{name}}ParamsToJson(this);
+}

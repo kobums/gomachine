@@ -1,0 +1,25 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:{{packageName}}/model/{{partName}}_model.dart';
+import 'package:{{packageName}}/params/{{partName}}_params.dart';
+import 'package:{{packageName}}/repository/{{partName}}_repository.dart';
+
+final {{partName}}Provider =
+    StateNotifierProvider<{{name}}Provider, List<{{name}}Model>>((ref) {
+  final repository = ref.watch({{partName}}RepositoryProvider);
+  return {{name}}Provider(repository: repository);
+});
+
+class {{name}}Provider extends StateNotifier<List<{{name}}Model>> {
+  final {{name}}Repository repository;
+
+  {{name}}Provider({
+    required this.repository,
+  }) : super([]) {
+    get{{name}}(const {{name}}Params());
+  }
+
+  Future<void> get{{name}}({{name}}Params {{partName}}) async {
+    final res = await repository.get{{name}}({{partName}}Params: {{partName}});
+    state = res.items;
+  }
+}

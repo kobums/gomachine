@@ -1,0 +1,17 @@
+import 'package:json_annotation/json_annotation.dart';
+
+part '{{partName}}_model.g.dart';
+
+@JsonSerializable()
+class {{name}}Model {
+  {{range items}}
+  {{if .Type == "double" || .Type == "String" || .Type == "int" || .Type == "bool"}}final {{.Type}} {{.Name|lower}};{{else}}{{name}}{{.Type}} {{.Name|lower}};{{end}}{{end}}
+
+  {{name}}Model({
+    {{range i, v := items}}{{if i > 0}},{{end}}
+    required this.{{v.Name|lower}}{{end}},
+  });
+
+  factory {{name}}Model.fromJson(Map<String, dynamic> json) =>
+      _${{name}}ModelFromJson(json);
+}

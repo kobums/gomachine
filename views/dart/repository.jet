@@ -1,0 +1,64 @@
+import 'package:{{packageName}}/common/const/data.dart';
+import 'package:{{packageName}}/common/dio/dio.dart';
+import 'package:{{packageName}}/common/model/model_item.dart';
+import 'package:{{packageName}}/common/model/model_items.dart';
+import 'package:dio/dio.dart' hide Headers;
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:{{packageName}}/model/{{partName}}_model.dart';
+import 'package:{{packageName}}/params/{{partName}}_params.dart';
+import 'package:retrofit/retrofit.dart';
+
+part '{{partName}}_repository.g.dart';
+
+final {{partName}}RepositoryProvider =
+    Provider<{{name}}Repository>((ref) {
+  final dio = ref.watch(dioProvider);
+
+  return {{name}}Repository(dio, baseUrl: 'http://$ip/{{partName}}');
+});
+
+@RestApi()
+abstract class {{name}}Repository {
+  factory {{name}}Repository(Dio dio, {String baseUrl}) =
+      _{{name}}Repository;
+
+  @GET('/{id}')
+  @Headers({
+    'accessToken': 'true',
+  })
+  Future<ModelWithItem<{{name}}Model>> get{{name}}WithId({
+    @Path() required int id,
+  });
+
+  @GET('/')
+  @Headers({
+    'accessToken': 'true',
+  })
+  Future<ModelWithItems<{{name}}Model>> get{{name}}({
+    @Queries() required {{name}}Params {{partName}}Params,
+  });
+
+  @POST('/')
+  @Headers({
+    'accessToken': 'true',
+  })
+  Future<ModelWithItems<{{name}}Model>> post{{name}}({
+    @Body() required {{name}}Params body,
+  });
+
+  @PUT('/')
+  @Headers({
+    'accessToken': 'true',
+  })
+  Future<ModelWithItems<{{name}}Model>> put{{name}}({
+    @Body() required {{name}}Params body,
+  });
+
+  @DELETE('/')
+  @Headers({
+    'accessToken': 'true',
+  })
+  Future<ModelWithItems<{{name}}Model>> delete{{name}}({
+    @Body() required {{name}}Params body,
+  });
+}
