@@ -1,0 +1,506 @@
+package models
+
+import (
+    //"{{packageName}}/config"
+    {{if len(consts) > 0}}
+    "{{packageName}}/models/{{name|lower}}"
+    {{end}}
+    "database/sql"
+    "errors"
+    "fmt"
+    "strings"
+    "time"
+
+    log "github.com/sirupsen/logrus"    
+    _ "github.com/go-sql-driver/mysql"    
+)
+
+type {{name}} struct {
+    {{range items}}        
+    {{.Name}}                {{.Type}} `json:"{{.Name|lower}}"` {{end}}
+    
+    Extra                    map[string]interface{} `json:"extra"`
+}
+
+type {{name}}Manager struct {
+    Conn    *sql.DB
+    Tx    *sql.Tx    
+    Result  *sql.Result
+    Index   string
+}
+
+func (c *{{name}}) AddExtra(key string, value interface{}) {    
+	c.Extra[key] = value     
+}
+
+func New{{name}}Manager(conn interface{}) *{{name}}Manager {
+    var item {{name}}Manager
+
+    if conn == nil {
+        item.Conn = NewConnection()
+    } else {
+        if v, ok := conn.(*sql.DB); ok {
+            item.Conn = v
+            item.Tx = nil
+        } else {
+            item.Tx = conn.(*sql.Tx)
+            item.Conn = nil
+        }
+    }
+
+    item.Index = ""
+
+    return &item
+}
+
+func (p *{{name}}Manager) Close() {
+    if p.Conn != nil {
+        p.Conn.Close()
+    }
+}
+
+func (p *{{name}}Manager) SetIndex(index string) {
+    p.Index = index
+}
+
+func (p *{{name}}Manager) Exec(query string, params ...interface{}) (sql.Result, error) {
+    if p.Conn != nil {
+       return p.Conn.Exec(query, params...)
+    } else {
+       return p.Tx.Exec(query, params...)    
+    }
+}
+
+func (p *{{name}}Manager) Query(query string, params ...interface{}) (*sql.Rows, error) {
+    if p.Conn != nil {
+       return p.Conn.Query(query, params...)
+    } else {
+       return p.Tx.Query(query + " FOR UPDATE", params...)    
+    }
+}
+
+func (p *{{name}}Manager) GetQuery() string {
+    ret := ""
+
+    str := "select {{range i, v := items}}{{if i > 0}}, {{end}}{{v.Column}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, {{v2.Prefix}}_{{.Name|lower}}{{end}}{{end}} from {{tableName}}{{range joins}}, {{.Name}}_tb{{end}} "
+
+    if p.Index == "" {
+        ret = str
+    } else {
+        ret = str + " use index(" + p.Index + ") "
+    }
+
+    ret += "where 1=1 "
+    {{range joins}}
+    ret += "and {{prefix}}_{{.Column}} = {{.Prefix}}_id "
+    {{end}}
+
+    return ret;
+}
+
+func (p *{{name}}Manager) GetQuerySelect() string {
+    ret := ""
+
+    str := "select count(*) from {{tableName}} "
+
+    if p.Index == "" {
+        ret = str
+    } else {
+        ret = str + " use index(" + p.Index + ") "
+    }
+
+    return ret;
+}
+
+func (p *{{name}}Manager) Truncate() error {
+     if p.Conn == nil && p.Tx == nil {
+        return errors.New("Connection Error")
+    }
+    
+    query := "truncate {{tableName}} "
+    p.Exec(query)
+
+    return nil
+}
+
+func (p *{{name}}Manager) Insert(item *{{name}}) error {
+    if p.Conn == nil && p.Tx == nil {
+        return errors.New("Connection Error")
+    }
+
+    if item.Date == "" {
+        t := time.Now().Add(time.Hour * 9)        
+        item.Date = fmt.Sprintf("%04d-%02d-%02d %02d:%02d:%02d", t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second())
+    }
+
+    query := ""
+    var res sql.Result
+    var err error
+    if item.Id > 0 {
+        query = "insert into {{tableName}} ({{range i, v := items}}{{if i > 0}}, {{end}}{{v.Column}}{{end}}) values ({{range i, v := items}}{{if i > 0}}, {{end}}?{{end}})"
+        res, err = p.Exec(query {{range i, v := items}}, item.{{v.Name}}{{end}})
+    } else {
+        query = "insert into {{tableName}} ({{range i, v := items}}{{if v.Name != "Id"}}{{if i > 1}}, {{end}}{{v.Column}}{{end}}{{end}}) values ({{range i, v := items}}{{if v.Name != "Id"}}{{if i > 1}}, {{end}}?{{end}}{{end}})"
+        res, err = p.Exec(query {{range i, v := items}}{{if v.Name != "Id"}}, item.{{v.Name}}{{end}}{{end}})
+    }
+    
+    if err == nil {
+        p.Result = &res
+    } else {
+        log.Println(err)
+        p.Result = nil
+    }
+
+    return err
+}
+func (p *{{name}}Manager) Delete(id int64) error {
+    if p.Conn == nil && p.Tx == nil {
+        return errors.New("Connection Error")
+    }
+
+    query := "delete from {{tableName}} where {{prefix}}_id = ?"
+    _, err := p.Exec(query, id)
+
+    return err
+}
+func (p *{{name}}Manager) Update(item *{{name}}) error {
+    if p.Conn == nil && p.Tx == nil {
+        return errors.New("Connection Error")
+    }
+
+	query := "update {{tableName}} set {{range i, v := items}}{{if v.Name != "Id"}}{{if i > 1}}, {{end}}{{v.Column}} = ?{{end}}{{end}} where {{prefix}}_id = ?"
+	_, err := p.Exec(query {{range i, v := items}}{{if v.Name != "Id"}}, item.{{v.Name}}{{end}}{{end}}, item.Id)
+
+    return err
+}
+
+func (p *{{name}}Manager) GetIdentity() int64 {
+    if p.Result == nil && p.Tx == nil {
+        return 0
+    }
+
+    id, err := (*p.Result).LastInsertId()
+
+    if err != nil {
+        return 0
+    } else {
+        return id
+    }
+}
+
+func (p *{{name}}) InitExtra() {
+    p.Extra = map[string]interface{}{
+{{range consts}}            "{{.Name|lower}}":     {{name|lower}}.Get{{.Name|title}}(p.{{.Name|title}}),
+{{end}}
+    }
+}
+
+func (p *{{name}}Manager) ReadRow(rows *sql.Rows) *{{name}} {
+    var item {{name}}
+    var err error
+
+    {{range joins}}var _{{.Name|lower}} {{.Name|title}}
+    {{end}}
+
+    if rows.Next() {
+        err = rows.Scan({{range i, v := items}}{{if i > 0}}, {{end}}&item.{{v.Name}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, &_{{v2.Name|lower}}.{{.Name}}{{end}}{{end}})
+        {{range i, v := items}}{{if v.OriginalType == "date"}}if item.{{v.Name}} == "0000-00-00" || item.{{v.Name}} == "1000-01-01" {
+            item.{{v.Name}} = ""
+        }{{end}}
+        {{if v.OriginalType == "datetime"}}if item.{{v.Name}} == "0000-00-00 00:00:00" || item.{{v.Name}} == "1000-01-01 00:00:00" {
+            item.{{v.Name}} = ""
+        }{{end}}
+        {{end}}
+    } else {
+        return nil
+    }
+
+    if err != nil {
+        return nil
+    } else {
+
+        item.InitExtra()
+        {{range joins}}_{{.Name|lower}}.InitExtra()
+        item.AddExtra("{{.Name|lower}}",  _{{.Name|lower}})
+{{end}}
+        return &item
+    }
+}
+
+func (p *{{name}}Manager) ReadRows(rows *sql.Rows) *[]{{name}} {
+    var items []{{name}}
+
+    for rows.Next() {
+        var item {{name}}
+        {{range joins}}var _{{.Name|lower}} {{.Name|title}}
+            {{end}}
+    
+        err := rows.Scan({{range i, v := items}}{{if i > 0}}, {{end}}&item.{{v.Name}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, &_{{v2.Name|lower}}.{{.Name}}{{end}}{{end}})
+        if err != nil {
+           log.Printf("ReadRows error : %v\n", err)
+           break
+        }
+
+        {{range i, v := items}}{{if v.OriginalType == "date"}}if item.{{v.Name}} == "0000-00-00" || item.{{v.Name}} == "1000-01-01" {
+            item.{{v.Name}} = ""
+        }{{end}}
+        {{if v.OriginalType == "datetime"}}if item.{{v.Name}} == "0000-00-00 00:00:00" || item.{{v.Name}} == "1000-01-01 00:00:00" {
+            item.{{v.Name}} = ""
+        }{{end}}         
+        {{end}}
+        
+        
+        item.InitExtra()        
+        {{range joins}}_{{.Name|lower}}.InitExtra()
+        item.AddExtra("{{.Name|lower}}",  _{{.Name|lower}})
+{{end}}
+        items = append(items, item)
+    }
+
+
+     return &items
+}
+
+func (p *{{name}}Manager) Get(id int64) *{{name}} {
+    if p.Conn == nil && p.Tx == nil {
+        return nil
+    }
+
+    query := p.GetQuery() + " and {{prefix}}_id = ?"
+
+    {{range joins}}
+    query += " and {{prefix}}_{{.Column}} = {{.Prefix}}_id"
+    {{end}}
+    
+    rows, err := p.Query(query, id)
+
+    if err != nil {
+        log.Printf("query error : %v, %v\n", err, query)
+        return nil
+    }
+
+    defer rows.Close()
+
+    return p.ReadRow(rows)
+}
+
+func (p *{{name}}Manager) Count(args []interface{}) int {
+    if p.Conn == nil && p.Tx == nil {
+        return 0
+    }
+
+    var params []interface{}
+    query := p.GetQuerySelect() + " where 1=1 "
+
+    for _, arg := range args {
+        switch v := arg.(type) {
+        case Where:
+            item := v
+
+            if item.Compare == "in" {
+                query += " and {{prefix}}_id in (" + strings.Trim(strings.Replace(fmt.Sprint(item.Value), " ", ", ", -1), "[]") + ")"
+            } else if item.Compare == "between" {
+                query += " and {{prefix}}_" + item.Column + " between ? and ?"
+
+                s := item.Value.([2]string)
+                params = append(params, s[0])
+                params = append(params, s[1])
+            } else {
+                query += " and {{prefix}}_" + item.Column + " " + item.Compare + " ?"
+                if item.Compare == "like" {
+                    params = append(params, "%" + item.Value.(string) + "%")
+                } else {
+                    params = append(params, item.Value)                
+                }
+            }
+            break
+        case Custom:
+             item := v
+
+             query += " and " + item.Query
+        }
+    }
+
+    rows, err := p.Query(query, params...)
+
+    if err != nil {
+        log.Printf("query error : %v, %v\n", err, query)
+        return 0
+    }
+
+    defer rows.Close()
+
+    if !rows.Next() {
+        return 0
+    }
+
+    cnt := 0
+    err = rows.Scan(&cnt)
+
+    if err != nil {
+        return 0
+    } else {
+        return cnt
+    }
+}
+
+func (p *{{name}}Manager) Find(args []interface{}) *[]{{name}} {
+    if p.Conn == nil && p.Tx == nil {
+        var items []{{name}}
+        return &items
+    }
+
+    var params []interface{}
+    query := p.GetQuery()
+
+    page := 0
+    pagesize := 0
+    orderby := ""
+    
+    for _, arg := range args {
+        switch v := arg.(type) {
+        case PagingType:
+            item := v
+            page = item.Page
+            pagesize = item.Pagesize
+            break
+        case OrderingType:
+            item := v
+            orderby = item.Order
+            break
+        case LimitType:
+            item := v
+            page = 1
+            pagesize = item.Limit
+            break
+        case OptionType:
+            item := v
+            if item.Limit > 0 {
+                page = 1
+                pagesize = item.Limit
+            } else {
+                page = item.Page
+                pagesize = item.Pagesize                
+            }
+            orderby = item.Order
+            break
+        case Where:
+            item := v
+
+            if item.Compare == "in" {
+                query += " and {{prefix}}_id in (" + strings.Trim(strings.Replace(fmt.Sprint(item.Value), " ", ", ", -1), "[]") + ")"
+            } else if item.Compare == "between" {
+                query += " and {{prefix}}_" + item.Column + " between ? and ?"
+
+                s := item.Value.([2]string)
+                params = append(params, s[0])
+                params = append(params, s[1])
+            } else {
+                query += " and {{prefix}}_" + item.Column + " " + item.Compare + " ?"
+                if item.Compare == "like" {
+                    params = append(params, "%" + item.Value.(string) + "%")
+                } else {
+                    params = append(params, item.Value)                
+                }
+            }
+            break
+        case Custom:
+             item := v
+
+             query += " and " + item.Query
+        }
+        
+    }
+    
+    startpage := (page - 1) * pagesize
+    
+    if page > 0 && pagesize > 0 {
+        if orderby == "" {
+            orderby = "{{prefix}}_id desc"
+        } else {
+            if !strings.Contains(orderby, "_") {                   
+                orderby = "{{prefix}}_" + orderby
+            }
+            
+        }
+        query += " order by " + orderby
+        //if config.Database == "mysql" {
+            query += " limit ? offset ?"
+            params = append(params, pagesize)
+            params = append(params, startpage)
+            /*
+        } else if config.Database == "mssql" || config.Database == "sqlserver" {
+            query += "OFFSET ? ROWS FETCH NEXT ? ROWS ONLY"
+            params = append(params, startpage)
+            params = append(params, pagesize)
+        }
+        */
+    } else {
+        if orderby == "" {
+            orderby = "{{prefix}}_id"
+        } else {
+            if !strings.Contains(orderby, "_") {
+                orderby = "{{prefix}}_" + orderby
+            }
+        }
+        query += " order by " + orderby
+    }
+
+    rows, err := p.Query(query, params...)
+
+    if err != nil {
+        log.Printf("query error : %v, %v\n", err, query)
+        var items []{{name}}
+        return &items
+    }
+
+    defer rows.Close()
+
+    return p.ReadRows(rows)
+}
+
+{{range funcs}}
+{{if querytype(.Name) == "Get"}}func (p *{{name}}Manager) {{.Name}}({{range .Wheres}}{{.Column|lower}} {{.Type}}, {{end}}args ...interface{}) *{{name}} {
+    {{range .Wheres}}if {{.Column|lower}}{{if .Type == "int" || .Type == "int64"}} != 0 {{else if .Type == "string"}} != "" {{else}} != 0 {{end}}{
+        args = append(args, Where{Column:"{{.Column|lower}}", Value:{{.Column|lower}}, Compare:"{{.Compare}}"})        
+    }
+    {{end}}
+    items := p.Find(args)
+
+    if items != nil && len(*items) > 0 {
+        return &(*items)[0]
+    } else {
+        return nil
+    }
+}{{end}}{{if querytype(.Name) == "Find"}}func (p *{{name}}Manager) {{.Name}}({{range .Wheres}}{{.Column|lower}} {{.Type}}, {{end}}args ...interface{}) *[]{{name}} {
+    {{range .Wheres}}{{if .Type != "[]int64"}}if {{.Column|lower}}{{if .Type == "int" || .Type == "int64"}} != 0 {{else if .Type == "string"}} != "" {{else}} != 0 {{end}}{ {{end}}
+        args = append(args, Where{Column:"{{.Column|lower}}", Value:{{.Column|lower}}, Compare:"{{.Compare}}"})
+    {{if .Type != "[]int64"}} }{{end}}
+    {{end}}
+    return p.Find(args)
+}{{end}}{{if querytype(.Name) == "Count"}}func (p *{{name}}Manager) {{.Name}}({{range .Wheres}}{{.Column|lower}} {{.Type}}, {{end}}args ...interface{}) int {
+    {{range .Wheres}}if {{.Column|lower}}{{if .Type == "int" || .Type == "int64"}} != 0 {{else if .Type == "string"}} != "" {{else}} != 0 {{end}}{
+        args = append(args, Where{Column:"{{.Column|lower}}", Value:{{.Column|lower}}, Compare:"{{.Compare}}"})
+    }
+    {{end}}
+    return p.Count(args)
+}{{end}}{{if querytype(.Name) == "Delete"}}func (p *{{name}}Manager) {{.Name}}({{range i, v := .Wheres}}{{if i > 0}}, {{end}}{{v.Column|lower}} {{v.Type}}{{end}}) error {
+     if p.Conn == nil && p.Tx == nil {
+        return errors.New("Connection Error")
+    }
+
+    query := "delete from {{tableName}} where {{range i, v := .Wheres}}{{if i > 0}} and {{end}}{{prefix}}_{{v.Column|lower}} = ?{{end}}"
+    _, err := p.Exec(query{{range .Wheres}}, {{.Column|lower}}{{end}})
+
+    return err
+}{{end}}{{if querytype(.Name) == "Update"}}func (p *{{name}}Manager) {{.Name}}({{range i, v := .Wheres}}{{if i > 0}}, {{end}}{{v.Column|lower}} {{v.Type}}{{end}}) error {
+     if p.Conn == nil && p.Tx == nil {
+        return errors.New("Connection Error")
+    }
+
+    query := "update {{tableName}} set {{range i, v := .Wheres}}{{if v.Compare == "column"}}{{if i > 0}}, {{end}}{{prefix}}_{{v.Column|lower}} = ?{{end}}{{end}} where 1=1{{range i, v := .Wheres}}{{if v.Compare == "where"}} and {{prefix}}_{{v.Column|lower}} = ?{{end}}{{end}}"
+	_, err := p.Exec(query{{range .Wheres}}, {{.Column|lower}}{{end}})
+
+    return err    
+}{{end}}
+{{end}}

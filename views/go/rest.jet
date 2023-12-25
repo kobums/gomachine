@@ -1,0 +1,309 @@
+package rest
+
+
+import (
+	"{{packageName}}/controllers"
+	"{{packageName}}/models"
+{{range imports}}
+	"{{packageName}}/models/{{.|lower}}"
+{{end}}
+    "strings"
+)
+
+type {{name}}Controller struct {
+	controllers.Controller
+}
+
+func (c *{{name}}Controller) Read(id int64) {
+    {{if auth == "jwt" && len(sessions) > 0}}
+    if c.Session == nil {
+        c.Result["code"] = "auth error"
+        return
+    }
+    {{range sessions}}
+    if c.Session.{{.Key|title}} == 0 {
+        c.Result["code"] = "auth error"
+        return
+    }
+    {{end}}
+    {{end}}
+    
+	conn := c.NewConnection()
+
+	manager := models.New{{name}}Manager(conn)
+	item := manager.Get(id)
+
+    {{if auth == "jwt" && len(sessions) > 0}}
+    {{range sessions}}
+    if item.{{.Column|title}} != c.Session.{{.Key|title}} {
+        c.Result["code"] = "auth error"
+        return
+    }
+    {{end}}
+    {{end}}
+    
+    c.Set("item", item)
+}
+
+func (c *{{name}}Controller) Index(page int, pagesize int) {
+    {{if auth == "jwt" && len(sessions) > 0}}
+    if c.Session == nil {
+        c.Result["code"] = "auth error"
+        return
+    }
+    {{range sessions}}
+    if c.Session.{{.Key|title}} == 0 {
+        c.Result["code"] = "auth error"
+        return
+    }
+    {{end}}
+    {{end}}
+    
+	conn := c.NewConnection()
+
+	manager := models.New{{name}}Manager(conn)
+
+    var args []interface{}
+    
+    {{range items}}{{if .Name != "Id"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}_start{{.Name|lower}} := c.Get("start{{.Name|lower}}")
+    _end{{.Name|lower}} := c.Get("end{{.Name|lower}}")
+    if _start{{.Name|lower}} != "" && _end{{.Name|lower}} != "" {        
+        var v [2]string
+        v[0] = _start{{.Name|lower}}
+        v[1] = _end{{.Name|lower}}  
+        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:v, Compare:"between"})    
+    } else if  _start{{.Name|lower}} != "" {          
+        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_start{{.Name|lower}}, Compare:">="})
+    } else if  _end{{.Name|lower}} != "" {          
+        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_end{{.Name|lower}}, Compare:"<="})            
+    }
+    {{else if .Type == "string"}}_{{.Name|lower}} := c.Get("{{.Name|lower}}")
+    if _{{.Name|lower}} != "" {
+        {{if .Name == "Name" || .Name == "Title" || .Name == "Content"}}args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})
+        {{else}}args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"like"}){{end}}
+    }
+    {{else if .Type == "int"}}_{{.Name|lower}} := c.Geti("{{.Name|lower}}")
+    if _{{.Name|lower}} != 0 {
+        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
+    }
+    {{else if .Type == "int64"}}_{{.Name|lower}} := c.Geti64("{{.Name|lower}}")
+    if _{{.Name|lower}} != 0 {
+        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
+    }
+    {{else if .Type == "float64"}}_{{.Name|lower}} := c.Getf("{{.Name|lower}}")
+    if _{{.Name|lower}} != 0.0 {
+        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
+    }        
+    {{else}}_{{.Name|lower}} := c.Geti("{{.Name|lower}}")
+    if _{{.Name|lower}} != 0 {
+        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
+    }
+    {{end}}{{end}}{{end}}
+
+    {{if auth == "jwt" && len(sessions) > 0}}
+    {{range sessions}}
+    args = append(args, models.Where{Column:"{{.Column|lower}}", Value:c.Session.{{.Key|title}}, Compare:"="})    
+    {{end}}
+    {{end}}
+    
+    if page != 0 && pagesize != 0 {
+        args = append(args, models.Paging(page, pagesize))
+    }
+    
+    orderby := c.Get("orderby")
+    if orderby == "" {
+        if page != 0 && pagesize != 0 {
+            orderby = "id desc"
+            args = append(args, models.Ordering(orderby))
+        }
+    } else {
+        orderbys := strings.Split(orderby, ",")
+
+        str := ""
+        for i, v := range orderbys {
+            if i == 0 {
+                str += v
+            } else {
+                if strings.Contains(v, "_") {                   
+                    str += ", " + strings.Trim(v, " ")
+                } else {
+                    str += ", {{prefix}}_" + strings.Trim(v, " ")                
+                }
+            }
+        }
+        
+        args = append(args, models.Ordering(str))
+    }
+    
+	items := manager.Find(args)
+	c.Set("items", items)
+
+    total := manager.Count(args)
+	c.Set("total", total)
+}
+
+func (c *{{name}}Controller) Insert(item *models.{{name}}) {
+    {{if auth == "jwt" && len(sessions) > 0 && name != "User"}}
+    if c.Session == nil {
+        item = nil
+        return
+    }
+    {{range sessions}}
+    if c.Session.{{.Key|title}} == 0 {
+        item = nil
+        return
+    } else {
+        item.{{.Column|title}} = c.Session.{{.Key|title}}
+    }    
+    {{end}}
+    {{end}}
+    
+	conn := c.NewConnection()
+    
+	manager := models.New{{name}}Manager(conn)
+	manager.Insert(item)
+
+    id := manager.GetIdentity()
+    c.Result["id"] = id
+    item.Id = id
+}
+
+func (c *{{name}}Controller) Insertbatch(item *[]models.{{name}}) {  
+    if item == nil || len(*item) == 0 {
+        return
+    }
+
+    rows := len(*item)
+    
+    {{if auth == "jwt" && len(sessions) > 0 && name != "User"}}
+    if c.Session == nil {
+        items = nil
+        return
+    }
+    {{range sessions}}
+    if c.Session.{{.Key|title}} == 0 {
+        item = nil
+        return
+    } else {
+        for i := 0; i < rows; i++ {
+            item[i].{{.Column|title}} = c.Session.{{.Key|title}}
+        }
+    }    
+    {{end}}
+    {{end}}
+    
+	conn := c.NewConnection()
+    
+	manager := models.New{{name}}Manager(conn)
+
+    for i := 0; i < rows; i++ {
+	    manager.Insert(&((*item)[i]))
+    }
+}
+
+func (c *{{name}}Controller) Update(item *models.{{name}}) {
+    {{if auth == "jwt" && len(sessions) > 0}}
+    if c.Session == nil {
+        item = nil
+        return
+    }
+    {{range sessions}}
+    if c.Session.{{.Key|title}} == 0 {
+        item = nil
+        return
+    } else {
+        item.{{.Column|title}} = c.Session.{{.Key|title}}
+    }    
+    {{end}}
+    {{end}}
+    
+	conn := c.NewConnection()
+
+	manager := models.New{{name}}Manager(conn)
+	manager.Update(item)
+}
+
+func (c *{{name}}Controller) Delete(item *models.{{name}}) {
+    {{if auth == "jwt" && len(sessions) > 0}}
+    if c.Session == nil {
+        item = nil
+        return
+    }
+    {{end}}
+    
+    conn := c.NewConnection()
+
+	manager := models.New{{name}}Manager(conn)
+	manager.Delete(item.Id)
+}
+
+func (c *{{name}}Controller) Deletebatch(item *[]models.{{name}}) {
+    {{if auth == "jwt" && len(sessions) > 0}}
+    if c.Session == nil {
+        item = nil
+        return
+    }
+    {{end}}
+    
+    conn := c.NewConnection()
+
+	manager := models.New{{name}}Manager(conn)
+
+    for _, v := range *item {
+	    manager.Delete(v.Id)
+    }
+}
+
+{{range funcs}}
+{{if querytype(.Name) == "Update"}}// @Put(){{end}}{{if querytype(.Name) == "Delete"}}// @Delete(){{end}}
+func (c *{{name}}Controller) {{.Name}}({{range i, v := .Wheres}}{{if i > 0}} ,{{end}}{{v.Column|lower}} {{v.Type}}{{end}}) {{if querytype(.Name) == "Get"}}*models.{{name}} {{else if querytype(.Name) == "Find"}}*[]models.{{name}} {{else if querytype(.Name) == "Count"}}int {{end}}{
+    {{if auth == "jwt" && len(sessions) > 0}}
+    if c.Session == nil {
+        c.Result["code"] = "auth error"
+        {{if querytype(.Name) == "Get" || querytype(.Name) == "Find"}}
+        return nil
+        {{else if querytype(.Name) == "Count"}}
+        return 0
+        {{else}}
+        return
+        {{end}}
+    }
+    {{range _, s:= sessions}}
+    if c.Session.{{s.Key|title}} == 0 {
+        c.Result["code"] = "auth error"
+        {{if querytype(.Name) == "Get" || querytype(.Name) == "Find"}}
+        return nil
+        {{else if querytype(.Name) == "Count"}}
+        return 0
+        {{else}}
+        return
+        {{end}}
+    } else {
+        {{range i, v := .Wheres}}
+        {{if lower(s.Column) == lower(v.Column)}}
+        {{v.Column|lower}} = c.Session.{{s.Key|title}}
+        {{end}}
+        {{end}}
+    }
+    {{end}}
+    {{end}}
+    conn := c.NewConnection()
+
+	manager := models.New{{name}}Manager(conn)
+    {{if querytype(.Name) == "Get" || querytype(.Name) == "Find" || querytype(.Name) == "Count"}}
+    item := manager.{{.Name}}({{range i, v := .Wheres}}{{if i > 0}}, {{end}}{{v.Column|lower}}{{end}})
+    {{if querytype(.Name) == "Get"}}
+    c.Set("item", item)
+    {{end}}
+    {{if querytype(.Name) == "Find"}}
+    c.Set("items", item)
+    {{end}}
+    {{if querytype(.Name) == "Count"}}
+    c.Set("count", item)
+    {{end}}
+    return item
+    {{else}}
+    manager.{{.Name}}({{range i, v := .Wheres}}{{if i > 0}}, {{end}}{{v.Column|lower}}{{end}})
+    {{end}}
+}
+{{end}}

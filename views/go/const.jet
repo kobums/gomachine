@@ -1,0 +1,23 @@
+package {{name|lower}}
+
+{{range ic, c := consts}}
+type {{c.Name|title}} int
+
+const (
+    _ {{c.Name|title}}  = iota
+{{range c.Data}}{{if . != ""}}    {{if version == "1.1"}}{{c.Name|title}}{{end}}{{.|first|title}}{{end}}
+{{end}})
+
+var {{c.Name|title}}s = []string{ {{range i, v := c.Data}}{{if i > 0}}, {{end}}"{{v|last}}"{{end}} }
+{{end}}
+
+{{range consts}}
+func Get{{.Name|title}}(value {{.Name|title}}) string {
+    i := int(value)
+    if i <= 0 || i >= len({{.Name|title}}s) {
+        return ""
+    }
+     
+    return {{.Name|title}}s[i]
+}
+{{end}}
