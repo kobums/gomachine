@@ -45,6 +45,8 @@ type ModelConfig struct {
 	Password  string `json:"password"`
 	Auth      string `json:"auth"`
 	Language  string `json:"language"`
+	GoModelFilePath string `json:"goModelFilePath"`
+	DartModelFilePath string `json:"dartModelFilePath"`
 	Gpa       []Gpa  `json:"table"`
 }
 

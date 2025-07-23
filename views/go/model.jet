@@ -1,7 +1,7 @@
 package models
 
 import (
-    //"{{packageName}}/config"
+    "{{packageName}}/global/config"
     {{if len(consts) > 0}}
     "{{packageName}}/models/{{name|lower}}"
     {{end}}
@@ -11,44 +11,51 @@ import (
     "strings"
     "time"
 
-    log "github.com/sirupsen/logrus"    
-    _ "github.com/go-sql-driver/mysql"    
+    log "{{packageName}}/global/log"
+    _ "github.com/go-sql-driver/mysql"
+    _ "github.com/lib/pq"
+
 )
 
 type {{name}} struct {
     {{range items}}        
-    {{.Name}}                {{.Type}} `json:"{{.Name|lower}}"` {{end}}
+    {{.Name|title}}                {{if .Name == "Id"}}int64{{else}}{{.Type}}{{end}} `json:"{{.Name|lower}}"` {{end}}
     
     Extra                    map[string]interface{} `json:"extra"`
 }
 
 type {{name}}Manager struct {
-    Conn    *sql.DB
-    Tx    *sql.Tx    
+    Conn    *Connection
     Result  *sql.Result
     Index   string
+    Isolation   bool
+    SelectQuery  string
+    JoinQuery string
+    CountQuery   string
+    GroupQuery string
+    SelectLog bool
+    Log bool
 }
 
 func (c *{{name}}) AddExtra(key string, value interface{}) {    
 	c.Extra[key] = value     
 }
 
-func New{{name}}Manager(conn interface{}) *{{name}}Manager {
+func New{{name}}Manager(conn *Connection) *{{name}}Manager {
     var item {{name}}Manager
+
 
     if conn == nil {
         item.Conn = NewConnection()
+        item.Isolation = false
     } else {
-        if v, ok := conn.(*sql.DB); ok {
-            item.Conn = v
-            item.Tx = nil
-        } else {
-            item.Tx = conn.(*sql.Tx)
-            item.Conn = nil
-        }
+        item.Conn = conn 
+        item.Isolation = conn.Isolation
     }
 
     item.Index = ""
+    item.SelectLog = config.Log.Database
+    item.Log = config.Log.Database
 
     return &item
 }
@@ -63,125 +70,207 @@ func (p *{{name}}Manager) SetIndex(index string) {
     p.Index = index
 }
 
+func (p *{{name}}Manager) SetCountQuery(query string) {
+    p.CountQuery = query
+}
+
+func (p *{{name}}Manager) SetSelectQuery(query string) {
+    p.SelectQuery = query
+}
+
 func (p *{{name}}Manager) Exec(query string, params ...interface{}) (sql.Result, error) {
-    if p.Conn != nil {
-       return p.Conn.Exec(query, params...)
-    } else {
-       return p.Tx.Exec(query, params...)    
+    if p.Log {
+       if len(params) > 0 {
+	       log.Debug().Str("query", query).Any("param", params).Msg("SQL")
+       } else {
+	       log.Debug().Str("query", query).Msg("SQL")
+       }
     }
+
+    return p.Conn.Exec(query, params...)
 }
 
 func (p *{{name}}Manager) Query(query string, params ...interface{}) (*sql.Rows, error) {
-    if p.Conn != nil {
-       return p.Conn.Query(query, params...)
-    } else {
-       return p.Tx.Query(query + " FOR UPDATE", params...)    
+    if p.Isolation == true {
+        query += " for update"
     }
+
+    if p.SelectLog {
+       if len(params) > 0 {
+	       log.Debug().Str("query", query).Any("param", params).Msg("SQL")
+       } else {
+	       log.Debug().Str("query", query).Msg("SQL")
+       }
+    }
+
+    return p.Conn.Query(query, params...)
 }
 
 func (p *{{name}}Manager) GetQuery() string {
-    ret := ""
-
-    str := "select {{range i, v := items}}{{if i > 0}}, {{end}}{{v.Column}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, {{v2.Prefix}}_{{.Name|lower}}{{end}}{{end}} from {{tableName}}{{range joins}}, {{.Name}}_tb{{end}} "
-
-    if p.Index == "" {
-        ret = str
-    } else {
-        ret = str + " use index(" + p.Index + ") "
+    if p.SelectQuery != "" {
+        return p.SelectQuery    
     }
 
-    ret += "where 1=1 "
+    var ret strings.Builder
+
+    ret.WriteString("select {{range i, v := items}}{{if i > 0}}, {{end}}{{v.Column}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, {{v2.Prefix}}_{{.Name|lower}}{{end}}{{end}} from {{tableName}}{{range joins}}, {{.Name}}_tb{{end}}")
+
+    if p.Index != "" {
+        ret.WriteString(" use index(")
+        ret.WriteString(p.Index)
+        ret.WriteString(")")
+    }
+
+    if p.JoinQuery != "" {
+        ret.WriteString(", ")
+        ret.WriteString(p.JoinQuery)
+    }
+
+    ret.WriteString(" where 1=1 ")
     {{range joins}}
-    ret += "and {{prefix}}_{{.Column}} = {{.Prefix}}_id "
+    ret.WriteString("and {{prefix}}_{{.Column}} = {{.Prefix}}_id ")
     {{end}}
 
-    return ret;
+    return ret.String()
 }
 
 func (p *{{name}}Manager) GetQuerySelect() string {
-    ret := ""
-
-    str := "select count(*) from {{tableName}} "
-
-    if p.Index == "" {
-        ret = str
-    } else {
-        ret = str + " use index(" + p.Index + ") "
+    if p.CountQuery != "" {
+        return p.CountQuery    
     }
 
-    return ret;
+    var ret strings.Builder
+    
+    ret.WriteString("select count(*) from {{tableName}}")
+
+    if p.Index != "" {
+        ret.WriteString(" use index(")
+        ret.WriteString(p.Index)
+        ret.WriteString(")")
+    }
+
+    if p.JoinQuery != "" {
+        ret.WriteString(", ")
+        ret.WriteString(p.JoinQuery)
+    }
+
+    ret.WriteString(" where 1=1 ")
+    {{range joins}}
+    ret.WriteString("and {{prefix}}_{{.Column}} = {{.Prefix}}_id ")
+    {{end}}
+
+    return ret.String()
 }
 
 func (p *{{name}}Manager) Truncate() error {
-     if p.Conn == nil && p.Tx == nil {
+    if !p.Conn.IsConnect() {
         return errors.New("Connection Error")
     }
     
     query := "truncate {{tableName}} "
-    p.Exec(query)
+    _, err := p.Exec(query)
+
+    if err != nil {
+       if p.Log {
+          log.Error().Str("error", err.Error()).Msg("SQL")
+       }
+    }
 
     return nil
 }
 
 func (p *{{name}}Manager) Insert(item *{{name}}) error {
-    if p.Conn == nil && p.Tx == nil {
+    if !p.Conn.IsConnect() {
         return errors.New("Connection Error")
     }
 
     if item.Date == "" {
-        t := time.Now().Add(time.Hour * 9)        
+        t := time.Now().UTC().Add(time.Hour * 9)
+        //t := time.Now()
         item.Date = fmt.Sprintf("%04d-%02d-%02d %02d:%02d:%02d", t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second())
     }
+
+    {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime"}}
+    if item.{{v.Name|title}} == "" {
+       item.{{v.Name|title}} = "1000-01-01 00:00:00"
+    }
+	{{end}}{{end}}
 
     query := ""
     var res sql.Result
     var err error
     if item.Id > 0 {
         query = "insert into {{tableName}} ({{range i, v := items}}{{if i > 0}}, {{end}}{{v.Column}}{{end}}) values ({{range i, v := items}}{{if i > 0}}, {{end}}?{{end}})"
-        res, err = p.Exec(query {{range i, v := items}}, item.{{v.Name}}{{end}})
+        res, err = p.Exec(query{{range items}}, item.{{.Name|title}}{{end}})
     } else {
         query = "insert into {{tableName}} ({{range i, v := items}}{{if v.Name != "Id"}}{{if i > 1}}, {{end}}{{v.Column}}{{end}}{{end}}) values ({{range i, v := items}}{{if v.Name != "Id"}}{{if i > 1}}, {{end}}?{{end}}{{end}})"
-        res, err = p.Exec(query {{range i, v := items}}{{if v.Name != "Id"}}, item.{{v.Name}}{{end}}{{end}})
+        res, err = p.Exec(query{{range items}}{{if .Name != "Id"}}, item.{{.Name|title}}{{end}}{{end}})
     }
     
     if err == nil {
         p.Result = &res
+        
     } else {
-        log.Println(err)
+        if p.Log {
+          log.Error().Str("error", err.Error()).Msg("SQL")
+        }
         p.Result = nil
     }
 
     return err
 }
 func (p *{{name}}Manager) Delete(id int64) error {
-    if p.Conn == nil && p.Tx == nil {
+    if !p.Conn.IsConnect() {
         return errors.New("Connection Error")
     }
 
     query := "delete from {{tableName}} where {{prefix}}_id = ?"
     _, err := p.Exec(query, id)
 
+    if err != nil {
+       if p.Log {
+          log.Error().Str("error", err.Error()).Msg("SQL")
+       }
+    }
+
+    
     return err
 }
 func (p *{{name}}Manager) Update(item *{{name}}) error {
-    if p.Conn == nil && p.Tx == nil {
+    if !p.Conn.IsConnect() {
         return errors.New("Connection Error")
     }
+    
+    {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime"}}
+    if item.{{v.Name|title}} == "" {
+       item.{{v.Name|title}} = "1000-01-01 00:00:00"
+    }
+	{{end}}{{end}}
 
 	query := "update {{tableName}} set {{range i, v := items}}{{if v.Name != "Id"}}{{if i > 1}}, {{end}}{{v.Column}} = ?{{end}}{{end}} where {{prefix}}_id = ?"
-	_, err := p.Exec(query {{range i, v := items}}{{if v.Name != "Id"}}, item.{{v.Name}}{{end}}{{end}}, item.Id)
+	_, err := p.Exec(query{{range items}}{{if .Name != "Id"}}, item.{{.Name|title}}{{end}}{{end}}, item.Id)
 
+    if err != nil {
+        if p.Log {
+          log.Error().Str("error", err.Error()).Msg("SQL")
+        }
+    }
+    
+        
     return err
 }
 
 func (p *{{name}}Manager) GetIdentity() int64 {
-    if p.Result == nil && p.Tx == nil {
+    if !p.Conn.IsConnect() {
         return 0
     }
 
     id, err := (*p.Result).LastInsertId()
 
     if err != nil {
+        if p.Log {
+          log.Error().Str("error", err.Error()).Msg("SQL")
+        }
         return 0
     } else {
         return id
@@ -203,14 +292,16 @@ func (p *{{name}}Manager) ReadRow(rows *sql.Rows) *{{name}} {
     {{end}}
 
     if rows.Next() {
-        err = rows.Scan({{range i, v := items}}{{if i > 0}}, {{end}}&item.{{v.Name}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, &_{{v2.Name|lower}}.{{.Name}}{{end}}{{end}})
-        {{range i, v := items}}{{if v.OriginalType == "date"}}if item.{{v.Name}} == "0000-00-00" || item.{{v.Name}} == "1000-01-01" {
-            item.{{v.Name}} = ""
-        }{{end}}
-        {{if v.OriginalType == "datetime"}}if item.{{v.Name}} == "0000-00-00 00:00:00" || item.{{v.Name}} == "1000-01-01 00:00:00" {
-            item.{{v.Name}} = ""
-        }{{end}}
-        {{end}}
+        err = rows.Scan({{range i, v := items}}{{if i > 0}}, {{end}}&item.{{v.Name|title}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, &_{{v2.Name|lower}}.{{.Name}}{{end}}{{end}})
+        {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime"}}if item.{{v.Name|title}} == "0000-00-00 00:00:00" || item.{{v.Name|title}} == "1000-01-01 00:00:00" || item.{{v.Name|title}} == "9999-01-01 00:00:00" {
+            item.{{v.Name|title}} = ""
+        }{{end}}{{end}}
+
+        if config.Database.Type == config.Postgresql {
+            {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime"}}
+            item.{{v.Name|title}} = strings.ReplaceAll(strings.ReplaceAll(item.{{v.Name|title}}, "T", " "), "Z", "")
+		{{end}}{{end}}
+        }
     } else {
         return nil
     }
@@ -227,7 +318,7 @@ func (p *{{name}}Manager) ReadRow(rows *sql.Rows) *{{name}} {
     }
 }
 
-func (p *{{name}}Manager) ReadRows(rows *sql.Rows) *[]{{name}} {
+func (p *{{name}}Manager) ReadRows(rows *sql.Rows) []{{name}} {
     var items []{{name}}
 
     for rows.Next() {
@@ -235,19 +326,21 @@ func (p *{{name}}Manager) ReadRows(rows *sql.Rows) *[]{{name}} {
         {{range joins}}var _{{.Name|lower}} {{.Name|title}}
             {{end}}
     
-        err := rows.Scan({{range i, v := items}}{{if i > 0}}, {{end}}&item.{{v.Name}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, &_{{v2.Name|lower}}.{{.Name}}{{end}}{{end}})
+        err := rows.Scan({{range i, v := items}}{{if i > 0}}, {{end}}&item.{{v.Name|title}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, &_{{v2.Name|lower}}.{{.Name}}{{end}}{{end}})
         if err != nil {
            log.Printf("ReadRows error : %v\n", err)
            break
         }
 
-        {{range i, v := items}}{{if v.OriginalType == "date"}}if item.{{v.Name}} == "0000-00-00" || item.{{v.Name}} == "1000-01-01" {
-            item.{{v.Name}} = ""
-        }{{end}}
-        {{if v.OriginalType == "datetime"}}if item.{{v.Name}} == "0000-00-00 00:00:00" || item.{{v.Name}} == "1000-01-01 00:00:00" {
-            item.{{v.Name}} = ""
-        }{{end}}         
-        {{end}}
+        {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime"}}if item.{{v.Name|title}} == "0000-00-00 00:00:00" || item.{{v.Name|title}} == "1000-01-01 00:00:00" || item.{{v.Name|title}} == "9999-01-01 00:00:00" {
+            item.{{v.Name|title}} = ""
+        }{{end}}{{end}}
+
+        if config.Database.Type == config.Postgresql {
+            {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime"}}
+            item.{{v.Name|title}} = strings.ReplaceAll(strings.ReplaceAll(item.{{v.Name|title}}, "T", " "), "Z", "")
+		{{end}}{{end}}
+        }
         
         
         item.InitExtra()        
@@ -258,25 +351,29 @@ func (p *{{name}}Manager) ReadRows(rows *sql.Rows) *[]{{name}} {
     }
 
 
-     return &items
+     return items
 }
 
 func (p *{{name}}Manager) Get(id int64) *{{name}} {
-    if p.Conn == nil && p.Tx == nil {
+    if !p.Conn.IsConnect() {
         return nil
     }
 
-    query := p.GetQuery() + " and {{prefix}}_id = ?"
+    var query strings.Builder
+    query.WriteString(p.GetQuery())
+    query.WriteString(" and {{prefix}}_id = ?")
 
     {{range joins}}
-    query += " and {{prefix}}_{{.Column}} = {{.Prefix}}_id"
+    query.WriteString(" and {{prefix}}_{{.Column}} = {{.Prefix}}_id")
     {{end}}
     
-    rows, err := p.Query(query, id)
+    rows, err := p.Query(query.String(), id)
 
     if err != nil {
-        log.Printf("query error : %v, %v\n", err, query)
-        return nil
+       if p.Log {
+          log.Error().Str("error", err.Error()).Msg("SQL")
+       }
+       return nil
     }
 
     defer rows.Close()
@@ -284,48 +381,101 @@ func (p *{{name}}Manager) Get(id int64) *{{name}} {
     return p.ReadRow(rows)
 }
 
-func (p *{{name}}Manager) Count(args []interface{}) int {
-    if p.Conn == nil && p.Tx == nil {
-        return 0
+func (p *{{name}}Manager) GetWhere(args []interface{}) *{{name}} {
+    items := p.Find(args)
+    if len(items) == 0 {
+        return nil
     }
 
+    return &items[0]
+}
+
+func (p *{{name}}Manager) MakeQuery(initQuery string , postQuery string, initParams []interface{}, args []interface{}) (string, []interface{}) {
     var params []interface{}
-    query := p.GetQuerySelect() + " where 1=1 "
+    if initParams != nil {
+        params = append(params, initParams...)
+    }
+
+    pos := 1
+
+    var query strings.Builder
+	query.WriteString(initQuery)
 
     for _, arg := range args {
-        switch v := arg.(type) {
+        switch v := arg.(type) {        
         case Where:
             item := v
 
+            if strings.Contains(item.Column, "_") {
+                query.WriteString(" and ")
+            } else {
+                query.WriteString(" and {{prefix}}_")
+            }
+            query.WriteString(item.Column)
+
             if item.Compare == "in" {
-                query += " and {{prefix}}_id in (" + strings.Trim(strings.Replace(fmt.Sprint(item.Value), " ", ", ", -1), "[]") + ")"
+                query.WriteString(" in (")
+                query.WriteString(strings.Trim(strings.Replace(fmt.Sprint(item.Value), " ", ", ", -1), "[]"))
+                query.WriteString(")")
+            } else if item.Compare == "not in" {
+                query.WriteString(" not in (")
+                query.WriteString(strings.Trim(strings.Replace(fmt.Sprint(item.Value), " ", ", ", -1), "[]"))
+                query.WriteString(")")
             } else if item.Compare == "between" {
-                query += " and {{prefix}}_" + item.Column + " between ? and ?"
+                if config.Database.Type == config.Postgresql {
+                    query.WriteString(fmt.Sprintf(" between $%v and $%v", pos, pos + 1))
+                    pos += 2
+                } else {
+                    query.WriteString(" between ? and ?")
+                }
 
                 s := item.Value.([2]string)
                 params = append(params, s[0])
                 params = append(params, s[1])
             } else {
-                query += " and {{prefix}}_" + item.Column + " " + item.Compare + " ?"
+                if config.Database.Type == config.Postgresql {
+                    query.WriteString(" ")
+                    query.WriteString(item.Compare)
+                    query.WriteString(" $")
+                    query.WriteString(fmt.Sprintf("%v", pos))
+                    pos++
+                } else {
+                    query.WriteString(" ")
+                    query.WriteString(item.Compare)
+                    query.WriteString(" ?")
+                }
                 if item.Compare == "like" {
                     params = append(params, "%" + item.Value.(string) + "%")
                 } else {
                     params = append(params, item.Value)                
                 }
             }
-            break
         case Custom:
              item := v
 
-             query += " and " + item.Query
-        }
+            query.WriteString(" and ")
+            query.WriteString(item.Query)
+        }        
     }
 
+	query.WriteString(postQuery)
+
+    return query.String(), params
+}
+
+func (p *{{name}}Manager) Count(args []interface{}) int {
+    if !p.Conn.IsConnect() {
+        return 0
+    }
+
+    query, params := p.MakeQuery(p.GetQuerySelect(), p.GroupQuery, nil, args)
     rows, err := p.Query(query, params...)
 
     if err != nil {
-        log.Printf("query error : %v, %v\n", err, query)
-        return 0
+       if p.Log {
+          log.Error().Str("error", err.Error()).Msg("SQL")
+       }
+       return 0
     }
 
     defer rows.Close()
@@ -344,35 +494,40 @@ func (p *{{name}}Manager) Count(args []interface{}) int {
     }
 }
 
-func (p *{{name}}Manager) Find(args []interface{}) *[]{{name}} {
-    if p.Conn == nil && p.Tx == nil {
+func (p *{{name}}Manager) FindAll() []{{name}} {
+    return p.Find(nil)
+}
+
+func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
+    if !p.Conn.IsConnect() {
         var items []{{name}}
-        return &items
+        return items
     }
 
     var params []interface{}
-    query := p.GetQuery()
+    baseQuery := p.GetQuery()
+
+    var query strings.Builder
 
     page := 0
     pagesize := 0
     orderby := ""
+
+    pos := 1
     
     for _, arg := range args {
         switch v := arg.(type) {
         case PagingType:
             item := v
             page = item.Page
-            pagesize = item.Pagesize
-            break
+            pagesize = item.Pagesize            
         case OrderingType:
             item := v
             orderby = item.Order
-            break
         case LimitType:
             item := v
             page = 1
             pagesize = item.Limit
-            break
         case OptionType:
             item := v
             if item.Limit > 0 {
@@ -383,34 +538,66 @@ func (p *{{name}}Manager) Find(args []interface{}) *[]{{name}} {
                 pagesize = item.Pagesize                
             }
             orderby = item.Order
-            break
         case Where:
             item := v
 
+            if strings.Contains(item.Column, "_") {
+                query.WriteString(" and ")
+            } else {
+                query.WriteString(" and {{prefix}}_")
+            }
+            query.WriteString(item.Column)
+            
             if item.Compare == "in" {
-                query += " and {{prefix}}_id in (" + strings.Trim(strings.Replace(fmt.Sprint(item.Value), " ", ", ", -1), "[]") + ")"
+                query.WriteString(" in (")
+                query.WriteString(strings.Trim(strings.Replace(fmt.Sprint(item.Value), " ", ", ", -1), "[]"))
+                query.WriteString(")")
+            } else if item.Compare == "not in" {
+                query.WriteString(" not in (")
+                query.WriteString(strings.Trim(strings.Replace(fmt.Sprint(item.Value), " ", ", ", -1), "[]"))
+                query.WriteString(")")
             } else if item.Compare == "between" {
-                query += " and {{prefix}}_" + item.Column + " between ? and ?"
+                if config.Database.Type == config.Postgresql {
+                    query.WriteString(fmt.Sprintf(" between $%v and $%v", pos, pos + 1))
+                    pos += 2
+                } else {
+                    query.WriteString(" between ? and ?")
+                }
 
                 s := item.Value.([2]string)
                 params = append(params, s[0])
                 params = append(params, s[1])
             } else {
-                query += " and {{prefix}}_" + item.Column + " " + item.Compare + " ?"
+                if config.Database.Type == config.Postgresql {
+                    query.WriteString(" ")
+                    query.WriteString(item.Compare)
+                    query.WriteString(" $")
+                    query.WriteString(fmt.Sprintf("%v", pos))
+                    pos++
+                } else {
+                    query.WriteString(" ")
+                    query.WriteString(item.Compare)
+                    query.WriteString(" ?")
+                }
                 if item.Compare == "like" {
                     params = append(params, "%" + item.Value.(string) + "%")
                 } else {
                     params = append(params, item.Value)                
                 }
             }
-            break
         case Custom:
              item := v
 
-             query += " and " + item.Query
+            query.WriteString(" and ")
+            query.WriteString(item.Query)
+        case Base:
+             item := v
+
+             baseQuery = item.Query
         }
-        
     }
+
+    query.WriteString(p.GroupQuery)
     
     startpage := (page - 1) * pagesize
     
@@ -423,18 +610,21 @@ func (p *{{name}}Manager) Find(args []interface{}) *[]{{name}} {
             }
             
         }
-        query += " order by " + orderby
-        //if config.Database == "mysql" {
-            query += " limit ? offset ?"
+        query.WriteString(" order by ")
+        query.WriteString(orderby)
+        if config.Database.Type == config.Postgresql {
+            query.WriteString(fmt.Sprintf(" limit $%v offset $%v", pos, pos + 1))
             params = append(params, pagesize)
             params = append(params, startpage)
-            /*
-        } else if config.Database == "mssql" || config.Database == "sqlserver" {
-            query += "OFFSET ? ROWS FETCH NEXT ? ROWS ONLY"
+        } else if config.Database.Type == config.Mysql {
+            query.WriteString(" limit ? offset ?")
+            params = append(params, pagesize)
+            params = append(params, startpage)
+        } else if config.Database.Type == config.Sqlserver {
+            query.WriteString("OFFSET ? ROWS FETCH NEXT ? ROWS ONLY")
             params = append(params, startpage)
             params = append(params, pagesize)
         }
-        */
     } else {
         if orderby == "" {
             orderby = "{{prefix}}_id"
@@ -443,15 +633,18 @@ func (p *{{name}}Manager) Find(args []interface{}) *[]{{name}} {
                 orderby = "{{prefix}}_" + orderby
             }
         }
-        query += " order by " + orderby
+        query.WriteString(" order by ")
+        query.WriteString(orderby)
     }
 
-    rows, err := p.Query(query, params...)
+    rows, err := p.Query(baseQuery + query.String(), params...)
 
     if err != nil {
-        log.Printf("query error : %v, %v\n", err, query)
+       if p.Log {
+          log.Error().Str("error", err.Error()).Msg("SQL")
+       }
         var items []{{name}}
-        return &items
+        return items
     }
 
     defer rows.Close()
@@ -467,12 +660,12 @@ func (p *{{name}}Manager) Find(args []interface{}) *[]{{name}} {
     {{end}}
     items := p.Find(args)
 
-    if items != nil && len(*items) > 0 {
-        return &(*items)[0]
+    if len(items) > 0 {
+        return &items[0]
     } else {
         return nil
     }
-}{{end}}{{if querytype(.Name) == "Find"}}func (p *{{name}}Manager) {{.Name}}({{range .Wheres}}{{.Column|lower}} {{.Type}}, {{end}}args ...interface{}) *[]{{name}} {
+}{{end}}{{if querytype(.Name) == "Find"}}func (p *{{name}}Manager) {{.Name}}({{range .Wheres}}{{.Column|lower}} {{.Type}}, {{end}}args ...interface{}) []{{name}} {
     {{range .Wheres}}{{if .Type != "[]int64"}}if {{.Column|lower}}{{if .Type == "int" || .Type == "int64"}} != 0 {{else if .Type == "string"}} != "" {{else}} != 0 {{end}}{ {{end}}
         args = append(args, Where{Column:"{{.Column|lower}}", Value:{{.Column|lower}}, Compare:"{{.Compare}}"})
     {{if .Type != "[]int64"}} }{{end}}
@@ -485,7 +678,7 @@ func (p *{{name}}Manager) Find(args []interface{}) *[]{{name}} {
     {{end}}
     return p.Count(args)
 }{{end}}{{if querytype(.Name) == "Delete"}}func (p *{{name}}Manager) {{.Name}}({{range i, v := .Wheres}}{{if i > 0}}, {{end}}{{v.Column|lower}} {{v.Type}}{{end}}) error {
-     if p.Conn == nil && p.Tx == nil {
+     if !p.Conn.IsConnect() {
         return errors.New("Connection Error")
     }
 
@@ -494,7 +687,7 @@ func (p *{{name}}Manager) Find(args []interface{}) *[]{{name}} {
 
     return err
 }{{end}}{{if querytype(.Name) == "Update"}}func (p *{{name}}Manager) {{.Name}}({{range i, v := .Wheres}}{{if i > 0}}, {{end}}{{v.Column|lower}} {{v.Type}}{{end}}) error {
-     if p.Conn == nil && p.Tx == nil {
+     if !p.Conn.IsConnect() {
         return errors.New("Connection Error")
     }
 

@@ -8,6 +8,7 @@ import (
 	"gomachine/config"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -40,7 +41,68 @@ type Column struct {
 }
 
 func WriteFile(filename string, content string) error {
-	return os.WriteFile(filename, []byte(content), 0644)
+	log.Printf("=== WriteFile START ===")
+	log.Printf("Target file: %s", filename)
+	log.Printf("Content size: %d bytes", len(content))
+	
+	// 절대경로로 변환
+	absPath, err := filepath.Abs(filename)
+	if err != nil {
+		log.Printf("ERROR: Failed to get absolute path for %s: %v", filename, err)
+		return err
+	}
+	log.Printf("Absolute path: %s", absPath)
+	
+	// 디렉토리 생성
+	dir := filepath.Dir(absPath)
+	log.Printf("Creating directory: %s", dir)
+	
+	// 디렉토리 권한 체크
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		log.Printf("Directory does not exist, creating: %s", dir)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			log.Printf("CRITICAL ERROR: Failed to create directory %s: %v", dir, err)
+			return err
+		}
+		log.Printf("SUCCESS: Directory created: %s", dir)
+	} else if err != nil {
+		log.Printf("ERROR: Cannot stat directory %s: %v", dir, err)
+		return err
+	} else {
+		log.Printf("Directory already exists: %s", dir)
+	}
+	
+	// 디렉토리 권한 확인
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		log.Printf("ERROR: Cannot stat directory %s: %v", dir, err)
+		return err
+	}
+	log.Printf("Directory permissions: %s", dirInfo.Mode())
+	
+	// 파일 쓰기 전 체크
+	log.Printf("Writing file: %s", absPath)
+	
+	err = os.WriteFile(absPath, []byte(content), 0644)
+	if err != nil {
+		log.Printf("CRITICAL ERROR: Failed to write file %s: %v", absPath, err)
+		// 상위 디렉토리 권한도 체크
+		parentDir := filepath.Dir(dir)
+		if parentInfo, parentErr := os.Stat(parentDir); parentErr == nil {
+			log.Printf("Parent directory %s permissions: %s", parentDir, parentInfo.Mode())
+		}
+		return err
+	}
+	
+	// 파일 생성 확인
+	if fileInfo, err := os.Stat(absPath); err == nil {
+		log.Printf("SUCCESS: File created with size %d bytes, permissions: %s", fileInfo.Size(), fileInfo.Mode())
+	} else {
+		log.Printf("WARNING: Cannot stat created file %s: %v", absPath, err)
+	}
+	
+	log.Printf("=== WriteFile END ===")
+	return nil
 }
 
 func GetConnection(config config.ModelConfig) *sql.DB {
@@ -61,9 +123,24 @@ func GetConnection(config config.ModelConfig) *sql.DB {
 
 func main() {
 	log.Println("run buildtool model")
+	log.Println("Arguments:", os.Args)
+	
+	// 현재 작업 디렉토리 출력
+	if cwd, err := os.Getwd(); err == nil {
+		log.Printf("Current working directory: %s", cwd)
+	} else {
+		log.Printf("Failed to get current working directory: %v", err)
+	}
+	
 	targetPath := os.Args[1]
-
 	log.Printf("root path : %v\n", targetPath)
+	
+	// 타겟 경로의 절대경로 출력
+	if absTargetPath, err := filepath.Abs(targetPath); err == nil {
+		log.Printf("Absolute target path: %s", absTargetPath)
+	} else {
+		log.Printf("Failed to get absolute target path: %v", err)
+	}
 
 	packageName := ""
 
@@ -617,8 +694,18 @@ func process(packageName string, tableName string, prefix string, items []Column
 
 
 	if cnf.Language == "go" {
-		log.Printf("write file : %v\n", "./models/"+getTableName(tableName)+".go")
-		WriteFile("./models/"+getTableName(tableName)+".go", b.String())
+		log.Println(cnf.GoModelFilePath)
+		modelFile := cnf.GoModelFilePath+"/models/"+getTableName(tableName)+".go"
+		log.Printf("=== PROCESSING GO MODEL FILE ===")
+		log.Printf("Table name: %s", tableName)
+		log.Printf("Model file path: %s", modelFile)
+		log.Printf("Template content length: %d", b.Len())
+		
+		if err := WriteFile(modelFile, b.String()); err != nil {
+			log.Printf("CRITICAL ERROR: Failed to write model file %s: %v", modelFile, err)
+		} else {
+			log.Printf("SUCCESS: Model file written successfully: %s", modelFile)
+		}
 	}
 
 	v.Set("packageName", packageName)
@@ -648,21 +735,42 @@ func process(packageName string, tableName string, prefix string, items []Column
 			}
 		}
 		for i, b := range templateBuffers {
-			filename := fmt.Sprintf("../gym/gym/lib/%s_%s.dart", getTableName(tableName), arr[i])
-			log.Printf("write file: %s\n", filename)
-			WriteFile("../gym/gym/lib/"+arr[i]+"/"+getTableName(tableName)+"_"+arr[i]+".dart", b.String())
+			dartFile := cnf.DartModelFilePath+arr[i]+"/"+getTableName(tableName)+"_"+arr[i]+".dart"
+			log.Printf("=== PROCESSING DART %s FILE ===", strings.ToUpper(arr[i]))
+			log.Printf("Table name: %s", tableName)
+			log.Printf("Dart file path: %s", dartFile)
+			log.Printf("Template content length: %d", b.Len())
+			
+			if err := WriteFile(dartFile, b.String()); err != nil {
+				log.Printf("CRITICAL ERROR: Failed to write dart file %s: %v", dartFile, err)
+			} else {
+				log.Printf("SUCCESS: Dart %s file written successfully: %s", arr[i], dartFile)
+			}
 		}
 	} else {
 		var b2 bytes.Buffer
-		t2, err := views.GetTemplate("rest.jet")
+		t2, err := views.GetTemplate("go/rest.jet")
 		if err == nil {
+			log.Printf("REST template loaded successfully")
 			if err = t2.Execute(&b2, v, nil); err != nil {
-				log.Println(err)
-				// error when executing template
+				log.Printf("CRITICAL ERROR: REST template execution failed: %v", err)
+			} else {
+				log.Printf("REST template executed successfully, result size: %d", b2.Len())
 			}
+		} else {
+			log.Printf("CRITICAL ERROR: Failed to load REST template: %v", err)
 		}
 
-		WriteFile("./controllers/rest/"+getTableName(tableName)+".go", b2.String())
+		restFile := cnf.GoModelFilePath+"/controllers/rest/"+getTableName(tableName)+".go"
+		log.Printf("=== PROCESSING GO REST CONTROLLER FILE ===")
+		log.Printf("REST controller file path: %s", restFile)
+		log.Printf("Template content length: %d", b2.Len())
+		
+		if err := WriteFile(restFile, b2.String()); err != nil {
+			log.Printf("CRITICAL ERROR: Failed to write rest controller file %s: %v", restFile, err)
+		} else {
+			log.Printf("SUCCESS: REST controller file written successfully: %s", restFile)
+		}
 
 		v2 := make(jet.VarMap)
 		v2.Set("version", version)
@@ -676,16 +784,31 @@ func process(packageName string, tableName string, prefix string, items []Column
 			v2.Set("consts", gpa.Map)
 
 			var b2 bytes.Buffer
-			t, err = views.GetTemplate("const.jet")
+			t, err = views.GetTemplate("go/const.jet")
 			if err == nil {
 				if err = t.Execute(&b2, v2, nil); err != nil {
-					log.Println(err)
-					// error when executing template
+					log.Printf("CRITICAL ERROR: Const template execution failed: %v", err)
 				}
+			} else {
+				log.Printf("CRITICAL ERROR: Failed to load const template: %v", err)
 			}
 
-			os.Mkdir("./models/"+getTableName(tableName), 0755)
-			WriteFile("./models/"+getTableName(tableName)+"/"+getTableName(tableName)+".go", b2.String())
+			constDir := "./models/"+getTableName(tableName)
+			log.Printf("Creating const directory: %s", constDir)
+			if err := os.MkdirAll(constDir, 0755); err != nil {
+				log.Printf("Failed to create const directory %s: %v", constDir, err)
+			}
+			
+			constFile := constDir+"/"+getTableName(tableName)+".go"
+			log.Printf("=== PROCESSING GO CONST FILE ===")
+			log.Printf("Const file path: %s", constFile)
+			log.Printf("Template content length: %d", b2.Len())
+			
+			if err := WriteFile(constFile, b2.String()); err != nil {
+				log.Printf("CRITICAL ERROR: Failed to write const file %s: %v", constFile, err)
+			} else {
+				log.Printf("SUCCESS: Const file written successfully: %s", constFile)
+			}
 		}
 	}
 }
