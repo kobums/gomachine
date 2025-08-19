@@ -405,6 +405,66 @@ func (p *{{name}}Manager) Update(item *{{if name == "User"}}{{name}}Update{{else
     return err
 }
 
+func (p *{{name}}Manager) UpdateWhere(columns []{{name|lower}}.Params, args []interface{}) error {
+    if !p.Conn.IsConnect() {
+        return errors.New("Connection Error")
+    }
+
+    var initQuery strings.Builder
+    var initParams []interface{}
+
+    initQuery.WriteString("update {{tableName}} set ")
+    for i, v := range columns {
+        if i > 0 {
+            initQuery.WriteString(", ")
+        }
+
+        {{range items}}if v.Column == {{name|lower}}.Column{{.Name|title}} {
+        initQuery.WriteString("{{.Column}} = ?")
+        initParams = append(initParams, v.Value)
+        } else {{end}}{
+        
+        }
+    }
+
+    initQuery.WriteString(" where 1=1 ")
+
+    query, params := p.MakeQuery(initQuery.String(), "", initParams, args)
+    _, err := p.Exec(query, params...)
+
+    if err != nil {
+       if p.Log {
+          log.Error().Str("error", err.Error()).Msg("SQL")
+       }
+    }
+
+    
+    return err
+}
+
+/*
+
+{{range items}}{{if .Name != "Id"}}
+func (p *{{name}}Manager) Update{{.Name|title}}(value {{.Type}}, id int64) error {
+    if !p.Conn.IsConnect() {
+        return errors.New("Connection Error")
+    }
+
+	query := "update {{tableName}} set {{.Column}} = ? where {{prefix}}_id = ?"
+	_, err := p.Exec(query, value, id)
+
+    if err != nil {
+        if p.Log {
+          log.Error().Str("error", err.Error()).Msg("SQL")
+        }
+    }
+
+    return err
+}
+{{end}}{{end}}
+
+*/
+
 func (p *{{name}}Manager) GetIdentity() int64 {
     if !p.Conn.IsConnect() {
         return 0
