@@ -138,6 +138,75 @@ func (c *{{name}}Controller) Index(page int, pagesize int) {
 	items := manager.Find(args)
 	c.Set("items", items)
 
+    if page == 1 {
+       total := manager.Count(args)
+	   c.Set("total", total)
+    }
+}
+
+func (c *{{name}}Controller) Count() {
+    {{if auth == "jwt" && len(sessions) > 0}}
+    if c.Session == nil {
+        c.Result["code"] = "auth error"
+        return
+    }
+    {{range sessions}}
+    if c.Session.{{.Key|title}} == 0 {
+        c.Result["code"] = "auth error"
+        return
+    }
+    {{end}}
+    {{end}}
+    
+	conn := c.NewConnection()
+
+	manager := models.New{{name}}Manager(conn)
+
+    var args []interface{}
+    
+    {{range items}}{{if .Name != "Id"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}_start{{.Name|lower}} := c.Get("start{{.Name|lower}}")
+    _end{{.Name|lower}} := c.Get("end{{.Name|lower}}")
+
+    if _start{{.Name|lower}} != "" && _end{{.Name|lower}} != "" {        
+        var v [2]string
+        v[0] = _start{{.Name|lower}}
+        v[1] = _end{{.Name|lower}}  
+        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:v, Compare:"between"})    
+    } else if  _start{{.Name|lower}} != "" {          
+        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_start{{.Name|lower}}, Compare:">="})
+    } else if  _end{{.Name|lower}} != "" {          
+        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_end{{.Name|lower}}, Compare:"<="})            
+    }
+    {{else if .Type == "string"}}_{{.Name|lower}} := c.Get("{{.Name|lower}}")
+    if _{{.Name|lower}} != "" {
+        {{if .Name == "Name" || .Name == "Title" || .Name == "Content"}}args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})
+        {{else}}args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"like"}){{end}}
+        
+    }
+    {{else if .Type == "int"}}_{{.Name|lower}} := c.Geti("{{.Name|lower}}")
+    if _{{.Name|lower}} != 0 {
+        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
+    }
+    {{else if .Type == "int64"}}_{{.Name|lower}} := c.Geti64("{{.Name|lower}}")
+    if _{{.Name|lower}} != 0 {
+        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
+    }
+    {{else if .Type == "float64"}}_{{.Name|lower}} := c.Getf("{{.Name|lower}}")
+    if _{{.Name|lower}} != 0.0 {
+        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
+    }        
+    {{else}}_{{.Name|lower}} := c.Geti("{{.Name|lower}}")
+    if _{{.Name|lower}} != 0 {
+        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
+    }
+    {{end}}{{end}}{{end}}
+    
+    {{if auth == "jwt" && len(sessions) > 0}}
+    {{range sessions}}
+    args = append(args, models.Where{Column:"{{.Column|lower}}", Value:c.Session.{{.Key|title}}, Compare:"="})    
+    {{end}}
+    {{end}}
+    
     total := manager.Count(args)
 	c.Set("total", total)
 }
@@ -145,12 +214,12 @@ func (c *{{name}}Controller) Index(page int, pagesize int) {
 func (c *{{name}}Controller) Insert(item *models.{{name}}) {
     {{if auth == "jwt" && len(sessions) > 0 && name != "User"}}
     if c.Session == nil {
-        item = nil
+        c.Set("code", "error")
         return
     }
     {{range sessions}}
     if c.Session.{{.Key|title}} == 0 {
-        item = nil
+        c.Set("code", "error")
         return
     } else {
         item.{{.Column|title}} = c.Session.{{.Key|title}}
@@ -161,7 +230,12 @@ func (c *{{name}}Controller) Insert(item *models.{{name}}) {
 	conn := c.NewConnection()
     
 	manager := models.New{{name}}Manager(conn)
-	manager.Insert(item)
+	err := manager.Insert(item)
+    if err != nil {
+        c.Set("code", "error")    
+        c.Set("error", err)
+        return
+    }
 
     id := manager.GetIdentity()
     c.Result["id"] = id
@@ -177,16 +251,16 @@ func (c *{{name}}Controller) Insertbatch(item *[]models.{{name}}) {
     
     {{if auth == "jwt" && len(sessions) > 0 && name != "User"}}
     if c.Session == nil {
-        items = nil
+        c.Set("code", "error")
         return
     }
     {{range sessions}}
     if c.Session.{{.Key|title}} == 0 {
-        item = nil
+        c.Set("code", "error")
         return
     } else {
         for i := 0; i < rows; i++ {
-            item[i].{{.Column|title}} = c.Session.{{.Key|title}}
+            (*item)[i].{{.Column|title}} = c.Session.{{.Key|title}}
         }
     }    
     {{end}}
@@ -197,19 +271,24 @@ func (c *{{name}}Controller) Insertbatch(item *[]models.{{name}}) {
 	manager := models.New{{name}}Manager(conn)
 
     for i := 0; i < rows; i++ {
-	    manager.Insert(&((*item)[i]))
+	    err := manager.Insert(&((*item)[i]))
+        if err != nil {
+            c.Set("code", "error")    
+            c.Set("error", err)
+            return
+        }
     }
 }
 
 func (c *{{name}}Controller) Update(item *models.{{name}}) {
     {{if auth == "jwt" && len(sessions) > 0}}
     if c.Session == nil {
-        item = nil
+        c.Set("code", "error")
         return
     }
     {{range sessions}}
     if c.Session.{{.Key|title}} == 0 {
-        item = nil
+        c.Set("code", "error")
         return
     } else {
         item.{{.Column|title}} = c.Session.{{.Key|title}}
@@ -220,13 +299,18 @@ func (c *{{name}}Controller) Update(item *models.{{name}}) {
 	conn := c.NewConnection()
 
 	manager := models.New{{name}}Manager(conn)
-	manager.Update(item)
+    err := manager.Update(item)
+    if err != nil {
+        c.Set("code", "error")    
+        c.Set("error", err)
+        return
+    }
 }
 
 func (c *{{name}}Controller) Delete(item *models.{{name}}) {
     {{if auth == "jwt" && len(sessions) > 0}}
     if c.Session == nil {
-        item = nil
+        c.Set("code", "error")
         return
     }
     {{end}}
@@ -234,13 +318,19 @@ func (c *{{name}}Controller) Delete(item *models.{{name}}) {
     conn := c.NewConnection()
 
 	manager := models.New{{name}}Manager(conn)
-	manager.Delete(item.Id)
+
+    
+	err := manager.Delete(item.Id)
+    if err != nil {
+        c.Set("code", "error")    
+        c.Set("error", err)
+    }
 }
 
 func (c *{{name}}Controller) Deletebatch(item *[]models.{{name}}) {
     {{if auth == "jwt" && len(sessions) > 0}}
     if c.Session == nil {
-        item = nil
+        c.Set("code", "error")
         return
     }
     {{end}}
@@ -250,13 +340,20 @@ func (c *{{name}}Controller) Deletebatch(item *[]models.{{name}}) {
 	manager := models.New{{name}}Manager(conn)
 
     for _, v := range *item {
-	    manager.Delete(v.Id)
+        
+    
+	    err := manager.Delete(v.Id)
+        if err != nil {
+            c.Set("code", "error")    
+            c.Set("error", err)
+            return
+        }
     }
 }
 
 {{range funcs}}
 {{if querytype(.Name) == "Update"}}// @Put(){{end}}{{if querytype(.Name) == "Delete"}}// @Delete(){{end}}
-func (c *{{name}}Controller) {{.Name}}({{range i, v := .Wheres}}{{if i > 0}} ,{{end}}{{v.Column|lower}} {{v.Type}}{{end}}) {{if querytype(.Name) == "Get"}}*models.{{name}} {{else if querytype(.Name) == "Find"}}*[]models.{{name}} {{else if querytype(.Name) == "Count"}}int {{end}}{
+func (c *{{name}}Controller) {{.Name}}({{range i, v := .Wheres}}{{if i > 0}} ,{{end}}{{v.Column|lower}} {{v.Type}}{{end}}) {{if querytype(.Name) == "Get"}}*models.{{name}} {{else if querytype(.Name) == "Find"}}[]models.{{name}} {{else if querytype(.Name) == "Count"}}int {{end}}{
     {{if auth == "jwt" && len(sessions) > 0}}
     if c.Session == nil {
         c.Result["code"] = "auth error"

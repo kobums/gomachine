@@ -12,4 +12,5 @@ require (
 require (
 	github.com/CloudyKit/fastprinter v0.0.0-20200109182630-33d98a066a53 // indirect
 	golang.org/x/sys v0.5.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1
 )

@@ -293,20 +293,24 @@ func (p *{{name}}Manager) ReadRow(rows *sql.Rows) *{{name}} {
 
     if rows.Next() {
         err = rows.Scan({{range i, v := items}}{{if i > 0}}, {{end}}&item.{{v.Name|title}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, &_{{v2.Name|lower}}.{{.Name}}{{end}}{{end}})
-        {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime"}}if item.{{v.Name|title}} == "0000-00-00 00:00:00" || item.{{v.Name|title}} == "1000-01-01 00:00:00" || item.{{v.Name|title}} == "9999-01-01 00:00:00" {
+        {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime"}}
+        if item.{{v.Name|title}} == "0000-00-00 00:00:00" || item.{{v.Name|title}} == "1000-01-01 00:00:00" || item.{{v.Name|title}} == "9999-01-01 00:00:00" {
             item.{{v.Name|title}} = ""
-        }{{end}}{{end}}
+        }
 
         if config.Database.Type == config.Postgresql {
-            {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime"}}
             item.{{v.Name|title}} = strings.ReplaceAll(strings.ReplaceAll(item.{{v.Name|title}}, "T", " "), "Z", "")
-		{{end}}{{end}}
         }
+		{{end}}{{end}}
+
     } else {
         return nil
     }
 
     if err != nil {
+        if p.Log {
+          log.Error().Str("error", err.Error()).Msg("SQL")
+        }
         return nil
     } else {
 
@@ -324,24 +328,25 @@ func (p *{{name}}Manager) ReadRows(rows *sql.Rows) []{{name}} {
     for rows.Next() {
         var item {{name}}
         {{range joins}}var _{{.Name|lower}} {{.Name|title}}
-            {{end}}
+        {{end}}
     
         err := rows.Scan({{range i, v := items}}{{if i > 0}}, {{end}}&item.{{v.Name|title}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, &_{{v2.Name|lower}}.{{.Name}}{{end}}{{end}})
         if err != nil {
-           log.Printf("ReadRows error : %v\n", err)
+           if p.Log {
+             log.Error().Str("error", err.Error()).Msg("SQL")
+           }
            break
         }
 
-        {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime"}}if item.{{v.Name|title}} == "0000-00-00 00:00:00" || item.{{v.Name|title}} == "1000-01-01 00:00:00" || item.{{v.Name|title}} == "9999-01-01 00:00:00" {
+        {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime"}}
+        if item.{{v.Name|title}} == "0000-00-00 00:00:00" || item.{{v.Name|title}} == "1000-01-01 00:00:00" || item.{{v.Name|title}} == "9999-01-01 00:00:00" {
             item.{{v.Name|title}} = ""
-        }{{end}}{{end}}
+        }
 
         if config.Database.Type == config.Postgresql {
-            {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime"}}
             item.{{v.Name|title}} = strings.ReplaceAll(strings.ReplaceAll(item.{{v.Name|title}}, "T", " "), "Z", "")
-		{{end}}{{end}}
         }
-        
+		{{end}}{{end}}
         
         item.InitExtra()        
         {{range joins}}_{{.Name|lower}}.InitExtra()
@@ -436,8 +441,7 @@ func (p *{{name}}Manager) MakeQuery(initQuery string , postQuery string, initPar
                 if config.Database.Type == config.Postgresql {
                     query.WriteString(" ")
                     query.WriteString(item.Compare)
-                    query.WriteString(" $")
-                    query.WriteString(fmt.Sprintf("%v", pos))
+                    query.WriteString(fmt.Sprintf(" $%v", pos))
                     pos++
                 } else {
                     query.WriteString(" ")
@@ -571,8 +575,7 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
                 if config.Database.Type == config.Postgresql {
                     query.WriteString(" ")
                     query.WriteString(item.Compare)
-                    query.WriteString(" $")
-                    query.WriteString(fmt.Sprintf("%v", pos))
+                    query.WriteString(fmt.Sprintf(" $%v", pos))
                     pos++
                 } else {
                     query.WriteString(" ")
@@ -665,18 +668,24 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
     } else {
         return nil
     }
-}{{end}}{{if querytype(.Name) == "Find"}}func (p *{{name}}Manager) {{.Name}}({{range .Wheres}}{{.Column|lower}} {{.Type}}, {{end}}args ...interface{}) []{{name}} {
-    {{range .Wheres}}{{if .Type != "[]int64"}}if {{.Column|lower}}{{if .Type == "int" || .Type == "int64"}} != 0 {{else if .Type == "string"}} != "" {{else}} != 0 {{end}}{ {{end}}
-        args = append(args, Where{Column:"{{.Column|lower}}", Value:{{.Column|lower}}, Compare:"{{.Compare}}"})
-    {{if .Type != "[]int64"}} }{{end}}
+}{{end}}{{if querytype(.Name) == "Find"}}func (p *{{name}}Manager) {{.Name}}({{range .Wheres}}{{if .Column == "Type"}}typeid{{else}}{{.Column|lower}}{{end}} {{.Type}}, {{end}}args ...interface{}) []{{name}} {
+    rets := make([]interface{}, 0)
+    rets = append(rets, args...)
+
+    {{range .Wheres}}{{if !hasPrefix(.Type, "[]")}}if {{.Column|lower}}{{if .Type == "int" || .Type == "int64"}} != 0 {{else if .Type == "string"}} != "" {{else}} != 0 {{end}}{ {{end}}
+        rets = append(rets, Where{Column:"{{.Column|lower}}", Value:{{if .Column == "Type"}}typeid{{else}}{{.Column|lower}}{{end}}, Compare:"{{.Compare}}"})
+    {{if !hasPrefix(.Type, "[]")}} }{{end}}
     {{end}}
-    return p.Find(args)
-}{{end}}{{if querytype(.Name) == "Count"}}func (p *{{name}}Manager) {{.Name}}({{range .Wheres}}{{.Column|lower}} {{.Type}}, {{end}}args ...interface{}) int {
-    {{range .Wheres}}if {{.Column|lower}}{{if .Type == "int" || .Type == "int64"}} != 0 {{else if .Type == "string"}} != "" {{else}} != 0 {{end}}{
-        args = append(args, Where{Column:"{{.Column|lower}}", Value:{{.Column|lower}}, Compare:"{{.Compare}}"})
-    }
+    return p.Find(rets)
+}{{end}}{{if querytype(.Name) == "Count"}}func (p *{{name}}Manager) {{.Name}}({{range .Wheres}}{{if .Column == "Type"}}typeid{{else}}{{.Column|lower}}{{end}} {{.Type}}, {{end}}args ...interface{}) int {
+    rets := make([]interface{}, 0)
+    rets = append(rets, args...)
+    
+    {{range .Wheres}}{{if !hasPrefix(.Type, "[]")}}if {{.Column|lower}}{{if .Type == "int" || .Type == "int64"}} != 0 {{else if .Type == "string"}} != "" {{else}} != 0 {{end}}{ {{end}}
+        rets = append(rets, Where{Column:"{{.Column|lower}}", Value:{{if .Column == "Type"}}typeid{{else}}{{.Column|lower}}{{end}}, Compare:"{{.Compare}}"})
+    {{if !hasPrefix(.Type, "[]")}} }{{end}}
     {{end}}
-    return p.Count(args)
+    return p.Count(rets)
 }{{end}}{{if querytype(.Name) == "Delete"}}func (p *{{name}}Manager) {{.Name}}({{range i, v := .Wheres}}{{if i > 0}}, {{end}}{{v.Column|lower}} {{v.Type}}{{end}}) error {
      if !p.Conn.IsConnect() {
         return errors.New("Connection Error")
@@ -697,3 +706,126 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
     return err    
 }{{end}}
 {{end}}
+{{sumflag := false}}{{range items}}{{if .Name == "Price" || .Name == "Totalprice" || .Name == "Count" || .Name == "Score"}}{{sumflag = true}}{{end}}{{end}}
+{{if sumflag == true}}func (p *{{name}}Manager) Sum(args []interface{}) *{{name}} {
+    if !p.Conn.IsConnect() {
+        var item {{name}}
+        return &item
+    }
+
+    var params []interface{}
+
+    {{flag := false}}
+    query := "select sum({{prefix}}_{{range items}}{{if .Name == "Price" || .Name == "Totalprice" || .Name == "Count" || .Name == "Score"}}{{if flag == true}},{{end}}{{.Name|lower}}{{flag = true}}{{end}}{{end}}) from {{tableName}}"
+
+    if p.Index != "" {
+        query = query + " use index(" + p.Index + ") "
+    }
+
+    query += "where 1=1 "
+
+    page := 0
+    pagesize := 0
+    orderby := ""
+    
+    for _, arg := range args {
+        switch v := arg.(type) {
+        case PagingType:
+            item := v
+            page = item.Page
+            pagesize = item.Pagesize
+        case OrderingType:
+            item := v
+            orderby = item.Order
+        case LimitType:
+            item := v
+            page = 1
+            pagesize = item.Limit
+        case OptionType:
+            item := v
+            if item.Limit > 0 {
+                page = 1
+                pagesize = item.Limit
+            } else {
+                page = item.Page
+                pagesize = item.Pagesize                
+            }
+            orderby = item.Order
+        case Where:
+            item := v
+
+            if item.Compare == "in" {
+                query += " and {{prefix}}_id in (" + strings.Trim(strings.Replace(fmt.Sprint(item.Value), " ", ", ", -1), "[]") + ")"
+            } else if item.Compare == "between" {
+                query += " and {{prefix}}_" + item.Column + " between ? and ?"
+
+                s := item.Value.([2]string)
+                params = append(params, s[0])
+                params = append(params, s[1])
+            } else {
+                query += " and {{prefix}}_" + item.Column + " " + item.Compare + " ?"
+                if item.Compare == "like" {
+                    params = append(params, "%" + item.Value.(string) + "%")
+                } else {
+                    params = append(params, item.Value)                
+                }
+            }
+        case Custom:
+             item := v
+
+             query += " and " + item.Query
+        }        
+    }
+    
+    startpage := (page - 1) * pagesize
+    
+    if page > 0 && pagesize > 0 {
+        if orderby == "" {
+            orderby = "{{prefix}}_id desc"
+        } else {
+            if !strings.Contains(orderby, "_") {                   
+                orderby = "{{prefix}}_" + orderby
+            }
+            
+        }
+        query += " order by " + orderby
+        //if config.Database == "mysql" {
+            query += " limit ? offset ?"
+            params = append(params, pagesize)
+            params = append(params, startpage)
+            /*
+        } else if config.Database == "mssql" || config.Database == "sqlserver" {
+            query += "OFFSET ? ROWS FETCH NEXT ? ROWS ONLY"
+            params = append(params, startpage)
+            params = append(params, pagesize)
+        }
+        */
+    } else {
+        if orderby == "" {
+            orderby = "{{prefix}}_id"
+        } else {
+            if !strings.Contains(orderby, "_") {
+                orderby = "{{prefix}}_" + orderby
+            }
+        }
+        query += " order by " + orderby
+    }
+
+    rows, err := p.Query(query, params...)
+
+    var item {{name}}
+    
+    if err != nil {
+        log.Printf("query error : %v, %v\n", err, query)
+        return &item
+    }
+
+    defer rows.Close()
+
+    if rows.Next() {
+        {{flag = false}}
+        rows.Scan({{range items}}{{if .Name == "Price" || .Name == "Totalprice" || .Name == "Count" || .Name == "Score"}}{{if flag == true}},{{end}}&item.{{.Name}}{{flag = true}}{{end}}{{end}})        
+    }
+
+    return &item        
+}{{end}}

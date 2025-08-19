@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"gomachine/config"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -38,71 +39,36 @@ type Column struct {
 	Type         string
 	OriginalType string
 	Prefix       string
+	Primary			 bool
+}
+
+func CopyFile(src, dst string) {
+	in, err := os.Open(src)
+	if err != nil {
+		panic(err)
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		cerr := out.Close()
+		if err == nil {
+			err = cerr
+		}
+	}()
+	if _, err = io.Copy(out, in); err != nil {
+		panic(err)
+	}
+	err = out.Sync()
+	if err != nil {
+		panic(err)
+	}
 }
 
 func WriteFile(filename string, content string) error {
-	log.Printf("=== WriteFile START ===")
-	log.Printf("Target file: %s", filename)
-	log.Printf("Content size: %d bytes", len(content))
-	
-	// 절대경로로 변환
-	absPath, err := filepath.Abs(filename)
-	if err != nil {
-		log.Printf("ERROR: Failed to get absolute path for %s: %v", filename, err)
-		return err
-	}
-	log.Printf("Absolute path: %s", absPath)
-	
-	// 디렉토리 생성
-	dir := filepath.Dir(absPath)
-	log.Printf("Creating directory: %s", dir)
-	
-	// 디렉토리 권한 체크
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		log.Printf("Directory does not exist, creating: %s", dir)
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			log.Printf("CRITICAL ERROR: Failed to create directory %s: %v", dir, err)
-			return err
-		}
-		log.Printf("SUCCESS: Directory created: %s", dir)
-	} else if err != nil {
-		log.Printf("ERROR: Cannot stat directory %s: %v", dir, err)
-		return err
-	} else {
-		log.Printf("Directory already exists: %s", dir)
-	}
-	
-	// 디렉토리 권한 확인
-	dirInfo, err := os.Stat(dir)
-	if err != nil {
-		log.Printf("ERROR: Cannot stat directory %s: %v", dir, err)
-		return err
-	}
-	log.Printf("Directory permissions: %s", dirInfo.Mode())
-	
-	// 파일 쓰기 전 체크
-	log.Printf("Writing file: %s", absPath)
-	
-	err = os.WriteFile(absPath, []byte(content), 0644)
-	if err != nil {
-		log.Printf("CRITICAL ERROR: Failed to write file %s: %v", absPath, err)
-		// 상위 디렉토리 권한도 체크
-		parentDir := filepath.Dir(dir)
-		if parentInfo, parentErr := os.Stat(parentDir); parentErr == nil {
-			log.Printf("Parent directory %s permissions: %s", parentDir, parentInfo.Mode())
-		}
-		return err
-	}
-	
-	// 파일 생성 확인
-	if fileInfo, err := os.Stat(absPath); err == nil {
-		log.Printf("SUCCESS: File created with size %d bytes, permissions: %s", fileInfo.Size(), fileInfo.Mode())
-	} else {
-		log.Printf("WARNING: Cannot stat created file %s: %v", absPath, err)
-	}
-	
-	log.Printf("=== WriteFile END ===")
-	return nil
+	return os.WriteFile(filename, []byte(content), 0644)
 }
 
 func GetConnection(config config.ModelConfig) *sql.DB {
@@ -222,6 +188,20 @@ func getTableName(name string) string {
 	return strs[0]
 }
 
+func getTableType(name string) string {
+	strs := strings.Split(name, "_")
+
+	if len(strs) < 2 {
+		return "table"
+	}
+
+	if strs[1] == "vw" {
+		return "view"
+	}
+
+	return "table"
+}
+
 func getName(name string) string {
 	strs := strings.Split(name, "_")
 
@@ -263,7 +243,7 @@ func readColumn(packageName string, tableName string, db *sql.DB, gpa *config.Gp
 			log.Println(err)
 		}
 
-		column := Column{Name: getName(name), Column: name, Type: getType(getTableName(tableName), getName(name), typeid, gpa, cnf), OriginalType: typeid}
+		column := Column{Name: strings.Title(getName(name)), Column: name, Type: getType(getTableName(tableName), getName(name), typeid, gpa, cnf), OriginalType: typeid}
 		columns = append(columns, column)
 
 		prefix = getPrefix(name)
@@ -364,6 +344,8 @@ func getType(tableName string, name string, t string, gpa *config.Gpa, cnf confi
 			return "string"
 		} else if t == "text" {
 			return "string"
+		} else if t == "longtext" {
+			return "string"
 		} else if t == "datetime" {
 			return "string"
 		} else if t == "date" {
@@ -441,33 +423,47 @@ func process(packageName string, tableName string, prefix string, items []Column
 
 	var views = jet.NewSet(jet.NewOSFileSystemLoader(path), jet.InDevelopmentMode())
 
-	views.AddGlobal("items", items)
+	views.AddGlobal("striparray", func(str string) string {
+		return strings.ReplaceAll(str, "[]", "")
+	})
+
+	views.AddGlobal("substring", func(str string, start int, end int) string {
+		return str[start:end]
+	})
 
 	views.AddGlobal("title", func(str string) string {
 		return strings.Title(str)
 	})
 
-	// views.AddGlobal("untitle", func(str string) string {
-	// 	a := []rune(str)
-	// 	a[0] = unicode.ToLower(a[0])
-	// 	return string(a)
-	// })
+	views.AddGlobal("untitle", func(str string) string {
+		a := []rune(str)
+		a[0] = unicode.ToLower(a[0])
+		return string(a)
+	})
 
-	// views.AddGlobal("first", func(str string) string {
-	// 	if str == "" {
-	// 		return ""
-	// 	}
-	// 	ret := strings.Split(str, ":")
-	// 	return ret[0]
-	// })
+	views.AddGlobal("first", func(str string) string {
+		if str == "" {
+			return ""
+		}
+		ret := strings.Split(str, ":")
+		return ret[0]
+	})
 
-	// views.AddGlobal("last", func(str string) string {
-	// 	if str == "" {
-	// 		return ""
-	// 	}
-	// 	ret := strings.Split(str, ":")
-	// 	return ret[1]
-	// })
+	views.AddGlobal("typescriptType", func(str string) string {
+		if str == "" {
+			return ""
+		}
+		ret := strings.Split(str, ":")
+		return ret[0]
+	})
+
+	views.AddGlobal("last", func(str string) string {
+		if str == "" {
+			return ""
+		}
+		ret := strings.Split(str, ":")
+		return ret[1]
+	})
 
 	views.AddGlobal("querytype", func(str string) string {
 		tokens := Split(str)
@@ -475,32 +471,42 @@ func process(packageName string, tableName string, prefix string, items []Column
 		return tokens[0]
 	})
 
-	// views.AddGlobal("adjustPackage", func(str string) string {
-	// 	if strings.Index(str, ".") > 0 {
-	// 		return "models." + str
-	// 	} else {
-	// 		return str
-	// 	}
-	// })
+	views.AddGlobal("adjustPackage", func(str string) string {
+		if strings.Index(str, ".") > 0 {
+			return "models." + str
+		} else {
+			return str
+		}
+	})
 
-	// views.AddGlobal("isNeedImport", func(str string) bool {
-	// 	if strings.Index(str, ".") > 0 {
-	// 		return true
-	// 	} else {
-	// 		return false
-	// 	}
-	// })
+	views.AddGlobal("isNeedImport", func(str string) bool {
+		if strings.Index(str, ".") > 0 {
+			return true
+		} else {
+			return false
+		}
+	})
 
-	// views.AddGlobal("joinColumn", func(str string, cols []config.GpaJoin) bool {
-	// 	for _, v := range cols {
-	// 		if getName(strings.ToLower(str)) == v.Name {
-	// 			return false
-	// 		}
-	// 	}
+	views.AddGlobal("getPrefix", func(str string, prefix string) string {
+		strs := strings.Split(str, "_")
 
-	// 	return true
+		if len(strs) >= 2 {
+			return str
+		} else {
+			return prefix + "_" + str
+		}
+	})
 
-	// })
+	views.AddGlobal("joinColumn", func(str string, cols []config.GpaJoin) bool {
+		for _, v := range cols {
+			if getName(strings.ToLower(str)) == v.Name {
+				return false
+			}
+		}
+
+		return true
+
+	})
 
 	views.AddGlobal("compareColumn", func(str string, cols []config.GpaCompare) string {
 		for _, v := range cols {
@@ -513,68 +519,91 @@ func process(packageName string, tableName string, prefix string, items []Column
 
 	})
 
-	// views.AddGlobal("apiurl", func(str string) string {
-	// 	funcName := strings.ToLower(str)
-	// 	url := ""
-	// 	if len(funcName) > 5 && funcName[:5] == "getby" {
-	// 		url = fmt.Sprintf("/get/%v", funcName[5:])
-	// 	} else if len(funcName) > 7 && funcName[:7] == "countby" {
-	// 		url = fmt.Sprintf("/count/%v", funcName[7:])
-	// 	} else if len(funcName) > 6 && funcName[:6] == "findby" {
-	// 		url = fmt.Sprintf("/find/%v", funcName[6:])
-	// 	} else if len(funcName) > 6 && funcName[:6] == "update" {
-	// 		strs := strings.Split(str[6:], "By")
-	// 		url = fmt.Sprintf("/%v/%v", strings.ToLower(strs[0]), strings.ToLower(strs[1]))
-	// 	} else if len(funcName) > 8 && funcName[:8] == "deleteby" {
-	// 		url = fmt.Sprintf("/%v", funcName[8:])
-	// 	} else {
-	// 		url = fmt.Sprintf("/%v", funcName)
-	// 	}
+	views.AddGlobal("javascriptfunction", func(str string) string {
+		return strings.ToLower(str[0:1]) + str[1:]
+	})
 
-	// 	return url
-	// })
+	views.AddGlobal("javascriptapiurl", func(str string) string {
+		return strings.ReplaceAll(strings.ToLower(str), "delete", "")
+	})
 
-	// views.AddGlobal("columns", func(str string) []Column {
-	// 	query := "select column_name as column_name, data_type as data_type from information_schema.columns where table_schema = '" + packageName + "' and table_name = '" + strings.ToLower(str) + "_tb'"
-	// 	rows, err := db.Query(query)
+	views.AddGlobal("apiurl", func(str string) string {
+		funcName := strings.ToLower(str)
+		url := ""
+		if len(funcName) > 5 && funcName[:5] == "getby" {
+			url = fmt.Sprintf("/get/%v", funcName[5:])
+		} else if len(funcName) > 7 && funcName[:7] == "countby" {
+			url = fmt.Sprintf("/count/%v", funcName[7:])
+		} else if len(funcName) > 6 && funcName[:6] == "findby" {
+			url = fmt.Sprintf("/find/%v", funcName[6:])
+		} else if len(funcName) > 6 && funcName[:6] == "update" {
+			strs := strings.Split(str[6:], "By")
+			url = fmt.Sprintf("/%v/%v", strings.ToLower(strs[0]), strings.ToLower(strs[1]))
+		} else if len(funcName) > 8 && funcName[:8] == "deleteby" {
+			url = fmt.Sprintf("/%v", funcName[8:])
+		} else {
+			url = fmt.Sprintf("/%v", funcName)
+		}
 
-	// 	if err != nil {
-	// 		log.Println(err)
-	// 	}
+		return url
+	})
 
-	// 	columns := make([]Column, 0)
-	// 	for rows.Next() {
-	// 		var name string
-	// 		var typeid string
+	views.AddGlobal("columns", func(str string) []Column {
+		query := "select column_name as column_name, data_type as data_type from information_schema.columns where table_schema = '" + packageName + "' and table_name = '" + strings.ToLower(str) + "_tb'"
+		rows, err := db.Query(query)
 
-	// 		err := rows.Scan(&name, &typeid)
-	// 		if err != nil {
-	// 			log.Println(err)
-	// 		}
+		if err != nil {
+			log.Println(err)
+		}
 
-	// 		prefix := getPrefix(name)
-	// 		column := Column{Name: strings.Title(getName(name)), Column: name, Type: getType(getTableName(str), getName(name), typeid, gpa, cnf), Prefix: prefix}
-	// 		columns = append(columns, column)
-	// 	}
+		columns := make([]Column, 0)
+		for rows.Next() {
+			var name string
+			var typeid string
 
-	// 	return columns
-	// })
+			err := rows.Scan(&name, &typeid)
+			if err != nil {
+				log.Println(err)
+			}
+
+			prefix := getPrefix(name)
+			column := Column{Name: strings.Title(getName(name)), Column: name, Type: getType(getTableName(str), getName(name), typeid, gpa, cnf), Prefix: prefix}
+			columns = append(columns, column)
+		}
+
+		return columns
+	})
 	
 	v := make(jet.VarMap)
 	v.Set("version", version)
 	v.Set("packageName", packageName)
+	v.Set("type", getTableType(tableName))
+	v.Set("adminLevel", cnf.AdminLevel)
 	v.Set("name", strings.Title(getTableName(tableName)))
 	v.Set("tableName", tableName)
 	v.Set("prefix", prefix)
+
+	if gpa != nil {
+		for i, v := range items {
+			for _, v2 := range gpa.Primary {
+				if v.Name == strings.Title(v2) {
+					items[i].Primary = true
+				}
+			}
+		}
+	}
+
 	v.Set("items", items)
 	v.Set("auth", auth)
 	if gpa == nil {
 		v.Set("consts", make([]string, 0))
 		v.Set("methods", make([]string, 0))
+		v.Set("primarys", []string{"id"})
 		v.Set("funcs", make([]string, 0))
 		v.Set("joins", make([]config.GpaJoin, 0))
 		v.Set("compares", make([]config.GpaCompare, 0))
 		v.Set("sessions", make([]config.SessionPair, 0))
+		v.Set("search", false)
 		v.Set("imports", make([]string, 0))
 	} else {
 		for i := range gpa.Join {
@@ -582,8 +611,13 @@ func process(packageName string, tableName string, prefix string, items []Column
 		}
 		v.Set("consts", gpa.Map)
 		v.Set("methods", gpa.Method)
+		if len(gpa.Primary) == 0 {
+			gpa.Primary = append(gpa.Primary, "id")
+		}
+		v.Set("primarys", gpa.Primary)
 		v.Set("joins", gpa.Join)
 		v.Set("compares", gpa.Compare)
+		v.Set("search", gpa.Search)
 		v.Set("sessions", gpa.Session)
 
 		funcs := make([]Func, 0)
@@ -675,6 +709,25 @@ func process(packageName string, tableName string, prefix string, items []Column
 		v.Set("imports", unique(funcs))
 	}
 
+	// os.Mkdir("./models", 0755)
+	// if cnf.Language == "" || cnf.Language == "go" || cnf.Language == "golang" {
+	// 	CopyFile(filepath.Join(path, "mysql/cache.go"), "./models/cache.go")
+
+	// 	var b bytes.Buffer
+	// 	modelFilename := "mysql/db.go"
+	// 	t, err := views.GetTemplate(modelFilename)
+	// 	if err == nil {
+	// 		if err = t.Execute(&b, v, nil); err != nil {
+	// 			log.Println(err)
+	// 			// error when executing template
+	// 		}
+
+	// 		if err == nil {
+	// 			WriteFile("./models/db.go", b.String())
+	// 		}
+	// 	}
+	// }
+
 	var b bytes.Buffer
 	modelFilename := "go/model.jet"
 	if cnf.Language == "dart" || cnf.Language == "flutter" {
@@ -694,7 +747,6 @@ func process(packageName string, tableName string, prefix string, items []Column
 
 
 	if cnf.Language == "go" {
-		log.Println(cnf.GoModelFilePath)
 		modelFile := cnf.GoModelFilePath+"/models/"+getTableName(tableName)+".go"
 		log.Printf("=== PROCESSING GO MODEL FILE ===")
 		log.Printf("Table name: %s", tableName)
@@ -707,13 +759,6 @@ func process(packageName string, tableName string, prefix string, items []Column
 			log.Printf("SUCCESS: Model file written successfully: %s", modelFile)
 		}
 	}
-
-	v.Set("packageName", packageName)
-	v.Set("tableName", tableName)
-	v.Set("name", strings.Title(getTableName(tableName)))
-	v.Set("partName", getTableName((tableName)))
-	v.Set("consts", make([]string, 0))
-	v.Set("funcs", make([]string, 0))
 
 	var templateBuffers []bytes.Buffer
 
