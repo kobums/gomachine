@@ -821,39 +821,41 @@ func process(packageName string, tableName string, prefix string, items []Column
 		v2.Set("version", version)
 		v2.Set("name", strings.Title(getTableName(tableName)))
 		v2.Set("auth", auth)
+		v2.Set("items", items)
 		if gpa == nil {
 			v2.Set("consts", make([]string, 0))
 			v2.Set("methods", make([]string, 0))
 			v2.Set("funcs", make([]string, 0))
 		} else {
 			v2.Set("consts", gpa.Map)
+		}
 
-			var b2 bytes.Buffer
-			t, err = views.GetTemplate("go/const.jet")
-			if err == nil {
-				if err = t.Execute(&b2, v2, nil); err != nil {
-					log.Printf("CRITICAL ERROR: Const template execution failed: %v", err)
-				}
-			} else {
-				log.Printf("CRITICAL ERROR: Failed to load const template: %v", err)
+		// Generate const file for all tables
+		var b3 bytes.Buffer
+		t, err = views.GetTemplate("go/const.jet")
+		if err == nil {
+			if err = t.Execute(&b3, v2, nil); err != nil {
+				log.Printf("CRITICAL ERROR: Const template execution failed: %v", err)
 			}
+		} else {
+			log.Printf("CRITICAL ERROR: Failed to load const template: %v", err)
+		}
 
-			constDir := "./models/"+getTableName(tableName)
-			log.Printf("Creating const directory: %s", constDir)
-			if err := os.MkdirAll(constDir, 0755); err != nil {
-				log.Printf("Failed to create const directory %s: %v", constDir, err)
-			}
-			
-			constFile := constDir+"/"+getTableName(tableName)+".go"
-			log.Printf("=== PROCESSING GO CONST FILE ===")
-			log.Printf("Const file path: %s", constFile)
-			log.Printf("Template content length: %d", b2.Len())
-			
-			if err := WriteFile(constFile, b2.String()); err != nil {
-				log.Printf("CRITICAL ERROR: Failed to write const file %s: %v", constFile, err)
-			} else {
-				log.Printf("SUCCESS: Const file written successfully: %s", constFile)
-			}
+		constDir := cnf.GoModelFilePath+"/models/"+getTableName(tableName)
+		log.Printf("Creating const directory: %s", constDir)
+		if err := os.MkdirAll(constDir, 0755); err != nil {
+			log.Printf("Failed to create const directory %s: %v", constDir, err)
+		}
+		
+		constFile := constDir+"/"+getTableName(tableName)+".go"
+		log.Printf("=== PROCESSING GO CONST FILE ===")
+		log.Printf("Const file path: %s", constFile)
+		log.Printf("Template content length: %d", b3.Len())
+		
+		if err := WriteFile(constFile, b3.String()); err != nil {
+			log.Printf("CRITICAL ERROR: Failed to write const file %s: %v", constFile, err)
+		} else {
+			log.Printf("SUCCESS: Const file written successfully: %s", constFile)
 		}
 	}
 }

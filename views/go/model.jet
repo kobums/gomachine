@@ -2,9 +2,7 @@ package models
 
 import (
     "{{packageName}}/global/config"
-    {{if len(consts) > 0}}
     "{{packageName}}/models/{{name|lower}}"
-    {{end}}
     "database/sql"
     "errors"
     "fmt"

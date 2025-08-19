@@ -211,7 +211,7 @@ func (c *{{name}}Controller) Count() {
 	c.Set("total", total)
 }
 
-func (c *{{name}}Controller) Insert(item *models.{{name}}) {
+func (c *{{name}}Controller) Insert(item *models.{{name}}{{if name == "User"}}Update{{end}}) {
     {{if auth == "jwt" && len(sessions) > 0 && name != "User"}}
     if c.Session == nil {
         c.Set("code", "error")
@@ -242,7 +242,7 @@ func (c *{{name}}Controller) Insert(item *models.{{name}}) {
     item.Id = id
 }
 
-func (c *{{name}}Controller) Insertbatch(item *[]models.{{name}}) {  
+func (c *{{name}}Controller) Insertbatch(item *[]models.{{name}}{{if name == "User"}}Update{{end}}) {  
     if item == nil || len(*item) == 0 {
         return
     }
@@ -280,7 +280,7 @@ func (c *{{name}}Controller) Insertbatch(item *[]models.{{name}}) {
     }
 }
 
-func (c *{{name}}Controller) Update(item *models.{{name}}) {
+func (c *{{name}}Controller) Update(item *models.{{name}}{{if name == "User"}}Update{{end}}) {
     {{if auth == "jwt" && len(sessions) > 0}}
     if c.Session == nil {
         c.Set("code", "error")

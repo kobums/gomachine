@@ -1,11 +1,24 @@
 package {{name|lower}}
 
+type Column int
+
+const (
+    _ Column = iota
+    {{range items}}
+    Column{{.Name|title}}{{end}}
+)
+
+type Params struct {
+    Column Column
+    Value interface{}
+}
+
 {{range ic, c := consts}}
 type {{c.Name|title}} int
 
 const (
     _ {{c.Name|title}}  = iota
-{{range c.Data}}{{if . != ""}}    {{if version == "1.1"}}{{c.Name|title}}{{end}}{{.|first|title}}{{end}}
+{{range c.Data}}{{if . != ""}}    {{c.Name|title}}{{.|first|title}}{{end}}
 {{end}})
 
 var {{c.Name|title}}s = []string{ {{range i, v := c.Data}}{{if i > 0}}, {{end}}"{{v|last}}"{{end}} }
@@ -19,5 +32,25 @@ func Get{{.Name|title}}(value {{.Name|title}}) string {
     }
      
     return {{.Name|title}}s[i]
+}
+
+func Find{{.Name|title}}(value string) {{.Name|title}} {
+    for i := 1; i < len({{.Name|title}}s); i++ {
+        if {{.Name|title}}s[i] == value {
+            return {{.Name|title}}(i)
+        }
+    }
+     
+    return 0
+}
+
+func Convert{{.Name|title}}(value []int) []{{.Name|title}} {
+     items := make([]{{.Name|title}}, 0)
+
+     for item := range value {
+         items = append(items, {{.Name|title}}(item))
+     }
+     
+     return items
 }
 {{end}}
