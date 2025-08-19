@@ -740,7 +740,9 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
             orderby = "{{prefix}}_id desc"
         } else {
             if !strings.Contains(orderby, "_") {                   
-                orderby = "{{prefix}}_" + orderby
+                if strings.ToUpper(orderby) != "RAND()" {
+                    orderby = "{{prefix}}_" + orderby
+                }
             }
             
         }
@@ -764,7 +766,9 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
             orderby = "{{prefix}}_id"
         } else {
             if !strings.Contains(orderby, "_") {
-                orderby = "{{prefix}}_" + orderby
+                if strings.ToUpper(orderby) != "RAND()" {
+                    orderby = "{{prefix}}_" + orderby
+                }
             }
         }
         query.WriteString(" order by ")
@@ -777,7 +781,7 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
        if p.Log {
           log.Error().Str("error", err.Error()).Msg("SQL")
        }
-        var items []{{name}}
+        items := make([]{{name}}, 0)
         return items
     }
 
@@ -788,6 +792,8 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
 
 {{range funcs}}
 {{if querytype(.Name) == "Get"}}func (p *{{name}}Manager) {{.Name}}({{range .Wheres}}{{.Column|lower}} {{.Type}}, {{end}}args ...interface{}) *{{name}} {
+    rets := make([]interface{}, 0)
+    rets = append(rets, args...)
     {{range .Wheres}}if {{.Column|lower}}{{if .Type == "int" || .Type == "int64"}} != 0 {{else if .Type == "string"}} != "" {{else}} != 0 {{end}}{
         args = append(args, Where{Column:"{{.Column|lower}}", Value:{{.Column|lower}}, Compare:"{{.Compare}}"})        
     }
@@ -833,6 +839,12 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
 
     query := "update {{tableName}} set {{range i, v := .Wheres}}{{if v.Compare == "column"}}{{if i > 0}}, {{end}}{{prefix}}_{{v.Column|lower}} = ?{{end}}{{end}} where 1=1{{range i, v := .Wheres}}{{if v.Compare == "where"}} and {{prefix}}_{{v.Column|lower}} = ?{{end}}{{end}}"
 	_, err := p.Exec(query{{range .Wheres}}, {{.Column|lower}}{{end}})
+
+    if err != nil {
+       if p.Log {
+          log.Error().Str("error", err.Error()).Msg("SQL")
+       }
+    }
 
     return err    
 }{{end}}
