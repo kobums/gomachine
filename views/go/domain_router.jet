@@ -1,0 +1,29 @@
+package routers
+
+import (
+	"strconv"
+{{if needsLog}}
+	"{{packageName}}/global/log"
+{{end}}
+{{if controllerType == "api"}}
+	"{{packageName}}/controllers/api"
+{{else}}
+	"{{packageName}}/controllers/rest"
+{{end}}
+	"{{packageName}}/models"
+	"github.com/gofiber/fiber/v2"
+)
+
+// Setup{{domainName|title}}Routes sets up routes for {{domainName}} domain
+func Setup{{domainName|title}}Routes(group fiber.Router) {
+{{range routes}}
+	group.{{.Method}}("{{.URL}}", func(c *fiber.Ctx) error {
+{{.ParamCode|raw}}
+		var controller {{.ControllerName}}
+		controller.Init(c)
+		controller.{{.FuncName}}({{.ParamStr}})
+		controller.Close()
+		return c.JSON(controller.Result)
+	})
+{{end}}
+}

@@ -1,0 +1,237 @@
+package api
+
+import (
+	"{{packageName}}/controllers"
+	"{{packageName}}/models"
+{{range imports}}
+	"{{packageName}}/models/{{.|lower}}"
+{{end}}
+	"errors"
+	"strings"
+)
+
+type {{name}}Controller struct {
+	controllers.Controller
+}
+
+func (c *{{name}}Controller) Index(page int, pagesize int) {
+	conn := c.NewConnection()
+
+	manager := models.New{{name}}Manager(conn)
+
+	var args []interface{}
+
+{{range items}}{{if .Name != "Id"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}	_startdate := c.Get("startdate")
+	_enddate := c.Get("enddate")
+	_longtime := c.Geti("longtime")
+	if _longtime == 1 {
+		args = append(args, models.Where{Column: "{{.Name|lower}}", Value: _enddate, Compare: "<="})
+	} else {
+		if _startdate != "" && _enddate != "" {
+			var v [2]string
+			v[0] = _startdate
+			v[1] = _enddate
+			args = append(args, models.Where{Column: "{{.Name|lower}}", Value: v, Compare: "between"})
+		} else if _startdate != "" {
+			args = append(args, models.Where{Column: "{{.Name|lower}}", Value: _startdate, Compare: ">="})
+		} else if _enddate != "" {
+			args = append(args, models.Where{Column: "{{.Name|lower}}", Value: _enddate, Compare: "<="})
+		}
+	}
+{{else if .Type == "string"}}	_{{.Name|lower}} := c.Get{{if .Name == "Name" || .Name == "Title" || .Name == "Content"}}Search{{end}}("{{.Name|lower}}")
+	if _{{.Name|lower}} != "" {
+		args = append(args, models.Where{Column: "{{.Name|lower}}", Value: _{{.Name|lower}}, Compare: "{{compareColumn(.Name, compares)}}"})
+	}
+{{else if .Type == "int"}}	_{{.Name|lower}} := c.Geti("{{.Name|lower}}")
+	if _{{.Name|lower}} != 0 {
+		args = append(args, models.Where{Column: "{{.Name|lower}}", Value: _{{.Name|lower}}, Compare: "{{compareColumn(.Name, compares)}}"})
+	}
+{{else if .Type == "int64"}}	_{{.Name|lower}} := c.Geti64("{{.Name|lower}}")
+	if _{{.Name|lower}} != 0 {
+		args = append(args, models.Where{Column: "{{.Name|lower}}", Value: _{{.Name|lower}}, Compare: "{{compareColumn(.Name, compares)}}"})
+	}
+{{else if .Type == "float64" || .Type == "Double"}}	_{{.Name|lower}} := c.Getf("{{.Name|lower}}")
+	if _{{.Name|lower}} != 0.0 {
+		args = append(args, models.Where{Column: "{{.Name|lower}}", Value: _{{.Name|lower}}, Compare: "{{compareColumn(.Name, compares)}}"})
+	}
+{{else if .Type == "bool"}}	_{{.Name|lower}} := c.Geti("{{.Name|lower}}")
+	if _{{.Name|lower}} != 0 {
+		args = append(args, models.Where{Column: "{{.Name|lower}}", Value: _{{.Name|lower}}, Compare: "{{compareColumn(.Name, compares)}}"})
+	}
+{{end}}{{end}}{{end}}
+
+	if page != 0 && pagesize != 0 {
+		args = append(args, models.Paging(page, pagesize))
+	}
+
+	orderby := c.Get("orderby")
+	if orderby == "" {
+		if page != 0 && pagesize != 0 {
+			orderby = "id desc"
+			args = append(args, models.Ordering(orderby))
+		}
+	} else {
+		orderbys := strings.Split(orderby, ",")
+
+		str := ""
+		for i, v := range orderbys {
+			if i == 0 {
+				str += v
+			} else {
+				if strings.Contains(v, "_") {
+					str += ", " + strings.Trim(v, " ")
+				} else {
+					str += ", {{prefix}}_" + strings.Trim(v, " ")
+				}
+			}
+		}
+
+		args = append(args, models.Ordering(str))
+	}
+
+	items := manager.Find(args)
+	c.Set("items", items)
+
+	if page == 1 {
+		total := manager.Count(args)
+		c.Set("total", total)
+	}
+}
+
+func (c *{{name}}Controller) Count() {
+	conn := c.NewConnection()
+
+	manager := models.New{{name}}Manager(conn)
+
+	var args []interface{}
+
+{{range items}}{{if .Name != "Id"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}	_startdate := c.Get("startdate")
+	_enddate := c.Get("enddate")
+	if _startdate != "" && _enddate != "" {
+		var v [2]string
+		v[0] = _startdate
+		v[1] = _enddate
+		args = append(args, models.Where{Column: "{{.Name|lower}}", Value: v, Compare: "between"})
+	} else if _startdate != "" {
+		args = append(args, models.Where{Column: "{{.Name|lower}}", Value: _startdate, Compare: ">="})
+	} else if _enddate != "" {
+		args = append(args, models.Where{Column: "{{.Name|lower}}", Value: _enddate, Compare: "<="})
+	}
+{{else if .Type == "string"}}	_{{.Name|lower}} := c.Get("{{.Name|lower}}")
+	if _{{.Name|lower}} != "" {
+		args = append(args, models.Where{Column: "{{.Name|lower}}", Value: _{{.Name|lower}}, Compare: "{{if .Name == "Name" || .Name == "Title" || .Name == "Content"}}{{compareColumn(.Name, compares)}}{{else}}like{{end}}"})
+	}
+{{else if .Type == "int"}}	_{{.Name|lower}} := c.Geti("{{.Name|lower}}")
+	if _{{.Name|lower}} != 0 {
+		args = append(args, models.Where{Column: "{{.Name|lower}}", Value: _{{.Name|lower}}, Compare: "{{compareColumn(.Name, compares)}}"})
+	}
+{{else if .Type == "int64"}}	_{{.Name|lower}} := c.Geti64("{{.Name|lower}}")
+	if _{{.Name|lower}} != 0 {
+		args = append(args, models.Where{Column: "{{.Name|lower}}", Value: _{{.Name|lower}}, Compare: "{{compareColumn(.Name, compares)}}"})
+	}
+{{else if .Type == "float64" || .Type == "Double"}}	_{{.Name|lower}} := c.Getf("{{.Name|lower}}")
+	if _{{.Name|lower}} != 0.0 {
+		args = append(args, models.Where{Column: "{{.Name|lower}}", Value: _{{.Name|lower}}, Compare: "{{compareColumn(.Name, compares)}}"})
+	}
+{{else if .Type == "bool"}}	_{{.Name|lower}} := c.Geti("{{.Name|lower}}")
+	if _{{.Name|lower}} != 0 {
+		args = append(args, models.Where{Column: "{{.Name|lower}}", Value: _{{.Name|lower}}, Compare: "{{compareColumn(.Name, compares)}}"})
+	}
+{{end}}{{end}}{{end}}
+
+	total := manager.Count(args)
+	c.Set("total", total)
+}
+
+// @POST()
+func (c *{{name}}Controller) Insert(item *models.{{name}}Update) {
+	conn := c.NewConnection()
+
+	manager := models.New{{name}}Manager(conn)
+
+	err := manager.Insert(item)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+
+	id := manager.GetIdentity()
+	c.Result["id"] = id
+	item.Id = id
+}
+
+// @POST()
+func (c *{{name}}Controller) Insertbatch(items *[]models.{{name}}Update) {
+	conn := c.NewConnection()
+	manager := models.New{{name}}Manager(conn)
+
+	for _, v := range *items {
+		err := manager.Insert(&v)
+		if err != nil {
+			c.Error(err)
+			return
+		}
+	}
+}
+
+// @DELETE()
+func (c *{{name}}Controller) Delete(item *models.{{name}}) {
+	conn := c.NewConnection()
+
+	manager := models.New{{name}}Manager(conn)
+
+	old := manager.Get(item.Id)
+
+	if old == nil {
+		c.Error(errors.New("not found"))
+		return
+	}
+
+	err := manager.Delete(item.Id)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+}
+
+// @PUT()
+func (c *{{name}}Controller) Update(item *models.{{name}}Update) {
+	conn := c.NewConnection()
+
+	manager := models.New{{name}}Manager(conn)
+	old := manager.Get(item.Id)
+	if old == nil {
+		c.Error(errors.New("not found"))
+		return
+	}
+
+	err := manager.Update(item)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+}
+
+{{range funcs}}
+{{if querytype(.Name) == "Update"}}// @PUT(){{end}}{{if querytype(.Name) == "Delete"}}// @DELETE(){{end}}
+func (c *{{name}}Controller) {{.Name}}({{range i, v := .Wheres}}{{if i > 0}}, {{end}}{{v.Column|lower}} {{v.Type}}{{end}}) {{if querytype(.Name) == "Get"}}*models.{{name}} {{else if querytype(.Name) == "Find"}}[]models.{{name}} {{else if querytype(.Name) == "Count"}}int {{end}}{
+	conn := c.NewConnection()
+
+	manager := models.New{{name}}Manager(conn)
+	{{if querytype(.Name) == "Get" || querytype(.Name) == "Find" || querytype(.Name) == "Count"}}
+	item := manager.{{.Name}}({{range i, v := .Wheres}}{{if i > 0}}, {{end}}{{v.Column|lower}}{{end}})
+	{{if querytype(.Name) == "Get"}}
+	c.Set("item", item)
+	{{end}}
+	{{if querytype(.Name) == "Find"}}
+	c.Set("items", item)
+	{{end}}
+	{{if querytype(.Name) == "Count"}}
+	c.Set("count", item)
+	{{end}}
+	return item
+	{{else}}
+	manager.{{.Name}}({{range i, v := .Wheres}}{{if i > 0}}, {{end}}{{v.Column|lower}}{{end}})
+	{{end}}
+}
+{{end}}
