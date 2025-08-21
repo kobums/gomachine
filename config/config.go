@@ -79,6 +79,33 @@ func Init(dir string) ModelConfig {
 	return modelConfig
 }
 
+func GetGoModelFilePath(dir string) string {
+	log.Println("config dir", path.Join(dir, "config/model.json"))
+	file, err := os.Open(path.Join(dir, "config/model.json"))
+	if err != nil {
+		log.Println("Error opening model.json:", err)
+		return ""
+	}
+	defer file.Close()
+	
+	data, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Println("Error reading model.json:", err)
+		return ""
+	}
+
+	var config struct {
+		GoModelFilePath string `json:"goModelFilePath"`
+	}
+	
+	if err := json.Unmarshal(data, &config); err != nil {
+		log.Println("Error parsing model.json:", err)
+		return ""
+	}
+
+	return config.GoModelFilePath
+}
+
 func GetPubspec() string {
 	file, _ := os.Open("pubspec.yml")
 	defer file.Close()

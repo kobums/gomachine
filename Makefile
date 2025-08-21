@@ -9,8 +9,9 @@ router: router_fiber.go
 request: request.go
 	go build -o bin/request request.go
 
-model: model.go
-	go build -o bin/model model.go
+# Build model generator using Go modules
+model: main.go util/utils.go go/main.go go/router.go dart/main.go
+	go build -o bin/model .
 
 doc: doc.go
 	go build -o bin/doc doc.go
@@ -18,8 +19,13 @@ doc: doc.go
 watch: watch.go
 	go build -o bin/watch watch.go
 
-run: model.go
-	go run model.go
+# Run model generator from source files
+run: main.go util/utils.go go/main.go go/router.go dart/main.go
+	go run .
+
+# Build Linux binary for model generator
+model-linux: main.go util/utils.go go/main.go go/router.go dart/main.go
+	env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags '-s' -o bin/model.linux .
 
 install: model
 	rm -rf ~/bin/buildtool*
@@ -30,12 +36,13 @@ install: model
 	cp bin/model ~/bin/buildtool-model
 	# cp bin/doc ~/bin/buildtool-doc
 	# cp bin/watch ~/bin/buildtool-watch
-	# env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags '-s' -o bin/router.linux router.go
-	# env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags '-s' -o bin/request.linux request.go
-	# env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags '-s' -o bin/model.linux model.go
-	# cp bin/router.linux ~/bin/buildtool-router.linux
-	# cp bin/request.linux ~/bin/buildtool-request.linux
-	# cp bin/model.linux ~/bin/buildtool-model.linux
+	cp -rf views/* ~/bin/buildtool/
+
+# Install with Linux binary
+install-linux: model-linux
+	rm -rf ~/bin/buildtool*
+	mkdir -p ~/bin/buildtool
+	cp bin/model.linux ~/bin/buildtool-model.linux
 	cp -rf views/* ~/bin/buildtool/
 
 test:
@@ -44,3 +51,15 @@ test:
 
 clean:
 	rm -f ~/bin/*
+
+# Development helpers
+fmt:
+	go fmt ./...
+
+vet:
+	go vet ./...
+
+# Build all binaries
+build-all: model router request doc watch
+
+.PHONY: all model router request doc watch run install install-linux test clean fmt vet build-all model-linux

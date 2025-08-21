@@ -1,0 +1,9 @@
+{
+  "database": "gym",
+  "user": "gym",
+  "server": "140.82.12.99",
+  "password": "gymdb",
+  "language": "go",
+  "goModelFilePath": "../gym/back/",
+  "dartModelFilePath": "../../gym/gym/lib/model/"
+}
