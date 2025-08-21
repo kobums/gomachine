@@ -1242,6 +1242,17 @@ func generateRouteForFunction(controllerName, controllerType, funcName string) R
 			ParamStr:       "item_",
 			NeedsBodyParser: true,
 		}
+	} else if funcName == "Insertbatch" {
+		return Route{
+			Method:         "Post",
+			URL:            "/" + strings.ToLower(controllerName) + "/batch",
+			ParamCode:      generateParamCode(controllerName, "Insertbatch"),
+			ControllerName: controllerClass,
+			ControllerBase: controllerBase,
+			FuncName:       funcName,
+			ParamStr:       "items_",
+			NeedsBodyParser: true,
+		}
 	} else if funcName == "Update" {
 		return Route{
 			Method:         "Put",
@@ -1262,6 +1273,17 @@ func generateRouteForFunction(controllerName, controllerType, funcName string) R
 			ControllerBase: controllerBase,
 			FuncName:       funcName,
 			ParamStr:       "item_",
+			NeedsBodyParser: true,
+		}
+	} else if funcName == "Deletebatch" {
+		return Route{
+			Method:         "Delete",
+			URL:            "/" + strings.ToLower(controllerName) + "/batch",
+			ParamCode:      generateParamCode(controllerName, "Deletebatch"),
+			ControllerName: controllerClass,
+			ControllerBase: controllerBase,
+			FuncName:       funcName,
+			ParamStr:       "items_",
 			NeedsBodyParser: true,
 		}
 	} else if funcName == "Get" || funcName == "Read" {
@@ -1497,6 +1519,9 @@ func convertRestToApiRoute(route Route) Route {
 func generateParamCode(controllerName, method string) string {
 	if method == "Post" || method == "Put" || method == "Delete" {
 		return fmt.Sprintf("\t\t\titem_ := &models.%s{}\n\t\t\terr := c.BodyParser(item_)\n\t\t\tif err != nil {\n\t\t\t    log.Error().Msg(err.Error())\n\t\t\t}", strings.Title(controllerName))
+	}
+	if method == "Insertbatch" || method == "Deletebatch" {
+		return fmt.Sprintf("\t\t\titems_ := &[]models.%s{}\n\t\t\terr := c.BodyParser(items_)\n\t\t\tif err != nil {\n\t\t\t    log.Error().Msg(err.Error())\n\t\t\t}", strings.Title(controllerName))
 	}
 	if method == "Get" {
 		return "\t\t\tid_, _ := strconv.ParseInt(c.Params(\"id\"), 10, 64)"
