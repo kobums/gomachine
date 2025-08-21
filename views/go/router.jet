@@ -1,30 +1,17 @@
 package router
 
 import (
-# {{if jsonFlag}}
-#    "encoding/json"
-# {{end}}
-# {{if urlImport}}
-#    "net/url"
-# {{end}}
   "strconv"
   "strings"
-# {{if auth == "jwt"}}
-#   "net/http"
-# {{end}}
 {{if apis}}
 	"{{packageName}}/controllers/api"
 {{end}}
 	"{{packageName}}/controllers/rest"
-  # "{{packageName}}/models"
 	"{{packageName}}/router/routers"
 {{range imports}}
 {{if . != "int64" && . != "[]int64" && . != "[]int" && . != "models" && . != "gocql" && . != "[]models" && . != "*[]models"}}
     "{{packageName}}/models/{{.}}"
 {{end}}
-{{end}}
-{{if cassandra}}
-	"github.com/gocql/gocql"
 {{end}}
 	"github.com/gofiber/fiber/v2"
 )

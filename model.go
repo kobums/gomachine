@@ -1235,7 +1235,7 @@ func generateRouteForFunction(controllerName, controllerType, funcName string) R
 		return Route{
 			Method:         "Post",
 			URL:            "/" + strings.ToLower(controllerName),
-			ParamCode:      generateParamCode(controllerName, "Post"),
+			ParamCode:      generateParamCode(controllerName, "Post", controllerType),
 			ControllerName: controllerClass,
 			ControllerBase: controllerBase,
 			FuncName:       funcName,
@@ -1243,21 +1243,25 @@ func generateRouteForFunction(controllerName, controllerType, funcName string) R
 			NeedsBodyParser: true,
 		}
 	} else if funcName == "Insertbatch" {
+		paramStr := "item_"
+		if strings.ToLower(controllerName) == "user" {
+			paramStr = "items_"  // User uses items_ (same as others)
+		}
 		return Route{
 			Method:         "Post",
 			URL:            "/" + strings.ToLower(controllerName) + "/batch",
-			ParamCode:      generateParamCode(controllerName, "Insertbatch"),
+			ParamCode:      generateParamCode(controllerName, "Insertbatch", controllerType),
 			ControllerName: controllerClass,
 			ControllerBase: controllerBase,
 			FuncName:       funcName,
-			ParamStr:       "items_",
+			ParamStr:       paramStr,
 			NeedsBodyParser: true,
 		}
 	} else if funcName == "Update" {
 		return Route{
 			Method:         "Put",
 			URL:            "/" + strings.ToLower(controllerName),
-			ParamCode:      generateParamCode(controllerName, "Put"),
+			ParamCode:      generateParamCode(controllerName, "Put", controllerType),
 			ControllerName: controllerClass,
 			ControllerBase: controllerBase,
 			FuncName:       funcName,
@@ -1268,7 +1272,7 @@ func generateRouteForFunction(controllerName, controllerType, funcName string) R
 		return Route{
 			Method:         "Delete",
 			URL:            "/" + strings.ToLower(controllerName),
-			ParamCode:      generateParamCode(controllerName, "Delete"),
+			ParamCode:      generateParamCode(controllerName, "Delete", controllerType),
 			ControllerName: controllerClass,
 			ControllerBase: controllerBase,
 			FuncName:       funcName,
@@ -1279,18 +1283,18 @@ func generateRouteForFunction(controllerName, controllerType, funcName string) R
 		return Route{
 			Method:         "Delete",
 			URL:            "/" + strings.ToLower(controllerName) + "/batch",
-			ParamCode:      generateParamCode(controllerName, "Deletebatch"),
+			ParamCode:      generateParamCode(controllerName, "Deletebatch", controllerType),
 			ControllerName: controllerClass,
 			ControllerBase: controllerBase,
 			FuncName:       funcName,
-			ParamStr:       "items_",
+			ParamStr:       "item_",
 			NeedsBodyParser: true,
 		}
 	} else if funcName == "Get" || funcName == "Read" {
 		return Route{
 			Method:         "Get",
 			URL:            "/" + strings.ToLower(controllerName) + "/:id",
-			ParamCode:      generateParamCode(controllerName, "Get"),
+			ParamCode:      generateParamCode(controllerName, "Get", controllerType),
 			ControllerName: controllerClass,
 			ControllerBase: controllerBase,
 			FuncName:       funcName,
@@ -1300,7 +1304,7 @@ func generateRouteForFunction(controllerName, controllerType, funcName string) R
 		return Route{
 			Method:         "Get",
 			URL:            "/" + strings.ToLower(controllerName),
-			ParamCode:      generateParamCode(controllerName, "Index"),
+			ParamCode:      generateParamCode(controllerName, "Index", controllerType),
 			ControllerName: controllerClass,
 			ControllerBase: controllerBase,
 			FuncName:       funcName,
@@ -1311,7 +1315,7 @@ func generateRouteForFunction(controllerName, controllerType, funcName string) R
 		return Route{
 			Method:         "Get",
 			URL:            "/" + strings.ToLower(controllerName) + "/get/" + param + "/:" + param,
-			ParamCode:      generateParamCode(param, "Get"),
+			ParamCode:      generateParamCode(param, "Get", controllerType),
 			ControllerName: controllerClass,
 			ControllerBase: controllerBase,
 			FuncName:       funcName,
@@ -1322,7 +1326,7 @@ func generateRouteForFunction(controllerName, controllerType, funcName string) R
 		return Route{
 			Method:         "Get",
 			URL:            "/" + strings.ToLower(controllerName) + "/find/" + param + "/:" + param,
-			ParamCode:      generateParamCode(param, "Get"),
+			ParamCode:      generateParamCode(param, "Get", controllerType),
 			ControllerName: controllerClass,
 			ControllerBase: controllerBase,
 			FuncName:       funcName,
@@ -1420,7 +1424,7 @@ func generateRoutesFromFunctions(controllerName, controllerType string, function
 			route = Route{
 				Method:         "Post",
 				URL:            "/" + strings.ToLower(controllerName),
-				ParamCode:      generateParamCode(controllerName, "Post"),
+				ParamCode:      generateParamCode(controllerName, "Post", controllerType),
 				ControllerName: controllerClass,
 				ControllerBase: controllerBase,
 				FuncName:       funcName,
@@ -1431,7 +1435,7 @@ func generateRoutesFromFunctions(controllerName, controllerType string, function
 			route = Route{
 				Method:         "Put",
 				URL:            "/" + strings.ToLower(controllerName),
-				ParamCode:      generateParamCode(controllerName, "Put"),
+				ParamCode:      generateParamCode(controllerName, "Put", controllerType),
 				ControllerName: controllerClass,
 				ControllerBase: controllerBase,
 				FuncName:       funcName,
@@ -1442,7 +1446,7 @@ func generateRoutesFromFunctions(controllerName, controllerType string, function
 			route = Route{
 				Method:         "Delete",
 				URL:            "/" + strings.ToLower(controllerName),
-				ParamCode:      generateParamCode(controllerName, "Delete"),
+				ParamCode:      generateParamCode(controllerName, "Delete", controllerType),
 				ControllerName: controllerClass,
 				ControllerBase: controllerBase,
 				FuncName:       funcName,
@@ -1453,7 +1457,7 @@ func generateRoutesFromFunctions(controllerName, controllerType string, function
 			route = Route{
 				Method:         "Get",
 				URL:            "/" + strings.ToLower(controllerName) + "/:id",
-				ParamCode:      generateParamCode(controllerName, "Get"),
+				ParamCode:      generateParamCode(controllerName, "Get", controllerType),
 				ControllerName: controllerClass,
 				ControllerBase: controllerBase,
 				FuncName:       funcName,
@@ -1463,7 +1467,7 @@ func generateRoutesFromFunctions(controllerName, controllerType string, function
 			route = Route{
 				Method:         "Get",
 				URL:            "/" + strings.ToLower(controllerName),
-				ParamCode:      generateParamCode(controllerName, "Index"),
+				ParamCode:      generateParamCode(controllerName, "Index", controllerType),
 				ControllerName: controllerClass,
 				ControllerBase: controllerBase,
 				FuncName:       funcName,
@@ -1474,7 +1478,7 @@ func generateRoutesFromFunctions(controllerName, controllerType string, function
 			route = Route{
 				Method:         "Get",
 				URL:            "/" + strings.ToLower(controllerName) + "/get/" + param + "/:" + param,
-				ParamCode:      generateParamCode(param, "Get"),
+				ParamCode:      generateParamCode(param, "Get", controllerType),
 				ControllerName: controllerClass,
 				ControllerBase: controllerBase,
 				FuncName:       funcName,
@@ -1485,7 +1489,7 @@ func generateRoutesFromFunctions(controllerName, controllerType string, function
 			route = Route{
 				Method:         "Get",
 				URL:            "/" + strings.ToLower(controllerName) + "/find/" + param + "/:" + param,
-				ParamCode:      generateParamCode(param, "Get"),
+				ParamCode:      generateParamCode(param, "Get", controllerType),
 				ControllerName: controllerClass,
 				ControllerBase: controllerBase,
 				FuncName:       funcName,
@@ -1516,12 +1520,31 @@ func convertRestToApiRoute(route Route) Route {
 	return route
 }
 
-func generateParamCode(controllerName, method string) string {
+func generateParamCode(controllerName, method, controllerType string) string {
+	// Special handling for User controller
+	if strings.ToLower(controllerName) == "user" {
+		if controllerType == "api" {
+			// api.UserController uses UserUpdate model
+			if method == "Post" || method == "Put" || method == "Delete" {
+				return "\t\t\titem_ := &models.UserUpdate{}\n\t\t\terr := c.BodyParser(item_)\n\t\t\tif err != nil {\n\t\t\t    log.Error().Msg(err.Error())\n\t\t\t}"
+			}
+			if method == "Insertbatch" {
+				return "\t\t\tvar results map[string]interface{}\n\t\t\tjsonData := c.Body()\n\t\t\tjsonErr := json.Unmarshal(jsonData, &results)\n\t\t\tif jsonErr != nil {\n\t\t\t    log.Error().Msg(jsonErr.Error())\n\t\t\t}\n\t\t\tvar items_ *[]models.UserUpdate\n\t\t\titems__ref := &items_\n\t\t\terr := c.BodyParser(items__ref)\n\t\t\tif err != nil {\n\t\t\t    log.Error().Msg(err.Error())\n\t\t\t}"
+			}
+		} else if controllerType == "rest" {
+			// rest.UserController uses User model
+			if method == "Deletebatch" {
+				return "\t\t\titem_ := &[]models.User{}\n\t\t\terr := c.BodyParser(item_)\n\t\t\tif err != nil {\n\t\t\t    log.Error().Msg(err.Error())\n\t\t\t}"
+			}
+		}
+	}
+	
+	// General controller handling
 	if method == "Post" || method == "Put" || method == "Delete" {
 		return fmt.Sprintf("\t\t\titem_ := &models.%s{}\n\t\t\terr := c.BodyParser(item_)\n\t\t\tif err != nil {\n\t\t\t    log.Error().Msg(err.Error())\n\t\t\t}", strings.Title(controllerName))
 	}
 	if method == "Insertbatch" || method == "Deletebatch" {
-		return fmt.Sprintf("\t\t\titems_ := &[]models.%s{}\n\t\t\terr := c.BodyParser(items_)\n\t\t\tif err != nil {\n\t\t\t    log.Error().Msg(err.Error())\n\t\t\t}", strings.Title(controllerName))
+		return fmt.Sprintf("\t\t\titem_ := &[]models.%s{}\n\t\t\terr := c.BodyParser(item_)\n\t\t\tif err != nil {\n\t\t\t    log.Error().Msg(err.Error())\n\t\t\t}", strings.Title(controllerName))
 	}
 	if method == "Get" {
 		return "\t\t\tid_, _ := strconv.ParseInt(c.Params(\"id\"), 10, 64)"
