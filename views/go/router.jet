@@ -6,7 +6,6 @@ import (
 {{if apis}}
 	"{{packageName}}/controllers/api"
 {{end}}
-	"{{packageName}}/controllers/rest"
 	"{{packageName}}/router/routers"
 {{range imports}}
 {{if . != "int64" && . != "[]int64" && . != "[]int" && . != "models" && . != "gocql" && . != "[]models" && . != "*[]models"}}

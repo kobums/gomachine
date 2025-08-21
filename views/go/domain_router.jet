@@ -1,6 +1,9 @@
 package routers
 
 import (
+{{if domainName == "user"}}
+	"encoding/json"
+{{end}}
 	"strconv"
 {{if needsLog}}
 	"{{packageName}}/global/log"
@@ -9,6 +12,9 @@ import (
 	"{{packageName}}/controllers/api"
 {{else}}
 	"{{packageName}}/controllers/rest"
+{{end}}
+{{if domainName == "user"}}
+	"{{packageName}}/models/user"
 {{end}}
 	"{{packageName}}/models"
 	"github.com/gofiber/fiber/v2"
