@@ -54,6 +54,7 @@ type ModelConfig struct {
 	Language  string `json:"language"`
 	GoModelFilePath string `json:"goModelFilePath"`
 	DartModelFilePath string `json:"dartModelFilePath"`
+	KotlinModelFilePath string `json:"kotlinModelFilePath"`
 	Gpa       []Gpa  `json:"table"`
 }
 

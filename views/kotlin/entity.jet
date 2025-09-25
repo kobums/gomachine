@@ -1,0 +1,22 @@
+package com.gowoobro.gymspring.entity
+
+import jakarta.persistence.*
+{{if .HasDateTime}}import java.time.LocalDateTime{{end}}
+{{if .HasDecimal}}import java.math.BigDecimal{{end}}
+
+@Entity
+@Table(name = "{{.TableName}}")
+data class {{.ModelName}}(
+{{range .Columns}}{{if .IsPrimaryKey}}    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+{{end}}    @Column(name = "{{.DBName}}")
+    val {{.Name|lower}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
+{{end}})
+
+data class {{.ModelName}}CreateRequest(
+{{range .Columns}}{{if not .IsPrimaryKey}}    val {{.Name|lower}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
+{{end}}{{end}})
+
+data class {{.ModelName}}UpdateRequest(
+{{range .Columns}}    val {{.Name|lower}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
+{{end}})

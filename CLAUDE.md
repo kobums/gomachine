@@ -21,7 +21,7 @@ The main executable takes these arguments:
 buildtool-model <target_path> [language] [package_name]
 ```
 - `target_path`: Root directory of the target project
-- `language`: "go" (default) or "dart"/"flutter"
+- `language`: "go" (default), "dart"/"flutter", or "kotlin"/"spring"
 - `package_name`: Optional package name (auto-detected from go.mod if not provided)
 
 ## Architecture
@@ -36,11 +36,13 @@ buildtool-model <target_path> [language] [package_name]
    - Uses CloudyKit Jet templating engine
    - `views/go/`: Go templates (model.jet, rest.jet, const.jet)
    - `views/dart/`: Dart/Flutter templates (model.jet, params.jet, provider.jet, repository.jet)
+   - `views/kotlin/`: Kotlin/Spring Boot templates (entity.jet, repository.jet, service.jet, controller.jet)
 
-3. **Code Generation** (`model.go`)
+3. **Code Generation** (`main.go`, `go/`, `dart/`, `kotlin/`)
    - Connects to MySQL database via `information_schema`
    - Generates models, controllers, and data access code
    - Supports custom method generation via configuration
+   - Multi-language support: Go, Dart/Flutter, Kotlin/Spring Boot
 
 ### Database Integration
 
@@ -60,6 +62,13 @@ buildtool-model <target_path> [language] [package_name]
 - Generates to `../gym/gym/lib/{type}/{tablename}_{type}.dart`
 - Types: model, params, provider, repository
 
+**For Kotlin/Spring Boot:**
+- Entities: `../gym/gymspring/src/main/kotlin/com/gowoobro/gymspring/entity/{ModelName}.kt`
+- Repositories: `../gym/gymspring/src/main/kotlin/com/gowoobro/gymspring/repository/{ModelName}Repository.kt`
+- Services: `../gym/gymspring/src/main/kotlin/com/gowoobro/gymspring/service/{ModelName}Service.kt`
+- Controllers: `../gym/gymspring/src/main/kotlin/com/gowoobro/gymspring/controller/{ModelName}Controller.kt`
+- Creates complete REST API with JPA entities, repositories, services, and controllers
+
 ### Configuration Schema
 
 The `config.json` supports:
@@ -72,11 +81,13 @@ The `config.json` supports:
 ### Type Mapping
 
 The tool automatically maps MySQL types to target language types:
-- `int` → `int` (Go) / `int` (Dart)
-- `varchar`/`text` → `string` (Go) / `String` (Dart)
-- `datetime`/`date` → `string` (Go) / `String` (Dart)
-- `tinyint` → `bool` (Go) / `bool` (Dart)
-- `double`/`float` → `Double` (Go) / `double` (Dart)
+- `int` → `int` (Go) / `int` (Dart) / `Int` (Kotlin)
+- `bigint` → `int64` (Go) / `int` (Dart) / `Long` (Kotlin)
+- `varchar`/`text` → `string` (Go) / `String` (Dart) / `String` (Kotlin)
+- `datetime`/`date` → `string` (Go) / `String` (Dart) / `LocalDateTime` (Kotlin)
+- `tinyint` → `bool` (Go) / `bool` (Dart) / `Int` (Kotlin)
+- `double`/`float` → `Double` (Go) / `double` (Dart) / `BigDecimal/Double` (Kotlin)
+- `decimal` → `int` (Go) / `int` (Dart) / `BigDecimal` (Kotlin)
 
 ## Dependencies
 

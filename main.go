@@ -6,6 +6,7 @@ import (
 	"gomachine/config"
 	dartcodegen "gomachine/dart"
 	gocodegen "gomachine/go"
+	kotlincodegen "gomachine/kotlin"
 	"gomachine/util"
 	"os"
 	"path/filepath"
@@ -140,6 +141,23 @@ func readColumn(packageName string, tableName string, db *sql.DB, gpa *config.Gp
 			prefix = util.GetPrefix(name)
 		}
 		dartcodegen.ProcessDart(packageName, tableName, prefix, dartColumns, db, gpa, version, auth, cnf)
+	} else if cnf.Language == "kotlin" || cnf.Language == "spring" {
+		kotlinColumns := make([]util.Column, 0)
+		for rows.Next() {
+			var name string
+			var typeid string
+
+			err := rows.Scan(&name, &typeid)
+			if err != nil {
+				log.Println(err)
+			}
+
+			column := util.Column{Name: strings.Title(util.GetName(name)), Column: name, Type: util.GetType(util.GetTableName(tableName), util.GetName(name), typeid, gpa, cnf), OriginalType: typeid}
+			kotlinColumns = append(kotlinColumns, column)
+
+			prefix = util.GetPrefix(name)
+		}
+		kotlincodegen.ProcessKotlin(packageName, tableName, prefix, kotlinColumns, db, gpa, version, auth, cnf)
 	} else {
 		goColumns := make([]util.Column, 0)
 		for rows.Next() {

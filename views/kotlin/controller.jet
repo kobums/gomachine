@@ -1,0 +1,85 @@
+package com.gowoobro.gymspring.controller
+
+import com.gowoobro.gymspring.entity.{{.ModelName}}
+import com.gowoobro.gymspring.entity.{{.ModelName}}CreateRequest
+import com.gowoobro.gymspring.entity.{{.ModelName}}UpdateRequest
+import com.gowoobro.gymspring.service.{{.ModelName}}Service
+import org.springframework.data.domain.Page
+import org.springframework.http.ResponseEntity
+import org.springframework.web.bind.annotation.*
+
+@RestController
+@RequestMapping("/api/{{.ModelName|lower}}")
+class {{.ModelName}}Controller(private val {{.ModelName|lower}}Service: {{.ModelName}}Service) {
+
+    @GetMapping
+    fun get{{.ModelName}}s(
+        @RequestParam(defaultValue = "0") page: Int,
+        @RequestParam(defaultValue = "10") pageSize: Int
+    ): ResponseEntity<Page<{{.ModelName}}>> {
+        val result = {{.ModelName|lower}}Service.findAll(page, pageSize)
+        return ResponseEntity.ok(result)
+    }
+
+    @GetMapping("/{id}")
+    fun get{{.ModelName}}(@PathVariable id: Long): ResponseEntity<{{.ModelName}}> {
+        val result = {{.ModelName|lower}}Service.findById(id)
+        return if (result != null) {
+            ResponseEntity.ok(result)
+        } else {
+            ResponseEntity.notFound().build()
+        }
+    }
+
+    @GetMapping("/count")
+    fun getCount(): ResponseEntity<Map<String, Long>> {
+        val count = {{.ModelName|lower}}Service.count()
+        return ResponseEntity.ok(mapOf("count" to count))
+    }
+
+    @PostMapping
+    fun create{{.ModelName}}(@RequestBody request: {{.ModelName}}CreateRequest): ResponseEntity<{{.ModelName}}> {
+        return try {
+            val result = {{.ModelName|lower}}Service.create(request)
+            ResponseEntity.ok(result)
+        } catch (e: Exception) {
+            ResponseEntity.badRequest().build()
+        }
+    }
+
+    @PostMapping("/batch")
+    fun create{{.ModelName}}s(@RequestBody requests: List<{{.ModelName}}CreateRequest>): ResponseEntity<List<{{.ModelName}}>> {
+        return try {
+            val result = {{.ModelName|lower}}Service.createBatch(requests)
+            ResponseEntity.ok(result)
+        } catch (e: Exception) {
+            ResponseEntity.badRequest().build()
+        }
+    }
+
+    @PutMapping("/{id}")
+    fun update{{.ModelName}}(
+        @PathVariable id: Long,
+        @RequestBody request: {{.ModelName}}UpdateRequest
+    ): ResponseEntity<{{.ModelName}}> {
+        val updatedRequest = request.copy(id = id)
+        val result = {{.ModelName|lower}}Service.update(updatedRequest)
+        return if (result != null) {
+            ResponseEntity.ok(result)
+        } else {
+            ResponseEntity.notFound().build()
+        }
+    }
+
+    @DeleteMapping("/{id}")
+    fun delete{{.ModelName}}(@PathVariable id: Long): ResponseEntity<Map<String, Boolean>> {
+        val success = {{.ModelName|lower}}Service.deleteById(id)
+        return ResponseEntity.ok(mapOf("success" to success))
+    }
+
+    @DeleteMapping("/batch")
+    fun delete{{.ModelName}}s(@RequestBody entities: List<{{.ModelName}}>): ResponseEntity<Map<String, Boolean>> {
+        val success = {{.ModelName|lower}}Service.deleteBatch(entities)
+        return ResponseEntity.ok(mapOf("success" to success))
+    }
+}

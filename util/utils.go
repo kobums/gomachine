@@ -156,6 +156,8 @@ func GetType(tableName string, name string, t string, gpa *config.Gpa, cnf confi
 			if item.Name == name {
 				if cnf.Language == "dart" || cnf.Language == "flutter" {
 					return strings.Title(name)
+				} else if cnf.Language == "kotlin" || cnf.Language == "spring" {
+					return strings.Title(name)
 				} else {
 					return tableName + "." + strings.Title(name)
 				}
@@ -186,6 +188,32 @@ func GetType(tableName string, name string, t string, gpa *config.Gpa, cnf confi
 			return "int"
 		} else if t == "tinyint" {
 			return "bool"
+		}
+	} else if cnf.Language == "kotlin" || cnf.Language == "spring" {
+		if t == "int" {
+			return "Int"
+		} else if t == "bigint" {
+			return "Long"
+		} else if t == "varchar" {
+			return "String"
+		} else if t == "text" {
+			return "String"
+		} else if t == "longtext" {
+			return "String"
+		} else if t == "datetime" {
+			return "LocalDateTime"
+		} else if t == "date" {
+			return "LocalDateTime"
+		} else if t == "time" {
+			return "String"
+		} else if t == "double" {
+			return "BigDecimal"
+		} else if t == "float" {
+			return "Double"
+		} else if t == "decimal" {
+			return "BigDecimal"
+		} else if t == "tinyint" {
+			return "Int"
 		}
 	} else {
 		if t == "int" {
