@@ -1,0 +1,24 @@
+package com.gowoobro.gymspring.enums.{{.ModelName|lower}}
+
+{{range ic, c := .Enums}}
+enum class {{c.Name|title}} {
+{{range i, v := c.Data}}{{if v != ""}}    {{v|first|upper}},  // {{v|last}}
+{{end}}{{end}};
+
+    companion object {
+        fun getDisplayName(value: {{c.Name|title}}): String {
+            return when (value) {
+{{range i, v := c.Data}}{{if v != ""}}                {{v|first|upper}} -> "{{v|last}}"
+{{end}}{{end}}            }
+        }
+
+        fun fromString(value: String): {{c.Name|title}}? {
+            return when (value) {
+{{range i, v := c.Data}}{{if v != ""}}                "{{v|last}}" -> {{v|first|upper}}
+{{end}}{{end}}                else -> null
+            }
+        }
+    }
+}
+
+{{end}}

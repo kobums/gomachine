@@ -16,11 +16,19 @@ type KotlinColumn struct {
 	Name         string
 	DBName       string
 	KotlinType   string
-	ModelName   string
+	ModelName    string
 	IsNullable   bool
 	IsPrimaryKey bool
 	HasDefault   bool
 	DefaultValue string
+	IsEnum       bool
+	EnumType     string
+}
+
+type KotlinEnumData struct {
+	Name        string
+	Data        []string
+	EnumPackage string
 }
 
 type KotlinTemplateData struct {
@@ -30,6 +38,7 @@ type KotlinTemplateData struct {
 	Columns     []KotlinColumn
 	HasDateTime bool
 	HasDecimal  bool
+	Enums       []KotlinEnumData
 }
 
 func ProcessKotlin(packageName string, tableName string, prefix string, columns []util.Column, db *sql.DB, gpa *config.Gpa, version string, auth string, cnf config.ModelConfig) {
@@ -43,6 +52,14 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 		targetPath = "../gym/gymspring"
 	}
 
+	// Build enum map for easy lookup
+	enumMap := make(map[string][]string)
+	if gpa != nil && gpa.Map != nil {
+		for _, gpaMap := range gpa.Map {
+			enumMap[strings.ToLower(gpaMap.Name)] = gpaMap.Data
+		}
+	}
+
 	kotlinColumns := make([]KotlinColumn, 0)
 	hasDateTime := false
 	hasDecimal := false
@@ -50,13 +67,32 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 	for i, col := range columns {
 		// Check if this is primary key (usually first column with "id" in name)
 		isPrimaryKey := i == 0 && strings.Contains(strings.ToLower(col.Column), "id")
-		
+
 		// Check for nullable and default values based on type and position
 		isNullable := !isPrimaryKey && (col.Type == "LocalDateTime" || strings.Contains(col.Column, "_date"))
 		hasDefault := false
 		defaultValue := ""
 
-		if col.Type == "LocalDateTime" {
+		// Check if this column is an enum type
+		colNameLower := strings.ToLower(col.Name)
+		isEnumType := false
+		enumTypeName := ""
+		if enumData, isEnum := enumMap[colNameLower]; isEnum {
+			isEnumType = true
+			enumTypeName = strings.Title(col.Name)
+			// Find first non-empty value in enum data
+			for _, enumValue := range enumData {
+				if enumValue != "" {
+					parts := strings.Split(enumValue, ":")
+					if len(parts) > 0 && parts[0] != "" {
+						// Use the enum constant name with type prefix (e.g., "Type.NOTICE" from "notice:공지")
+						hasDefault = true
+						defaultValue = enumTypeName + "." + strings.ToUpper(parts[0])
+						break
+					}
+				}
+			}
+		} else if col.Type == "LocalDateTime" {
 			hasDateTime = true
 			if !isPrimaryKey {
 				hasDefault = true
@@ -100,13 +136,30 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 			Name:         col.Name,
 			DBName:       col.Column,
 			KotlinType:   col.Type,
-			ModelName: 		modelName,
+			ModelName:    modelName,
 			IsNullable:   isNullable,
 			IsPrimaryKey: isPrimaryKey,
 			HasDefault:   hasDefault,
 			DefaultValue: defaultValue,
+			IsEnum:       isEnumType,
+			EnumType:     enumTypeName,
 		}
 		kotlinColumns = append(kotlinColumns, kotlinCol)
+	}
+
+	// Get enum data from GPA and convert to KotlinEnumData
+	var enums []KotlinEnumData
+	if gpa != nil && gpa.Map != nil {
+		enumPackage := strings.ToLower(modelName)
+		for _, gpaMap := range gpa.Map {
+			enums = append(enums, KotlinEnumData{
+				Name:        gpaMap.Name,
+				Data:        gpaMap.Data,
+				EnumPackage: enumPackage,
+			})
+		}
+	} else {
+		enums = make([]KotlinEnumData, 0)
 	}
 
 	templateData := KotlinTemplateData{
@@ -116,19 +169,25 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 		Columns:     kotlinColumns,
 		HasDateTime: hasDateTime,
 		HasDecimal:  hasDecimal,
+		Enums:       enums,
 	}
 
 	// Generate entity file
 	generateKotlinEntity(targetPath, templateData)
-	
+
 	// Generate repository file
 	generateKotlinRepository(targetPath, templateData)
-	
+
 	// Generate service file
 	generateKotlinService(targetPath, templateData)
-	
+
 	// Generate controller file
 	generateKotlinController(targetPath, templateData)
+
+	// Generate enums file if there are enums
+	if len(enums) > 0 {
+		generateKotlinEnums(targetPath, templateData)
+	}
 }
 
 func generateKotlinEntity(targetPath string, data KotlinTemplateData) {
@@ -140,14 +199,26 @@ func generateKotlinEntity(targetPath string, data KotlinTemplateData) {
 		return
 	}
 
-	// Load template
-	templatePath := filepath.Join(".", "views", "kotlin", "entity.jet")
+	// Load template from ~/bin/buildtool
+	templateDir := filepath.Join(os.Getenv("HOME"), "bin", "buildtool", "kotlin")
 	views := jet.NewSet(
-		jet.NewOSFileSystemLoader(filepath.Dir(templatePath)),
+		jet.NewOSFileSystemLoader(templateDir),
 		jet.InDevelopmentMode(),
 	)
 
-	template, err := views.GetTemplate(filepath.Base(templatePath))
+	// Add custom functions for the template
+	views.AddGlobal("title", func(str string) string {
+		if str == "" {
+			return ""
+		}
+		return strings.Title(str)
+	})
+
+	views.AddGlobal("lower", func(str string) string {
+		return strings.ToLower(str)
+	})
+
+	template, err := views.GetTemplate("entity.jet")
 	if err != nil {
 		log.Printf("Failed to load template: %v", err)
 		return
@@ -180,14 +251,14 @@ func generateKotlinRepository(targetPath string, data KotlinTemplateData) {
 		return
 	}
 
-	// Load template
-	templatePath := filepath.Join(".", "views", "kotlin", "repository.jet")
+	// Load template from ~/bin/buildtool
+	templateDir := filepath.Join(os.Getenv("HOME"), "bin", "buildtool", "kotlin")
 	views := jet.NewSet(
-		jet.NewOSFileSystemLoader(filepath.Dir(templatePath)),
+		jet.NewOSFileSystemLoader(templateDir),
 		jet.InDevelopmentMode(),
 	)
 
-	template, err := views.GetTemplate(filepath.Base(templatePath))
+	template, err := views.GetTemplate("repository.jet")
 	if err != nil {
 		log.Printf("Failed to load repository template: %v", err)
 		return
@@ -220,14 +291,14 @@ func generateKotlinService(targetPath string, data KotlinTemplateData) {
 		return
 	}
 
-	// Load template
-	templatePath := filepath.Join(".", "views", "kotlin", "service.jet")
+	// Load template from ~/bin/buildtool
+	templateDir := filepath.Join(os.Getenv("HOME"), "bin", "buildtool", "kotlin")
 	views := jet.NewSet(
-		jet.NewOSFileSystemLoader(filepath.Dir(templatePath)),
+		jet.NewOSFileSystemLoader(templateDir),
 		jet.InDevelopmentMode(),
 	)
 
-	template, err := views.GetTemplate(filepath.Base(templatePath))
+	template, err := views.GetTemplate("service.jet")
 	if err != nil {
 		log.Printf("Failed to load service template: %v", err)
 		return
@@ -260,14 +331,14 @@ func generateKotlinController(targetPath string, data KotlinTemplateData) {
 		return
 	}
 
-	// Load template
-	templatePath := filepath.Join(".", "views", "kotlin", "controller.jet")
+	// Load template from ~/bin/buildtool
+	templateDir := filepath.Join(os.Getenv("HOME"), "bin", "buildtool", "kotlin")
 	views := jet.NewSet(
-		jet.NewOSFileSystemLoader(filepath.Dir(templatePath)),
+		jet.NewOSFileSystemLoader(templateDir),
 		jet.InDevelopmentMode(),
 	)
 
-	template, err := views.GetTemplate(filepath.Base(templatePath))
+	template, err := views.GetTemplate("controller.jet")
 	if err != nil {
 		log.Printf("Failed to load controller template: %v", err)
 		return
@@ -289,4 +360,91 @@ func generateKotlinController(targetPath string, data KotlinTemplateData) {
 	}
 
 	log.Printf("Generated Kotlin controller: %s", outputPath)
+}
+
+func generateKotlinEnums(targetPath string, data KotlinTemplateData) {
+	// Create enums directory
+	enumsDir := filepath.Join(targetPath, "src", "main", "kotlin", "com", "gowoobro", "gymspring", "enums", strings.ToLower(data.ModelName))
+	err := os.MkdirAll(enumsDir, 0755)
+	if err != nil {
+		log.Printf("Failed to create enums directory: %v", err)
+		return
+	}
+
+	// Load template from ~/bin/buildtool with custom functions
+	templateDir := filepath.Join(os.Getenv("HOME"), "bin", "buildtool", "kotlin")
+	views := jet.NewSet(
+		jet.NewOSFileSystemLoader(templateDir),
+		jet.InDevelopmentMode(),
+	)
+
+	// Add custom functions for the template
+	views.AddGlobal("first", func(str string) string {
+		if str == "" {
+			return ""
+		}
+		parts := strings.Split(str, ":")
+		return parts[0]
+	})
+
+	views.AddGlobal("last", func(str string) string {
+		if str == "" {
+			return ""
+		}
+		parts := strings.Split(str, ":")
+		if len(parts) > 1 {
+			return parts[1]
+		}
+		return str
+	})
+
+	views.AddGlobal("title", func(str string) string {
+		if str == "" {
+			return ""
+		}
+		return strings.Title(str)
+	})
+
+	views.AddGlobal("lower", func(str string) string {
+		return strings.ToLower(str)
+	})
+
+	views.AddGlobal("upper", func(str string) string {
+		return strings.ToUpper(str)
+	})
+
+	views.AddGlobal("len", func(arr []string) int {
+		return len(arr)
+	})
+
+	views.AddGlobal("sub", func(a, b int) int {
+		return a - b
+	})
+
+	views.AddGlobal("ne", func(a, b int) bool {
+		return a != b
+	})
+
+	template, err := views.GetTemplate("enums.jet")
+	if err != nil {
+		log.Printf("Failed to load enums template: %v", err)
+		return
+	}
+
+	// Generate file
+	outputPath := filepath.Join(enumsDir, "Enums.kt")
+	file, err := os.Create(outputPath)
+	if err != nil {
+		log.Printf("Failed to create enums file: %v", err)
+		return
+	}
+	defer file.Close()
+
+	err = template.Execute(file, nil, data)
+	if err != nil {
+		log.Printf("Failed to execute enums template: %v", err)
+		return
+	}
+
+	log.Printf("Generated Kotlin enums: %s", outputPath)
 }

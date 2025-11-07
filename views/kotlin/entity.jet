@@ -3,7 +3,8 @@ package com.gowoobro.gymspring.entity
 import jakarta.persistence.*
 {{if .HasDateTime}}import java.time.LocalDateTime{{end}}
 {{if .HasDecimal}}import java.math.BigDecimal{{end}}
-
+{{range .Enums}}import com.gowoobro.gymspring.enums.{{.EnumPackage}}.{{.Name|title}}
+{{end}}
 @Entity
 @Table(name = "{{.TableName}}")
 data class {{.ModelName}}(
