@@ -4,17 +4,17 @@ import com.gowoobro.gymspring.entity.{{.ModelName}}
 import com.gowoobro.gymspring.entity.{{.ModelName}}CreateRequest
 import com.gowoobro.gymspring.entity.{{.ModelName}}UpdateRequest
 import com.gowoobro.gymspring.repository.{{.ModelName}}Repository
-import com.gowoobro.gymspring.entity.Type
-import com.gowoobro.gymspring.entity.Status
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.PageRequest
 import org.springframework.data.domain.Pageable
+{{if .ModelName == "User"}}import org.springframework.security.crypto.password.PasswordEncoder{{- end}}
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import java.time.LocalDateTime
 
 @Service
 @Transactional
-class {{.ModelName}}Service(private val {{.ModelName|lower}}Repository: {{.ModelName}}Repository) {
+class {{.ModelName}}Service(private val {{.ModelName|lower}}Repository: {{.ModelName}}Repository{{if .ModelName == "User"}}, private val passwordEncoder: PasswordEncoder{{end}}) {
 
     fun findAll(page: Int = 0, pageSize: Int = 10): Page<{{.ModelName}}> {
         val pageable: Pageable = PageRequest.of(page, pageSize)
@@ -28,6 +28,12 @@ class {{.ModelName}}Service(private val {{.ModelName|lower}}Repository: {{.Model
     fun count(): Long {
         return {{.ModelName|lower}}Repository.count()
     }
+
+{{range .Columns}}{{if .Name != "id"}}
+    fun findBy{{.Name}}({{.Name|lower}}: String): List<{{.ModelName}}> {
+        return {{.ModelName|lower}}Repository.findBy{{.Name}}({{.Name|lower}})
+    }
+{{end}}{{end}}
 
     fun create(request: {{.ModelName}}CreateRequest): {{.ModelName}} {
         val entity = {{.ModelName}}()

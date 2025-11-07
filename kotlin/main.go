@@ -16,6 +16,7 @@ type KotlinColumn struct {
 	Name         string
 	DBName       string
 	KotlinType   string
+	ModelName   string
 	IsNullable   bool
 	IsPrimaryKey bool
 	HasDefault   bool
@@ -60,7 +61,7 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 			if !isPrimaryKey {
 				hasDefault = true
 				if isNullable {
-					defaultValue = "null"
+					defaultValue = "LocalDateTime.now()"
 				} else {
 					defaultValue = "LocalDateTime.now()"
 				}
@@ -99,6 +100,7 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 			Name:         col.Name,
 			DBName:       col.Column,
 			KotlinType:   col.Type,
+			ModelName: 		modelName,
 			IsNullable:   isNullable,
 			IsPrimaryKey: isPrimaryKey,
 			HasDefault:   hasDefault,

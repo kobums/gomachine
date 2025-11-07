@@ -1,18 +1,19 @@
 package com.gowoobro.gymspring.repository
 
 import com.gowoobro.gymspring.entity.{{.ModelName}}
+import com.gowoobro.gymspring.entity.{{.ModelName}}CreateRequest
+import com.gowoobro.gymspring.entity.{{.ModelName}}UpdateRequest
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.Pageable
 import org.springframework.data.jpa.repository.JpaRepository
+import org.springframework.data.jpa.repository.Query
 import org.springframework.stereotype.Repository
-import com.gowoobro.gymspring.entity.Type
-import com.gowoobro.gymspring.entity.Status
-import com.gowoobro.gymspring.entity.Level
-import com.gowoobro.gymspring.entity.UserRole
-import com.gowoobro.gymspring.entity.Use
 
 @Repository
 interface {{.ModelName}}Repository : JpaRepository<{{.ModelName}}, Long> {
-
     override fun findAll(pageable: Pageable): Page<{{.ModelName}}>
+
+{{- range .Columns }}{{ if .Name != "id"}}{{"\n"}}
+    fun findBy{{.Name}}({{.Name|lower}}: String): List<{{.ModelName}}>
+{{- end}}{{end}}
 }

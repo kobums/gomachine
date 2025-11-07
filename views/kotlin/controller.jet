@@ -31,6 +31,14 @@ class {{.ModelName}}Controller(private val {{.ModelName|lower}}Service: {{.Model
         }
     }
 
+{{range .Columns}}{{if .Name != "id"}}
+    @GetMapping("/search/{{.Name|lower}}")
+    fun get{{.ModelName}}By{{.Name}}(@RequestParam {{.Name|lower}}: String): ResponseEntity<List<{{.ModelName}}>> {
+        val result = {{.ModelName|lower}}Service.findBy{{.Name}}({{.Name|lower}})
+        return ResponseEntity.ok(result)
+    }
+{{end}}{{end}}
+
     @GetMapping("/count")
     fun getCount(): ResponseEntity<Map<String, Long>> {
         val count = {{.ModelName|lower}}Service.count()
