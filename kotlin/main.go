@@ -258,6 +258,18 @@ func generateKotlinRepository(targetPath string, data KotlinTemplateData) {
 		jet.InDevelopmentMode(),
 	)
 
+	// Add custom functions for the template
+	views.AddGlobal("title", func(str string) string {
+		if str == "" {
+			return ""
+		}
+		return strings.Title(str)
+	})
+
+	views.AddGlobal("lower", func(str string) string {
+		return strings.ToLower(str)
+	})
+
 	template, err := views.GetTemplate("repository.jet")
 	if err != nil {
 		log.Printf("Failed to load repository template: %v", err)
@@ -298,6 +310,18 @@ func generateKotlinService(targetPath string, data KotlinTemplateData) {
 		jet.InDevelopmentMode(),
 	)
 
+	// Add custom functions for the template
+	views.AddGlobal("title", func(str string) string {
+		if str == "" {
+			return ""
+		}
+		return strings.Title(str)
+	})
+
+	views.AddGlobal("lower", func(str string) string {
+		return strings.ToLower(str)
+	})
+
 	template, err := views.GetTemplate("service.jet")
 	if err != nil {
 		log.Printf("Failed to load service template: %v", err)
@@ -337,6 +361,18 @@ func generateKotlinController(targetPath string, data KotlinTemplateData) {
 		jet.NewOSFileSystemLoader(templateDir),
 		jet.InDevelopmentMode(),
 	)
+
+	// Add custom functions for the template
+	views.AddGlobal("title", func(str string) string {
+		if str == "" {
+			return ""
+		}
+		return strings.Title(str)
+	})
+
+	views.AddGlobal("lower", func(str string) string {
+		return strings.ToLower(str)
+	})
 
 	template, err := views.GetTemplate("controller.jet")
 	if err != nil {

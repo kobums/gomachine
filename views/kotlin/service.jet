@@ -11,6 +11,8 @@ import org.springframework.data.domain.Pageable
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.time.LocalDateTime
+{{range .Enums}}import com.gowoobro.gymspring.enums.{{.EnumPackage}}.{{.Name|title}}
+{{end}}
 
 @Service
 @Transactional
@@ -29,27 +31,43 @@ class {{.ModelName}}Service(private val {{.ModelName|lower}}Repository: {{.Model
         return {{.ModelName|lower}}Repository.count()
     }
 
-{{range .Columns}}{{if .Name != "id"}}
-    fun findBy{{.Name}}({{.Name|lower}}: String): List<{{.ModelName}}> {
+{{range .Columns}}{{if .Name != "Id"}}
+    fun findBy{{.Name}}({{.Name|lower}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): List<{{.ModelName}}> {
         return {{.ModelName|lower}}Repository.findBy{{.Name}}({{.Name|lower}})
     }
 {{end}}{{end}}
 
     fun create(request: {{.ModelName}}CreateRequest): {{.ModelName}} {
-        val entity = {{.ModelName}}()
+        val entity = {{.ModelName}}(
+{{range .Columns}}{{if not .IsPrimaryKey}}            {{.Name|lower}} = {{if .Name == "Passwd"}}passwordEncoder.encode(request.passwd),{{else}}request.{{.Name|lower}},{{end}}
+{{end}}{{end}}        )
         return {{.ModelName|lower}}Repository.save(entity)
     }
 
     fun createBatch(requests: List<{{.ModelName}}CreateRequest>): List<{{.ModelName}}> {
         val entities = requests.map { request ->
-            {{.ModelName}}()
+            {{.ModelName}}(
+{{range .Columns}}{{if not .IsPrimaryKey}}                {{.Name|lower}} = {{if .Name == "Passwd"}}passwordEncoder.encode(request.passwd),{{else}}request.{{.Name|lower}},{{end}}
+{{end}}{{end}}            )
         }
         return {{.ModelName|lower}}Repository.saveAll(entities)
     }
 
     fun update(request: {{.ModelName}}UpdateRequest): {{.ModelName}}? {
         val existing = {{.ModelName|lower}}Repository.findById(request.id).orElse(null) ?: return null
-        return {{.ModelName|lower}}Repository.save(existing)
+
+        {{if .ModelName == "User"}}
+        val encodedPassword = if (request.passwd != existing.passwd && !request.passwd.startsWith("\$2a\$")) {
+            passwordEncoder.encode(request.passwd)
+        } else {
+            request.passwd
+        }
+        {{end}}
+
+        val updated = existing.copy(
+{{range .Columns}}{{if not .IsPrimaryKey}}            {{.Name|lower}} = {{if .Name == "Passwd"}}passwordEncoder.encode(request.passwd),{{else}}request.{{.Name|lower}},{{end}}
+{{end}}{{end}}        )
+        return {{.ModelName|lower}}Repository.save(updated)
     }
 
     fun delete(entity: {{.ModelName}}): Boolean {
