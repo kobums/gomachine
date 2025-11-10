@@ -7,6 +7,10 @@ import com.gowoobro.gymspring.service.{{.ModelName}}Service
 import org.springframework.data.domain.Page
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
+{{if .HasDateTime}}import java.time.LocalDateTime{{end}}
+{{if .HasDecimal}}import java.math.BigDecimal{{end}}
+{{range .Enums}}import com.gowoobro.gymspring.enums.{{.EnumPackage}}.{{.Name|title}}
+{{end}}
 
 @RestController
 @RequestMapping("/api/{{.ModelName|lower}}")
@@ -31,9 +35,9 @@ class {{.ModelName}}Controller(private val {{.ModelName|lower}}Service: {{.Model
         }
     }
 
-{{range .Columns}}{{if .Name != "id"}}
+{{range .Columns}}{{if .Name != "Id"}}
     @GetMapping("/search/{{.Name|lower}}")
-    fun get{{.ModelName}}By{{.Name}}(@RequestParam {{.Name|lower}}: String): ResponseEntity<List<{{.ModelName}}>> {
+    fun get{{.ModelName}}By{{.Name}}(@RequestParam {{.Name|lower}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): ResponseEntity<List<{{.ModelName}}>> {
         val result = {{.ModelName|lower}}Service.findBy{{.Name}}({{.Name|lower}})
         return ResponseEntity.ok(result)
     }

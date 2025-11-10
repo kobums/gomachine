@@ -8,14 +8,14 @@ import org.springframework.data.domain.Pageable
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.data.jpa.repository.Query
 import org.springframework.stereotype.Repository
+{{if .HasDateTime}}import java.time.LocalDateTime{{end}}
+{{if .HasDecimal}}import java.math.BigDecimal{{end}}
 {{range .Enums}}import com.gowoobro.gymspring.enums.{{.EnumPackage}}.{{.Name|title}}
 {{end}}
 
 @Repository
 interface {{.ModelName}}Repository : JpaRepository<{{.ModelName}}, Long> {
     override fun findAll(pageable: Pageable): Page<{{.ModelName}}>
-
-    fun findById(id: Long): {{.ModelName}}
 
 {{- range .Columns }}{{ if .Name != "Id"}}{{"\n"}}
     fun findBy{{.Name}}({{.Name|lower}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): List<{{.ModelName}}>

@@ -10,7 +10,8 @@ import org.springframework.data.domain.Pageable
 {{if .ModelName == "User"}}import org.springframework.security.crypto.password.PasswordEncoder{{- end}}
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
-import java.time.LocalDateTime
+{{if .HasDateTime}}import java.time.LocalDateTime{{end}}
+{{if .HasDecimal}}import java.math.BigDecimal{{end}}
 {{range .Enums}}import com.gowoobro.gymspring.enums.{{.EnumPackage}}.{{.Name|title}}
 {{end}}
 
