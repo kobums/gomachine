@@ -19,6 +19,7 @@ type GpaJoin struct {
 	Name   string `json:"name"`
 	Column string `json:"column"`
 	Prefix string `json:"prefix"`
+	Alias  string `json:"alias"`
 }
 
 type GpaCompare struct {

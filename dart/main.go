@@ -101,6 +101,13 @@ func ProcessDart(packageName string, tableName string, prefix string, items []ut
 		return true
 	})
 
+	views.AddGlobal("joinVar", func(join config.GpaJoin) string {
+		if join.Alias != "" {
+			return strings.ToLower(join.Alias)
+		}
+		return strings.ToLower(join.Name)
+	})
+
 	views.AddGlobal("compareColumn", func(str string, cols []config.GpaCompare) string {
 		for _, v := range cols {
 			if util.GetName(strings.ToLower(str)) == v.Name {

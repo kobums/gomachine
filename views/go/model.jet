@@ -491,11 +491,11 @@ func (p *{{name}}Manager) ReadRow(rows *sql.Rows) *{{name}} {
     var item {{name}}
     var err error
 
-    {{range joins}}var _{{.Name|lower}} {{.Name|title}}
+    {{range joins}}var _{{joinVar(.)}} {{.Name|title}}
     {{end}}
 
     if rows.Next() {
-        err = rows.Scan({{range i, v := items}}{{if i > 0}}, {{end}}&item.{{v.Name|title}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, &_{{v2.Name|lower}}.{{.Name}}{{end}}{{end}})
+        err = rows.Scan({{range i, v := items}}{{if i > 0}}, {{end}}&item.{{v.Name|title}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, &_{{joinVar(v2)}}.{{.Name}}{{end}}{{end}})
         {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime"}}
         if item.{{v.Name|title}} == "0000-00-00 00:00:00" || item.{{v.Name|title}} == "1000-01-01 00:00:00" || item.{{v.Name|title}} == "9999-01-01 00:00:00" {
             item.{{v.Name|title}} = ""
@@ -518,8 +518,8 @@ func (p *{{name}}Manager) ReadRow(rows *sql.Rows) *{{name}} {
     } else {
 
         item.InitExtra()
-        {{range joins}}_{{.Name|lower}}.InitExtra()
-        item.AddExtra("{{.Name|lower}}",  _{{.Name|lower}})
+        {{range joins}}_{{joinVar(.)}}.InitExtra()
+        item.AddExtra("{{joinVar(.)}}",  _{{joinVar(.)}})
 {{end}}
         return &item
     }
@@ -530,10 +530,10 @@ func (p *{{name}}Manager) ReadRows(rows *sql.Rows) []{{name}} {
 
     for rows.Next() {
         var item {{name}}
-        {{range joins}}var _{{.Name|lower}} {{.Name|title}}
+        {{range joins}}var _{{joinVar(.)}} {{.Name|title}}
         {{end}}
-    
-        err := rows.Scan({{range i, v := items}}{{if i > 0}}, {{end}}&item.{{v.Name|title}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, &_{{v2.Name|lower}}.{{.Name}}{{end}}{{end}})
+
+        err := rows.Scan({{range i, v := items}}{{if i > 0}}, {{end}}&item.{{v.Name|title}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, &_{{joinVar(v2)}}.{{.Name}}{{end}}{{end}})
         if err != nil {
            if p.Log {
              log.Error().Str("error", err.Error()).Msg("SQL")
@@ -550,10 +550,10 @@ func (p *{{name}}Manager) ReadRows(rows *sql.Rows) []{{name}} {
             item.{{v.Name|title}} = strings.ReplaceAll(strings.ReplaceAll(item.{{v.Name|title}}, "T", " "), "Z", "")
         }
 		{{end}}{{end}}
-        
-        item.InitExtra()        
-        {{range joins}}_{{.Name|lower}}.InitExtra()
-        item.AddExtra("{{.Name|lower}}",  _{{.Name|lower}})
+
+        item.InitExtra()
+        {{range joins}}_{{joinVar(.)}}.InitExtra()
+        item.AddExtra("{{joinVar(.)}}",  _{{joinVar(.)}})
 {{end}}
         items = append(items, item)
     }
