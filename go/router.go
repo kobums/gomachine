@@ -491,7 +491,7 @@ func generateParamCode(controllerName, method, controllerType, param string) str
 	}
 	if method == "Get" {
 		// Check for specific parameter types
-		if param == "loginid" || param == "connectid" || param == "email" {
+		if param == "loginid" || param == "connectid" || param == "email" || param == "tel" {
 			return fmt.Sprintf("\t\t\t%s_ := c.Params(\"%s\")", param, param)
 		}
 		if param == "level" {
