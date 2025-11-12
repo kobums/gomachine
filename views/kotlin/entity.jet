@@ -21,3 +21,25 @@ data class {{.ModelName}}CreateRequest(
 data class {{.ModelName}}UpdateRequest(
 {{range .Columns}}    val {{.Name|lower}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
 {{end}})
+
+{{if len(.Enums) > 0}}data class {{.ModelName}}ExtraInfo(
+{{range .Enums}}    val {{.Name|lower}}: String = "",
+{{end}})
+{{end}}
+
+data class {{.ModelName}}Response(
+{{range .Columns}}    val {{.Name|lower}}: {{.KotlinType}}{{if .IsNullable}}?{{end}},
+{{end}}
+{{if len(.Enums) > 0}}    val extra: {{.ModelName}}ExtraInfo
+{{end}}){
+    companion object {
+        fun from({{.ModelName|lower}}: {{.ModelName}}): {{.ModelName}}Response {
+            return {{.ModelName}}Response(
+{{range .Columns}}                {{.Name|lower}} = {{.ModelName|lower}}.{{.Name|lower}},
+{{end}}{{if len(.Enums) > 0}}                extra = {{.ModelName}}ExtraInfo(
+{{range .Enums}}                    {{.Name|lower}} = {{.Name|title}}.getDisplayName({{.EnumPackage|lower}}.{{.Name|lower}}),
+{{end}}                )
+{{end}}            )
+        }
+    }
+}
