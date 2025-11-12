@@ -16,6 +16,7 @@ type KotlinColumn struct {
 	Name         string
 	DBName       string
 	KotlinType   string
+	DBType       string // Original DB type (Int, String, etc.) for Response
 	ModelName    string
 	IsNullable   bool
 	IsPrimaryKey bool
@@ -132,10 +133,19 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 			isNullable = false
 		}
 
+		// Determine DBType for Response
+		dbType := col.Type
+		if isEnumType {
+			dbType = "Int" // Enums are stored as Int (ordinal) in Response
+		} else if col.Type == "LocalDateTime" {
+			dbType = "String" // LocalDateTime is converted to String in Response
+		}
+
 		kotlinCol := KotlinColumn{
 			Name:         col.Name,
 			DBName:       col.Column,
 			KotlinType:   col.Type,
+			DBType:       dbType,
 			ModelName:    modelName,
 			IsNullable:   isNullable,
 			IsPrimaryKey: isPrimaryKey,

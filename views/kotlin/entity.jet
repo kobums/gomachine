@@ -28,14 +28,14 @@ data class {{.ModelName}}UpdateRequest(
 {{end}}
 
 data class {{.ModelName}}Response(
-{{range .Columns}}    val {{.Name|lower}}: {{.KotlinType}}{{if .IsNullable}}?{{end}},
+{{range .Columns}}    val {{.Name|lower}}: {{.DBType}}{{if .IsNullable}}?{{end}},
 {{end}}
 {{if len(.Enums) > 0}}    val extra: {{.ModelName}}ExtraInfo
 {{end}}){
     companion object {
         fun from({{.ModelName|lower}}: {{.ModelName}}): {{.ModelName}}Response {
             return {{.ModelName}}Response(
-{{range .Columns}}                {{.Name|lower}} = {{.ModelName|lower}}.{{.Name|lower}},
+{{range .Columns}}                {{.Name|lower}} = {{if .IsEnum}}{{.ModelName|lower}}.{{.Name|lower}}.ordinal{{else if .KotlinType=="LocalDateTime"}}{{if .IsNullable}}{{.ModelName|lower}}.{{.Name|lower}}?.toString()?.replace("T", " ") ?: ""{{else}}{{.ModelName|lower}}.{{.Name|lower}}.toString().replace("T", " "){{end}}{{else}}{{.ModelName|lower}}.{{.Name|lower}}{{end}},
 {{end}}{{if len(.Enums) > 0}}                extra = {{.ModelName}}ExtraInfo(
 {{range .Enums}}                    {{.Name|lower}} = {{.Name|title}}.getDisplayName({{.EnumPackage|lower}}.{{.Name|lower}}),
 {{end}}                )
