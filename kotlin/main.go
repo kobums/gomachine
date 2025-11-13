@@ -32,14 +32,27 @@ type KotlinEnumData struct {
 	EnumPackage string
 }
 
+type KotlinJoin struct {
+	Name            string
+	Column          string
+	ColumnName      string // camelCase column name for Kotlin
+	Prefix          string
+	Alias           string
+	ModelName       string
+	ParentModelName string // The main model name
+	Columns         []KotlinColumn
+}
+
 type KotlinTemplateData struct {
-	PackageName string
-	TableName   string
-	ModelName   string
-	Columns     []KotlinColumn
-	HasDateTime bool
-	HasDecimal  bool
-	Enums       []KotlinEnumData
+	PackageName     string
+	TableName       string
+	ModelName       string
+	Columns         []KotlinColumn
+	HasDateTime     bool
+	HasDecimal      bool
+	Enums           []KotlinEnumData
+	Joins           []KotlinJoin
+	UniqueJoinNames []string // Unique join model names for imports
 }
 
 func ProcessKotlin(packageName string, tableName string, prefix string, columns []util.Column, db *sql.DB, gpa *config.Gpa, version string, auth string, cnf config.ModelConfig) {
@@ -172,14 +185,97 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 		enums = make([]KotlinEnumData, 0)
 	}
 
+	// Process joins
+	var joins []KotlinJoin
+	if gpa != nil && gpa.Join != nil {
+		for _, join := range gpa.Join {
+			joinTableName := strings.ToLower(join.Name) + "_tb"
+			joinModelName := strings.Title(join.Name)
+
+			// Get columns for joined table
+			query := "select column_name as column_name, data_type as data_type from information_schema.columns where table_schema = '" + packageName + "' and table_name = '" + joinTableName + "'"
+			rows, err := db.Query(query)
+			if err != nil {
+				log.Printf("Failed to query join table columns: %v", err)
+				continue
+			}
+
+			joinColumns := make([]KotlinColumn, 0)
+			for rows.Next() {
+				var colName, colType string
+				err := rows.Scan(&colName, &colType)
+				if err != nil {
+					continue
+				}
+
+				name := strings.Title(util.GetName(colName))
+				kotlinType := util.GetType(joinModelName, name, colType, nil, cnf)
+
+				// Simple processing for joined columns
+				isPrimaryKey := strings.Contains(strings.ToLower(colName), "_id")
+				isNullable := !isPrimaryKey
+
+				dbType := kotlinType
+				if kotlinType == "LocalDateTime" {
+					dbType = "String"
+				}
+
+				joinColumns = append(joinColumns, KotlinColumn{
+					Name:         name,
+					DBName:       colName,
+					KotlinType:   kotlinType,
+					DBType:       dbType,
+					ModelName:    joinModelName,
+					IsNullable:   isNullable,
+					IsPrimaryKey: isPrimaryKey,
+				})
+			}
+			rows.Close()
+
+			alias := join.Alias
+			if alias == "" {
+				alias = join.Name
+			}
+
+			// Convert column name to camelCase for Kotlin (e.g., author_id -> authorId)
+			columnName := strings.Title(util.GetName(join.Column))
+			columnName = strings.ToLower(columnName[0:1]) + columnName[1:] // make first letter lowercase
+
+			joins = append(joins, KotlinJoin{
+				Name:            join.Name,
+				Column:          join.Column,
+				ColumnName:      columnName,
+				Prefix:          join.Prefix,
+				Alias:           alias,
+				ModelName:       joinModelName,
+				ParentModelName: modelName,
+				Columns:         joinColumns,
+			})
+		}
+	} else {
+		joins = make([]KotlinJoin, 0)
+	}
+
+	// Extract unique join model names for imports
+	uniqueJoinNamesMap := make(map[string]bool)
+	var uniqueJoinNames []string
+	for _, join := range joins {
+		if !uniqueJoinNamesMap[join.Name] {
+			uniqueJoinNamesMap[join.Name] = true
+			uniqueJoinNames = append(uniqueJoinNames, join.Name)
+		}
+	}
+
 	templateData := KotlinTemplateData{
-		PackageName: packageName,
-		TableName:   tableName,
-		ModelName:   modelName,
-		Columns:     kotlinColumns,
-		HasDateTime: hasDateTime,
-		HasDecimal:  hasDecimal,
-		Enums:       enums,
+		PackageName:     packageName,
+		TableName:       tableName,
+		ModelName:       modelName,
+		Columns:         kotlinColumns,
+		HasDateTime:     hasDateTime,
+		HasDecimal:      hasDecimal,
+		Enums:           enums,
+		Joins:           joins,
+		UniqueJoinNames: uniqueJoinNames,
 	}
 
 	// Generate entity file

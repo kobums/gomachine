@@ -22,24 +22,32 @@ data class {{.ModelName}}UpdateRequest(
 {{range .Columns}}    val {{.Name|lower}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
 {{end}})
 
-{{if len(.Enums) > 0}}data class {{.ModelName}}ExtraInfo(
+{{if len(.Enums) > 0 || len(.Joins) > 0}}data class {{.ModelName}}ExtraInfo(
 {{range .Enums}}    val {{.Name|lower}}: String = "",
+{{end}}
+{{range .Joins}}    val {{.Alias|lower}}: {{.Name|title}}Response? = null,
 {{end}})
 {{end}}
 
 data class {{.ModelName}}Response(
 {{range .Columns}}    val {{.Name|lower}}: {{.DBType}}{{if .IsNullable}}?{{end}},
 {{end}}
-{{if len(.Enums) > 0}}    val extra: {{.ModelName}}ExtraInfo
-{{end}}){
+    val extra: {{if len(.Enums) > 0 || len(.Joins) > 0}}{{.ModelName}}ExtraInfo{{else}}Map<String, Any?> = emptyMap(){{end}}
+){
     companion object {
-        fun from({{.ModelName|lower}}: {{.ModelName}}): {{.ModelName}}Response {
+        fun from({{.ModelName|lower}}: {{.ModelName}}{{range .Joins}}, {{.Alias|lower}}Response: {{.Name|title}}Response? = null{{end}}): {{.ModelName}}Response {
             return {{.ModelName}}Response(
 {{range .Columns}}                {{.Name|lower}} = {{if .IsEnum}}{{.ModelName|lower}}.{{.Name|lower}}.ordinal{{else if .KotlinType=="LocalDateTime"}}{{if .IsNullable}}{{.ModelName|lower}}.{{.Name|lower}}?.toString()?.replace("T", " ") ?: ""{{else}}{{.ModelName|lower}}.{{.Name|lower}}.toString().replace("T", " "){{end}}{{else}}{{.ModelName|lower}}.{{.Name|lower}}{{end}},
-{{end}}{{if len(.Enums) > 0}}                extra = {{.ModelName}}ExtraInfo(
-{{range .Enums}}                    {{.Name|lower}} = {{.Name|title}}.getDisplayName({{.EnumPackage|lower}}.{{.Name|lower}}),
-{{end}}                )
-{{end}}            )
+{{end}}
+                extra = {{if len(.Enums) > 0 || len(.Joins) > 0}}{{.ModelName}}ExtraInfo(
+                    {{if len(.Enums) > 0}}
+                        {{range .Enums}}{{.Name|lower}} = {{.Name|title}}.getDisplayName({{.EnumPackage|lower}}.{{.Name|lower}}),
+                        {{end}}{{end}}
+                {{range .Joins}}{{if .Columns}}
+                     {{.Alias|lower}} = {{.Alias|lower}}Response,
+                {{end}}{{end}})
+                {{else}} emptyMap(){{end}}
+            )
         }
     }
 }

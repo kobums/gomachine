@@ -5,6 +5,10 @@ import com.gowoobro.gymspring.entity.{{.ModelName}}CreateRequest
 import com.gowoobro.gymspring.entity.{{.ModelName}}UpdateRequest
 import com.gowoobro.gymspring.service.{{.ModelName}}Service
 import com.gowoobro.gymspring.entity.{{.ModelName}}Response
+{{- range .UniqueJoinNames}}
+import com.gowoobro.gymspring.entity.{{.|title}}Response
+import com.gowoobro.gymspring.service.{{.|title}}Service
+{{- end}}
 import org.springframework.data.domain.Page
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
@@ -15,7 +19,17 @@ import org.springframework.web.bind.annotation.*
 
 @RestController
 @RequestMapping("/api/{{.ModelName|lower}}")
-class {{.ModelName}}Controller(private val {{.ModelName|lower}}Service: {{.ModelName}}Service) {
+class {{.ModelName}}Controller(
+    private val {{.ModelName|lower}}Service: {{.ModelName}}Service{{- range .UniqueJoinNames}}, private val {{.|lower}}Service: {{.|title}}Service{{end}}) {
+
+    private fun toResponse({{.ModelName|lower}}: {{.ModelName}}):
+    {{.ModelName}}Response {
+        {{range .Joins}}
+        val {{.Alias|lower}} = {{.Name|lower}}Service.findById({{.ParentModelName|lower}}.{{.ColumnName}})
+        val {{.Alias|lower}}Response = {{.Alias|lower}}?.let{ {{.ModelName}}Response.from(it) }
+        {{end}}
+        return {{.ModelName}}Response.from({{.ModelName|lower}}{{range .Joins}}, {{.Alias|lower}}Response{{end}})
+    }
 
     @GetMapping
     fun get{{.ModelName}}s(
@@ -23,7 +37,7 @@ class {{.ModelName}}Controller(private val {{.ModelName|lower}}Service: {{.Model
         @RequestParam(defaultValue = "10") pageSize: Int
     ): ResponseEntity<Page<{{.ModelName}}Response>> {
         val result = {{.ModelName|lower}}Service.findAll(page, pageSize)
-        val responsePage = result.map { {{.ModelName}}Response.from(it)}
+        val responsePage = result.map { toResponse(it)}
         return ResponseEntity.ok(responsePage)
     }
 
@@ -31,7 +45,7 @@ class {{.ModelName}}Controller(private val {{.ModelName|lower}}Service: {{.Model
     fun get{{.ModelName}}(@PathVariable id: Long): ResponseEntity<{{.ModelName}}Response> {
         val result = {{.ModelName|lower}}Service.findById(id)
         return if (result != null) {
-            ResponseEntity.ok({{.ModelName}}Response.from(result))
+            ResponseEntity.ok(toResponse(result))
         } else {
             ResponseEntity.notFound().build()
         }
@@ -41,7 +55,7 @@ class {{.ModelName}}Controller(private val {{.ModelName|lower}}Service: {{.Model
     @GetMapping("/search/{{.Name|lower}}")
     fun get{{.ModelName}}By{{.Name}}(@RequestParam {{.Name|lower}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): ResponseEntity<List<{{.ModelName}}Response>> {
         val result = {{.ModelName|lower}}Service.findBy{{.Name}}({{.Name|lower}})
-        return ResponseEntity.ok(result.map { {{.ModelName}}Response.from(it) } )
+        return ResponseEntity.ok(result.map { toResponse(it) } )
     }
 {{end}}{{end}}
 
@@ -55,7 +69,7 @@ class {{.ModelName}}Controller(private val {{.ModelName|lower}}Service: {{.Model
     fun create{{.ModelName}}(@RequestBody request: {{.ModelName}}CreateRequest): ResponseEntity<{{.ModelName}}Response> {
         return try {
             val result = {{.ModelName|lower}}Service.create(request)
-            ResponseEntity.ok({{.ModelName}}Response.from(result))
+            ResponseEntity.ok(toResponse(result))
         } catch (e: Exception) {
             ResponseEntity.badRequest().build()
         }
@@ -65,7 +79,7 @@ class {{.ModelName}}Controller(private val {{.ModelName|lower}}Service: {{.Model
     fun create{{.ModelName}}s(@RequestBody requests: List<{{.ModelName}}CreateRequest>): ResponseEntity<List<{{.ModelName}}Response>> {
         return try {
             val result = {{.ModelName|lower}}Service.createBatch(requests)
-            return ResponseEntity.ok(result.map { {{.ModelName}}Response.from(it) } )
+            return ResponseEntity.ok(result.map { toResponse(it) } )
         } catch (e: Exception) {
             ResponseEntity.badRequest().build()
         }
@@ -79,7 +93,7 @@ class {{.ModelName}}Controller(private val {{.ModelName|lower}}Service: {{.Model
         val updatedRequest = request.copy(id = id)
         val result = {{.ModelName|lower}}Service.update(updatedRequest)
         return if (result != null) {
-            ResponseEntity.ok({{.ModelName}}Response.from(result))
+            ResponseEntity.ok(toResponse(result))
         } else {
             ResponseEntity.notFound().build()
         }
