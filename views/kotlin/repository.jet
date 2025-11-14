@@ -5,6 +5,7 @@ import com.gowoobro.gymspring.entity.{{.ModelName}}CreateRequest
 import com.gowoobro.gymspring.entity.{{.ModelName}}UpdateRequest
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.Pageable
+{{if len(.Joins) > 0 }}import org.springframework.data.jpa.repository.EntityGraph{{end}}
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.data.jpa.repository.Query
 import org.springframework.stereotype.Repository
@@ -15,13 +16,13 @@ import org.springframework.stereotype.Repository
 {{allJoins := .Joins}}
 @Repository
 interface {{.ModelName}}Repository : JpaRepository<{{.ModelName}}, Long> {
-    @Query("SELECT m FROM {{.ModelName}} m{{range allJoins}} LEFT JOIN FETCH m.{{.Alias|lower}}{{end}}")
-    override fun findAll(pageable: Pageable): Page<{{.ModelName}}>
+{{if len(allJoins) > 0}}    @EntityGraph(attributePaths = [{{range allJoins}}{{if isFirstJoin(.)}}{{else}}, {{end}}"{{.Alias|lower}}"{{end}}])
+{{end}}    override fun findAll(pageable: Pageable): Page<{{.ModelName}}>
 
-    @Query("SELECT m FROM {{.ModelName}} m{{range allJoins}} LEFT JOIN FETCH m.{{.Alias|lower}}{{end}} WHERE m.id = :id")
-    override fun findById(id: Long): java.util.Optional<{{.ModelName}}>
-{{range .Columns }}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{ if .Name != "Id"}}{{"\n"}}{{if not joinData}}    @Query("SELECT m FROM {{.ModelName}} m{{range allJoins}} LEFT JOIN FETCH m.{{.Alias|lower}}{{end}} WHERE m.{{.Name|lower}} = :{{.Name|lower}}")
-    fun findBy{{.Name}}WithJoin({{.Name|lower}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): List<{{.ModelName}}>
-{{end}}{{if joinData}}    @Query("SELECT m FROM {{.ModelName}} m{{range allJoins}} LEFT JOIN FETCH m.{{.Alias|lower}}{{end}} WHERE m.{{joinData.ColumnName}}Id = :{{joinData.Alias|lower}}")
-    fun findBy{{.Name}}WithJoin({{joinData.Alias|lower}}: Long): List<{{.ModelName}}>
+{{if len(allJoins) > 0}}    @EntityGraph(attributePaths = [{{range allJoins}}{{if isFirstJoin(.)}}{{else}}, {{end}}"{{.Alias|lower}}"{{end}}])
+{{end}}    override fun findById(id: Long): java.util.Optional<{{.ModelName}}>
+{{range .Columns }}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{ if .Name != "Id"}}{{"\n"}}{{if not joinData}}{{if len(allJoins) > 0}}    @EntityGraph(attributePaths = [{{range allJoins}}{{if isFirstJoin(.)}}{{else}}, {{end}}"{{.Alias|lower}}"{{end}}])
+{{end}}    fun findBy{{.Name}}({{.Name|lower}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): List<{{.ModelName}}>
+{{end}}{{if joinData}}{{if len(allJoins) > 0}}    @EntityGraph(attributePaths = [{{range allJoins}}{{if isFirstJoin(.)}}{{else}}, {{end}}"{{.Alias|lower}}"{{end}}])
+{{end}}    fun findBy{{joinData.ColumnName}}Id({{joinData.Alias|lower}}: Long): List<{{.ModelName}}>
 {{end}}{{- end}}{{end}}}

@@ -32,11 +32,15 @@ class {{.ModelName}}Service(private val {{.ModelName|lower}}Repository: {{.Model
         return {{.ModelName|lower}}Repository.count()
     }
 
-{{range .Columns}}{{if .Name != "Id"}}
+{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if .Name != "Id"}}{{if not joinData}}
     fun findBy{{.Name}}({{.Name|lower}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): List<{{.ModelName}}> {
-        return {{.ModelName|lower}}Repository.findBy{{.Name}}WithJoin({{.Name|lower}})
+        return {{.ModelName|lower}}Repository.findBy{{.Name}}({{.Name|lower}})
     }
-{{end}}{{end}}
+{{end}}{{if joinData}}
+    fun findBy{{.Name}}({{joinData.Alias|lower}}: Long): List<{{.ModelName}}> {
+        return {{.ModelName|lower}}Repository.findBy{{joinData.ColumnName}}Id({{joinData.Alias|lower}})
+    }
+{{end}}{{end}}{{end}}
 
     fun create(request: {{.ModelName}}CreateRequest): {{.ModelName}} {
         val entity = {{.ModelName}}(

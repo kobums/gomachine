@@ -41,6 +41,7 @@ type KotlinJoin struct {
 	ModelName       string
 	ParentModelName string // The main model name
 	Columns         []KotlinColumn
+	Index           int    // Index in the joins array
 }
 
 type KotlinTemplateData struct {
@@ -188,7 +189,7 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 	// Process joins
 	var joins []KotlinJoin
 	if gpa != nil && gpa.Join != nil {
-		for _, join := range gpa.Join {
+		for joinIndex, join := range gpa.Join {
 			joinTableName := strings.ToLower(join.Name) + "_tb"
 			joinModelName := strings.Title(join.Name)
 
@@ -259,6 +260,7 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 				ModelName:       joinModelName,
 				ParentModelName: modelName,
 				Columns:         joinColumns,
+				Index:           joinIndex,
 			}
 			joins = append(joins, kotlinJoin)
 		}
@@ -408,6 +410,11 @@ func generateKotlinRepository(targetPath string, data KotlinTemplateData) {
 			}
 		}
 		return nil
+	})
+
+	// Add helper function to check if this is the first join
+	views.AddGlobal("isFirstJoin", func(join KotlinJoin) bool {
+		return join.Index == 0
 	})
 
 	template, err := views.GetTemplate("repository.jet")
