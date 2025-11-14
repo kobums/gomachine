@@ -5,14 +5,22 @@ import jakarta.persistence.*
 {{if .HasDecimal}}import java.math.BigDecimal{{end}}
 {{range .Enums}}import com.gowoobro.gymspring.enums.{{.EnumPackage}}.{{.Name|title}}
 {{end}}
+
+{{- allJoins := .Joins}}
 @Entity
 @Table(name = "{{.TableName}}")
 data class {{.ModelName}}(
 {{range .Columns}}{{if .IsPrimaryKey}}    @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-{{end}}    @Column(name = "{{.DBName}}")
+{{end}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if not joinData}}    @Column(name = "{{.DBName}}")
     val {{.Name|lower}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
-{{end}})
+{{end}}{{if joinData}}
+    @Column(name = "{{joinData.Column}}", insertable = false, updatable = false)
+    val {{joinData.ColumnName}}Id: Long = 0L,
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "{{joinData.Column}}")
+    val {{joinData.Alias|lower}}: {{joinData.Name|title}}? = null,
+{{end}}{{end}})
 
 data class {{.ModelName}}CreateRequest(
 {{range .Columns}}{{if not .IsPrimaryKey}}    val {{.Name|lower}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
@@ -35,17 +43,16 @@ data class {{.ModelName}}Response(
     val extra: {{if len(.Enums) > 0 || len(.Joins) > 0}}{{.ModelName}}ExtraInfo{{else}}Map<String, Any?> = emptyMap(){{end}}
 ){
     companion object {
-        fun from({{.ModelName|lower}}: {{.ModelName}}{{range .Joins}}, {{.Alias|lower}}Response: {{.Name|title}}Response? = null{{end}}): {{.ModelName}}Response {
-            return {{.ModelName}}Response(
-{{range .Columns}}                {{.Name|lower}} = {{if .IsEnum}}{{.ModelName|lower}}.{{.Name|lower}}.ordinal{{else if .KotlinType=="LocalDateTime"}}{{if .IsNullable}}{{.ModelName|lower}}.{{.Name|lower}}?.toString()?.replace("T", " ") ?: ""{{else}}{{.ModelName|lower}}.{{.Name|lower}}.toString().replace("T", " "){{end}}{{else}}{{.ModelName|lower}}.{{.Name|lower}}{{end}},
-{{end}}
+        fun from({{.ModelName|lower}}: {{.ModelName}}): {{.ModelName}}Response {
+            {{range .Joins}}val {{.Alias|lower}}Response = {{.ParentModelName|lower}}.{{.Alias|lower}}?.let { {{.Name|title}}Response.from(it) }
+            {{end}}return {{.ModelName}}Response(
+{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if not joinData}}                {{.Name|lower}} = {{if .IsEnum}}{{.ModelName|lower}}.{{.Name|lower}}.ordinal{{else if .KotlinType=="LocalDateTime"}}{{if .IsNullable}}{{.ModelName|lower}}.{{.Name|lower}}?.toString()?.replace("T", " ") ?: ""{{else}}{{.ModelName|lower}}.{{.Name|lower}}.toString().replace("T", " "){{end}}{{else}}{{.ModelName|lower}}.{{.Name|lower}}{{end}},
+{{end}}{{if joinData}}                {{.Name|lower}} = {{.ModelName|lower}}.{{joinData.ColumnName}}Id,
+{{end}}{{end}}
                 extra = {{if len(.Enums) > 0 || len(.Joins) > 0}}{{.ModelName}}ExtraInfo(
-                    {{if len(.Enums) > 0}}
-                        {{range .Enums}}{{.Name|lower}} = {{.Name|title}}.getDisplayName({{.EnumPackage|lower}}.{{.Name|lower}}),
-                        {{end}}{{end}}
-                {{range .Joins}}{{if .Columns}}
-                     {{.Alias|lower}} = {{.Alias|lower}}Response,
-                {{end}}{{end}})
+                    {{- if len(.Enums) > 0}}
+                    {{range .Enums}}{{.Name|lower}} = {{.Name|title}}.getDisplayName({{.EnumPackage|lower}}.{{.Name|lower}}),{{end}}{{end}}
+                    {{range .Joins}}{{if .Columns}}{{.Alias|lower}} = {{.Alias|lower}}Response,{{end}}{{end}})
                 {{else}} emptyMap(){{end}}
             )
         }

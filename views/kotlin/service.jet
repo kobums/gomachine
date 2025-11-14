@@ -14,7 +14,7 @@ import org.springframework.transaction.annotation.Transactional
 {{if .HasDecimal}}import java.math.BigDecimal{{end}}
 {{range .Enums}}import com.gowoobro.gymspring.enums.{{.EnumPackage}}.{{.Name|title}}
 {{end}}
-
+{{allJoins := .Joins}}
 @Service
 @Transactional
 class {{.ModelName}}Service(private val {{.ModelName|lower}}Repository: {{.ModelName}}Repository{{if .ModelName == "User"}}, private val passwordEncoder: PasswordEncoder{{end}}) {
@@ -34,30 +34,31 @@ class {{.ModelName}}Service(private val {{.ModelName|lower}}Repository: {{.Model
 
 {{range .Columns}}{{if .Name != "Id"}}
     fun findBy{{.Name}}({{.Name|lower}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): List<{{.ModelName}}> {
-        return {{.ModelName|lower}}Repository.findBy{{.Name}}({{.Name|lower}})
+        return {{.ModelName|lower}}Repository.findBy{{.Name}}WithJoin({{.Name|lower}})
     }
 {{end}}{{end}}
 
     fun create(request: {{.ModelName}}CreateRequest): {{.ModelName}} {
         val entity = {{.ModelName}}(
-{{range .Columns}}{{if not .IsPrimaryKey}}            {{.Name|lower}} = {{if .Name == "Passwd"}}passwordEncoder.encode(request.passwd),{{else}}request.{{.Name|lower}},{{end}}
-{{end}}{{end}}        )
+{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if not .IsPrimaryKey}}{{if not joinData}}            {{.Name|lower}} = {{if .Name == "Passwd"}}passwordEncoder.encode(request.passwd),{{else}}request.{{.Name|lower}},{{end}}
+{{end}}{{if joinData}}            {{joinData.ColumnName}}Id = request.{{joinData.ColumnName|lower}},
+{{end}}{{end}}{{end}}        )
         return {{.ModelName|lower}}Repository.save(entity)
     }
 
     fun createBatch(requests: List<{{.ModelName}}CreateRequest>): List<{{.ModelName}}> {
         val entities = requests.map { request ->
             {{.ModelName}}(
-{{range .Columns}}{{if not .IsPrimaryKey}}                {{.Name|lower}} = {{if .Name == "Passwd"}}passwordEncoder.encode(request.passwd),{{else}}request.{{.Name|lower}},{{end}}
-{{end}}{{end}}            )
+{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if not .IsPrimaryKey}}{{if not joinData}}                {{.Name|lower}} = {{if .Name == "Passwd"}}passwordEncoder.encode(request.passwd),{{else}}request.{{.Name|lower}},{{end}}
+{{end}}{{if joinData}}                {{joinData.ColumnName}}Id = request.{{joinData.ColumnName|lower}},
+{{end}}{{end}}{{end}}            )
         }
         return {{.ModelName|lower}}Repository.saveAll(entities)
     }
 
     fun update(request: {{.ModelName}}UpdateRequest): {{.ModelName}}? {
         val existing = {{.ModelName|lower}}Repository.findById(request.id).orElse(null) ?: return null
-
-        {{if .ModelName == "User"}}
+        {{- if .ModelName == "User"}}
         val encodedPassword = if (request.passwd != existing.passwd && !request.passwd.startsWith("\$2a\$")) {
             passwordEncoder.encode(request.passwd)
         } else {
@@ -66,8 +67,9 @@ class {{.ModelName}}Service(private val {{.ModelName|lower}}Repository: {{.Model
         {{end}}
 
         val updated = existing.copy(
-{{range .Columns}}{{if not .IsPrimaryKey}}            {{.Name|lower}} = {{if .Name == "Passwd"}}passwordEncoder.encode(request.passwd),{{else}}request.{{.Name|lower}},{{end}}
-{{end}}{{end}}        )
+{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if not .IsPrimaryKey}}{{if not joinData}}            {{.Name|lower}} = {{if .Name == "Passwd"}}encodedPassword,{{else}}request.{{.Name|lower}},{{end}}
+{{end}}{{if joinData}}            {{joinData.ColumnName}}Id = request.{{joinData.ColumnName|lower}},
+{{end}}{{end}}{{end}}        )
         return {{.ModelName|lower}}Repository.save(updated)
     }
 

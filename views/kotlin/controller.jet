@@ -5,30 +5,21 @@ import com.gowoobro.gymspring.entity.{{.ModelName}}CreateRequest
 import com.gowoobro.gymspring.entity.{{.ModelName}}UpdateRequest
 import com.gowoobro.gymspring.service.{{.ModelName}}Service
 import com.gowoobro.gymspring.entity.{{.ModelName}}Response
-{{- range .UniqueJoinNames}}
-import com.gowoobro.gymspring.entity.{{.|title}}Response
-import com.gowoobro.gymspring.service.{{.|title}}Service
-{{- end}}
+{{range .Enums}}import com.gowoobro.gymspring.enums.{{.EnumPackage}}.{{.Name|title}}
+{{end}}
 import org.springframework.data.domain.Page
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 {{if .HasDateTime}}import java.time.LocalDateTime{{end}}
 {{if .HasDecimal}}import java.math.BigDecimal{{end}}
-{{range .Enums}}import com.gowoobro.gymspring.enums.{{.EnumPackage}}.{{.Name|title}}
-{{end}}
 
 @RestController
 @RequestMapping("/api/{{.ModelName|lower}}")
 class {{.ModelName}}Controller(
-    private val {{.ModelName|lower}}Service: {{.ModelName}}Service{{- range .UniqueJoinNames}}, private val {{.|lower}}Service: {{.|title}}Service{{end}}) {
+    private val {{.ModelName|lower}}Service: {{.ModelName}}Service) {
 
-    private fun toResponse({{.ModelName|lower}}: {{.ModelName}}):
-    {{.ModelName}}Response {
-        {{range .Joins}}
-        val {{.Alias|lower}} = {{.Name|lower}}Service.findById({{.ParentModelName|lower}}.{{.ColumnName}})
-        val {{.Alias|lower}}Response = {{.Alias|lower}}?.let{ {{.ModelName}}Response.from(it) }
-        {{end}}
-        return {{.ModelName}}Response.from({{.ModelName|lower}}{{range .Joins}}, {{.Alias|lower}}Response{{end}})
+    private fun toResponse({{.ModelName|lower}}: {{.ModelName}}): {{.ModelName}}Response {
+        return {{.ModelName}}Response.from({{.ModelName|lower}})
     }
 
     @GetMapping
@@ -36,16 +27,16 @@ class {{.ModelName}}Controller(
         @RequestParam(defaultValue = "0") page: Int,
         @RequestParam(defaultValue = "10") pageSize: Int
     ): ResponseEntity<Page<{{.ModelName}}Response>> {
-        val result = {{.ModelName|lower}}Service.findAll(page, pageSize)
-        val responsePage = result.map { toResponse(it)}
+        val res = {{.ModelName|lower}}Service.findAll(page, pageSize)
+        val responsePage = res.map { toResponse(it)}
         return ResponseEntity.ok(responsePage)
     }
 
     @GetMapping("/{id}")
     fun get{{.ModelName}}(@PathVariable id: Long): ResponseEntity<{{.ModelName}}Response> {
-        val result = {{.ModelName|lower}}Service.findById(id)
-        return if (result != null) {
-            ResponseEntity.ok(toResponse(result))
+        val res = {{.ModelName|lower}}Service.findById(id)
+        return if (res != null) {
+            ResponseEntity.ok(toResponse(res))
         } else {
             ResponseEntity.notFound().build()
         }
@@ -54,8 +45,8 @@ class {{.ModelName}}Controller(
 {{range .Columns}}{{if .Name != "Id"}}
     @GetMapping("/search/{{.Name|lower}}")
     fun get{{.ModelName}}By{{.Name}}(@RequestParam {{.Name|lower}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): ResponseEntity<List<{{.ModelName}}Response>> {
-        val result = {{.ModelName|lower}}Service.findBy{{.Name}}({{.Name|lower}})
-        return ResponseEntity.ok(result.map { toResponse(it) } )
+        val res = {{.ModelName|lower}}Service.findBy{{.Name}}({{.Name|lower}})
+        return ResponseEntity.ok(res.map { toResponse(it) } )
     }
 {{end}}{{end}}
 
@@ -68,8 +59,8 @@ class {{.ModelName}}Controller(
     @PostMapping
     fun create{{.ModelName}}(@RequestBody request: {{.ModelName}}CreateRequest): ResponseEntity<{{.ModelName}}Response> {
         return try {
-            val result = {{.ModelName|lower}}Service.create(request)
-            ResponseEntity.ok(toResponse(result))
+            val res = {{.ModelName|lower}}Service.create(request)
+            ResponseEntity.ok(toResponse(res))
         } catch (e: Exception) {
             ResponseEntity.badRequest().build()
         }
@@ -78,8 +69,8 @@ class {{.ModelName}}Controller(
     @PostMapping("/batch")
     fun create{{.ModelName}}s(@RequestBody requests: List<{{.ModelName}}CreateRequest>): ResponseEntity<List<{{.ModelName}}Response>> {
         return try {
-            val result = {{.ModelName|lower}}Service.createBatch(requests)
-            return ResponseEntity.ok(result.map { toResponse(it) } )
+            val res = {{.ModelName|lower}}Service.createBatch(requests)
+            return ResponseEntity.ok(res.map { toResponse(it) } )
         } catch (e: Exception) {
             ResponseEntity.badRequest().build()
         }
@@ -91,9 +82,9 @@ class {{.ModelName}}Controller(
         @RequestBody request: {{.ModelName}}UpdateRequest
     ): ResponseEntity<{{.ModelName}}Response> {
         val updatedRequest = request.copy(id = id)
-        val result = {{.ModelName|lower}}Service.update(updatedRequest)
-        return if (result != null) {
-            ResponseEntity.ok(toResponse(result))
+        val res = {{.ModelName|lower}}Service.update(updatedRequest)
+        return if (res != null) {
+            ResponseEntity.ok(toResponse(res))
         } else {
             ResponseEntity.notFound().build()
         }

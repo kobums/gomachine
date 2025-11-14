@@ -241,16 +241,26 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 			columnName := strings.Title(util.GetName(join.Column))
 			columnName = strings.ToLower(columnName[0:1]) + columnName[1:] // make first letter lowercase
 
-			joins = append(joins, KotlinJoin{
+			// Build full column name with prefix (e.g., "gym" -> "m_gym")
+			fullColumnName := join.Column
+			if join.Prefix != "" {
+				fullColumnName = join.Prefix + "_" + join.Column
+			} else {
+				// Use table prefix if join prefix not specified
+				fullColumnName = prefix + "_" + join.Column
+			}
+
+			kotlinJoin := KotlinJoin{
 				Name:            join.Name,
-				Column:          join.Column,
+				Column:          fullColumnName,
 				ColumnName:      columnName,
 				Prefix:          join.Prefix,
 				Alias:           alias,
 				ModelName:       joinModelName,
 				ParentModelName: modelName,
 				Columns:         joinColumns,
-			})
+			}
+			joins = append(joins, kotlinJoin)
 		}
 	} else {
 		joins = make([]KotlinJoin, 0)
@@ -324,6 +334,20 @@ func generateKotlinEntity(targetPath string, data KotlinTemplateData) {
 		return strings.ToLower(str)
 	})
 
+	// Add helper function to find join by column name
+	views.AddGlobal("findJoinByColumn", func(columnDBName string, joins []KotlinJoin) *KotlinJoin {
+		// log.Printf("Finding join for column: %s", columnDBName)
+		for _, join := range joins {
+			// log.Printf("  Checking join[%d]: Column=%s, Name=%s, Alias=%s", i, join.Column, join.Name, join.Alias)
+			if join.Column == columnDBName {
+				// log.Printf("  MATCH FOUND!")
+				return &join
+			}
+		}
+		// log.Printf("  No match found")
+		return nil
+	})
+
 	template, err := views.GetTemplate("entity.jet")
 	if err != nil {
 		log.Printf("Failed to load template: %v", err)
@@ -376,6 +400,16 @@ func generateKotlinRepository(targetPath string, data KotlinTemplateData) {
 		return strings.ToLower(str)
 	})
 
+	// Add helper function to find join by column name
+	views.AddGlobal("findJoinByColumn", func(columnDBName string, joins []KotlinJoin) *KotlinJoin {
+		for _, join := range joins {
+			if join.Column == columnDBName {
+				return &join
+			}
+		}
+		return nil
+	})
+
 	template, err := views.GetTemplate("repository.jet")
 	if err != nil {
 		log.Printf("Failed to load repository template: %v", err)
@@ -426,6 +460,16 @@ func generateKotlinService(targetPath string, data KotlinTemplateData) {
 
 	views.AddGlobal("lower", func(str string) string {
 		return strings.ToLower(str)
+	})
+
+	// Add helper function to find join by column name
+	views.AddGlobal("findJoinByColumn", func(columnDBName string, joins []KotlinJoin) *KotlinJoin {
+		for _, join := range joins {
+			if join.Column == columnDBName {
+				return &join
+			}
+		}
+		return nil
 	})
 
 	template, err := views.GetTemplate("service.jet")

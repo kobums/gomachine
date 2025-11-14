@@ -12,12 +12,16 @@ import org.springframework.stereotype.Repository
 {{if .HasDecimal}}import java.math.BigDecimal{{end}}
 {{range .Enums}}import com.gowoobro.gymspring.enums.{{.EnumPackage}}.{{.Name|title}}
 {{end}}
-
+{{allJoins := .Joins}}
 @Repository
 interface {{.ModelName}}Repository : JpaRepository<{{.ModelName}}, Long> {
+    @Query("SELECT m FROM {{.ModelName}} m{{range allJoins}} LEFT JOIN FETCH m.{{.Alias|lower}}{{end}}")
     override fun findAll(pageable: Pageable): Page<{{.ModelName}}>
 
-{{- range .Columns }}{{ if .Name != "Id"}}{{"\n"}}
-    fun findBy{{.Name}}({{.Name|lower}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): List<{{.ModelName}}>
-{{- end}}{{end}}
-}
+    @Query("SELECT m FROM {{.ModelName}} m{{range allJoins}} LEFT JOIN FETCH m.{{.Alias|lower}}{{end}} WHERE m.id = :id")
+    override fun findById(id: Long): java.util.Optional<{{.ModelName}}>
+{{range .Columns }}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{ if .Name != "Id"}}{{"\n"}}{{if not joinData}}    @Query("SELECT m FROM {{.ModelName}} m{{range allJoins}} LEFT JOIN FETCH m.{{.Alias|lower}}{{end}} WHERE m.{{.Name|lower}} = :{{.Name|lower}}")
+    fun findBy{{.Name}}WithJoin({{.Name|lower}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): List<{{.ModelName}}>
+{{end}}{{if joinData}}    @Query("SELECT m FROM {{.ModelName}} m{{range allJoins}} LEFT JOIN FETCH m.{{.Alias|lower}}{{end}} WHERE m.{{joinData.ColumnName}}Id = :{{joinData.Alias|lower}}")
+    fun findBy{{.Name}}WithJoin({{joinData.Alias|lower}}: Long): List<{{.ModelName}}>
+{{end}}{{- end}}{{end}}}
