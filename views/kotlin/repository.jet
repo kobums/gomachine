@@ -14,15 +14,24 @@ import org.springframework.stereotype.Repository
 {{range .Enums}}import com.gowoobro.gymspring.enums.{{.EnumPackage}}.{{.Name|title}}
 {{end}}
 {{allJoins := .Joins}}
+{{entityGraphPaths := .EntityGraphPaths}}
 @Repository
 interface {{.ModelName}}Repository : JpaRepository<{{.ModelName}}, Long> {
-{{if len(allJoins) > 0}}    @EntityGraph(attributePaths = [{{range allJoins}}{{if isFirstJoin(.)}}{{else}}, {{end}}"{{.Alias|lower}}"{{end}}])
+{{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
+{{range entityGraphPaths}}{{if .IsLast}}        "{{.Path}}"{{else}}        "{{.Path}}",{{end}}
+{{end}}    ])
 {{end}}    override fun findAll(pageable: Pageable): Page<{{.ModelName}}>
 
-{{if len(allJoins) > 0}}    @EntityGraph(attributePaths = [{{range allJoins}}{{if isFirstJoin(.)}}{{else}}, {{end}}"{{.Alias|lower}}"{{end}}])
+{{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
+{{range entityGraphPaths}}{{if .IsLast}}        "{{.Path}}"{{else}}        "{{.Path}}",{{end}}
+{{end}}    ])
 {{end}}    override fun findById(id: Long): java.util.Optional<{{.ModelName}}>
-{{range .Columns }}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{ if .Name != "Id"}}{{"\n"}}{{if not joinData}}{{if len(allJoins) > 0}}    @EntityGraph(attributePaths = [{{range allJoins}}{{if isFirstJoin(.)}}{{else}}, {{end}}"{{.Alias|lower}}"{{end}}])
+{{range .Columns }}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{ if .Name != "Id"}}{{"\n"}}{{if not joinData}}{{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
+{{range entityGraphPaths}}{{if .IsLast}}        "{{.Path}}"{{else}}        "{{.Path}}",{{end}}
+{{end}}    ])
 {{end}}    fun findBy{{.Name}}({{.Name|lower}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): List<{{.ModelName}}>
-{{end}}{{if joinData}}{{if len(allJoins) > 0}}    @EntityGraph(attributePaths = [{{range allJoins}}{{if isFirstJoin(.)}}{{else}}, {{end}}"{{.Alias|lower}}"{{end}}])
+{{end}}{{if joinData}}{{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
+{{range entityGraphPaths}}{{if .IsLast}}        "{{.Path}}"{{else}}        "{{.Path}}",{{end}}
+{{end}}    ])
 {{end}}    fun findBy{{joinData.ColumnName}}Id({{joinData.Alias|lower}}: Long): List<{{.ModelName}}>
 {{end}}{{- end}}{{end}}}

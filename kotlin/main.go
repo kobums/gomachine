@@ -44,6 +44,12 @@ type KotlinJoin struct {
 	Index           int    // Index in the joins array
 }
 
+type EntityGraphPath struct {
+	Path    string
+	IsFirst bool
+	IsLast  bool
+}
+
 type KotlinTemplateData struct {
 	PackageName     string
 	TableName       string
@@ -54,10 +60,72 @@ type KotlinTemplateData struct {
 	Enums           []KotlinEnumData
 	Joins           []KotlinJoin
 	UniqueJoinNames []string // Unique join model names for imports
+	EntityGraphPaths []EntityGraphPath // Nested entity graph paths for @EntityGraph with metadata
+}
+
+// Build a global map of all table joins for recursive entity graph path building
+func buildGlobalJoinsMap(cnf config.ModelConfig) map[string][]config.GpaJoin {
+	joinsMap := make(map[string][]config.GpaJoin)
+	for _, gpa := range cnf.Gpa {
+		if gpa.Join != nil && len(gpa.Join) > 0 {
+			joinsMap[gpa.Name] = gpa.Join
+		}
+	}
+	return joinsMap
+}
+
+// Recursively build entity graph paths
+// Example: if current table has join to "gym", and "gym" has join to "owner",
+// this will return ["gym", "gym.owner"]
+func buildEntityGraphPaths(joins []KotlinJoin, globalJoinsMap map[string][]config.GpaJoin, visited map[string]bool) []EntityGraphPath {
+	pathStrings := make([]string, 0)
+
+	for _, join := range joins {
+		alias := strings.ToLower(join.Alias)
+
+		// Add the direct join path
+		pathStrings = append(pathStrings, alias)
+
+		// Check if this joined table has its own joins
+		if nestedJoins, exists := globalJoinsMap[join.Name]; exists && len(nestedJoins) > 0 {
+			// Prevent circular references
+			if visited[join.Name] {
+				continue
+			}
+			visited[join.Name] = true
+
+			// Add nested join paths
+			for _, nestedJoin := range nestedJoins {
+				nestedAlias := nestedJoin.Alias
+				if nestedAlias == "" {
+					nestedAlias = nestedJoin.Name
+				}
+				nestedPath := alias + "." + strings.ToLower(nestedAlias)
+				pathStrings = append(pathStrings, nestedPath)
+			}
+
+			delete(visited, join.Name)
+		}
+	}
+
+	// Convert to EntityGraphPath with metadata
+	paths := make([]EntityGraphPath, len(pathStrings))
+	for i, pathStr := range pathStrings {
+		paths[i] = EntityGraphPath{
+			Path:    pathStr,
+			IsFirst: i == 0,
+			IsLast:  i == len(pathStrings)-1,
+		}
+	}
+
+	return paths
 }
 
 func ProcessKotlin(packageName string, tableName string, prefix string, columns []util.Column, db *sql.DB, gpa *config.Gpa, version string, auth string, cnf config.ModelConfig) {
 	modelName := strings.Title(util.GetTableName(tableName))
+
+	// Build global joins map for recursive entity graph paths
+	globalJoinsMap := buildGlobalJoinsMap(cnf)
 	
 	// Determine target path
 	var targetPath string
@@ -278,16 +346,21 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 		}
 	}
 
+	// Build entity graph paths with nested joins
+	visited := make(map[string]bool)
+	entityGraphPaths := buildEntityGraphPaths(joins, globalJoinsMap, visited)
+
 	templateData := KotlinTemplateData{
-		PackageName:     packageName,
-		TableName:       tableName,
-		ModelName:       modelName,
-		Columns:         kotlinColumns,
-		HasDateTime:     hasDateTime,
-		HasDecimal:      hasDecimal,
-		Enums:           enums,
-		Joins:           joins,
-		UniqueJoinNames: uniqueJoinNames,
+		PackageName:      packageName,
+		TableName:        tableName,
+		ModelName:        modelName,
+		Columns:          kotlinColumns,
+		HasDateTime:      hasDateTime,
+		HasDecimal:       hasDecimal,
+		Enums:            enums,
+		Joins:            joins,
+		UniqueJoinNames:  uniqueJoinNames,
+		EntityGraphPaths: entityGraphPaths,
 	}
 
 	// Generate entity file
@@ -415,6 +488,11 @@ func generateKotlinRepository(targetPath string, data KotlinTemplateData) {
 	// Add helper function to check if this is the first join
 	views.AddGlobal("isFirstJoin", func(join KotlinJoin) bool {
 		return join.Index == 0
+	})
+
+	// Add helper function to check if index is last in array
+	views.AddGlobal("isLast", func(index int, arr []string) bool {
+		return index == len(arr)-1
 	})
 
 	template, err := views.GetTemplate("repository.jet")
