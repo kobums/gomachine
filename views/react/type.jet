@@ -1,10 +1,6 @@
 // Auto-generated TypeScript types for {{.ModelName}}
 // Generated from table: {{.TableName}}
 
-# {{range .Enums}}// {{.Name | title}} type
-# export type {{.Name | title}} = {{.TypeString}};
-
-# {{end}}// Main entity interface
 export interface {{.ModelName}} {
 {{range .Columns}}  {{.Name | untitle}}{{if .IsOptional}}?{{end}}: {{.TypeScriptType}};
 {{end}}}

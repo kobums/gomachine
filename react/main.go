@@ -172,7 +172,7 @@ func ProcessReact(packageName string, tableName string, prefix string, items []u
 	for _, col := range items {
 		reactColumns = append(reactColumns, ReactColumn{
 			Name:           col.Name,
-			TypeScriptType: mapKotlinTypeToTypeScript(col.Type),
+			TypeScriptType: mapMySQLTypeToTypeScript(col.OriginalType),
 			IsNullable:     false, // 나중에 확장 가능
 			IsPrimaryKey:   col.Primary,
 			IsOptional:     col.Primary, // ID는 생성 시 선택적
@@ -195,19 +195,24 @@ func ProcessReact(packageName string, tableName string, prefix string, items []u
 	generateReactTypes(targetPath, templateData)
 }
 
-func mapKotlinTypeToTypeScript(kotlinType string) string {
-	switch kotlinType {
-	case "Int", "Long", "BigDecimal", "Double":
+func mapMySQLTypeToTypeScript(mysqlType string) string {
+	// Normalize to lowercase for comparison
+	mysqlType = strings.ToLower(mysqlType)
+
+	switch mysqlType {
+	case "int", "bigint", "tinyint", "smallint", "mediumint":
 		return "number"
-	case "String", "LocalDateTime":
+	case "float", "double", "decimal":
+		return "number"
+	case "varchar", "text", "longtext", "mediumtext", "char":
 		return "string"
-	case "Boolean":
+	case "datetime", "date", "timestamp", "time":
+		return "string"
+	case "boolean", "bool":
 		return "boolean"
+	case "json":
+		return "any"
 	default:
-		// Check if it's a custom enum type (starts with uppercase)
-		if len(kotlinType) > 0 && unicode.IsUpper(rune(kotlinType[0])) {
-			return kotlinType // Keep enum types as-is
-		}
 		return "string"
 	}
 }
@@ -217,8 +222,8 @@ func getTypeScriptType(fieldName string, columns []util.Column, enums []ReactEnu
 	fieldNameLower := strings.ToLower(fieldName)
 	for _, col := range columns {
 		if strings.ToLower(col.Name) == fieldNameLower {
-			// Map Kotlin types to TypeScript types
-			return mapKotlinTypeToTypeScript(col.Type)
+			// Map MySQL original types to TypeScript types
+			return mapMySQLTypeToTypeScript(col.OriginalType)
 		}
 	}
 
