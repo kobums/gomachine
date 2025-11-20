@@ -1,0 +1,37 @@
+// Auto-generated TypeScript types for {{.ModelName}}
+// Generated from table: {{.TableName}}
+
+# {{range .Enums}}// {{.Name | title}} type
+# export type {{.Name | title}} = {{.TypeString}};
+
+# {{end}}// Main entity interface
+export interface {{.ModelName}} {
+{{range .Columns}}  {{.Name | untitle}}{{if .IsOptional}}?{{end}}: {{.TypeScriptType}};
+{{end}}}
+
+// Create request type (omit auto-generated fields)
+export type Create{{.ModelName}}Request = Omit<{{.ModelName}}, 'id'>;
+
+// Update request type (all fields optional except id)
+export type Update{{.ModelName}}Request = Partial<Omit<{{.ModelName}}, 'id'>>;
+
+// Search params type
+export interface {{.ModelName}}SearchParams {
+{{range .Columns}}  {{.Name | untitle}}?: {{.TypeScriptType}};
+{{end}}  page?: number;
+  limit?: number;
+  sort?: string;
+  order?: 'asc' | 'desc';
+}
+
+// API response types
+export interface ApiResponse<T> {
+  items: T[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface ApiSingleResponse<T> {
+  item: T;
+}

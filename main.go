@@ -7,6 +7,7 @@ import (
 	dartcodegen "gomachine/dart"
 	gocodegen "gomachine/go"
 	kotlincodegen "gomachine/kotlin"
+	reactcodegen "gomachine/react"
 	"gomachine/util"
 	"os"
 	"path/filepath"
@@ -158,6 +159,23 @@ func readColumn(packageName string, tableName string, db *sql.DB, gpa *config.Gp
 			prefix = util.GetPrefix(name)
 		}
 		kotlincodegen.ProcessKotlin(packageName, tableName, prefix, kotlinColumns, db, gpa, version, auth, cnf)
+	} else if cnf.Language == "react" || cnf.Language == "typescript" {
+		reactColumns := make([]util.Column, 0)
+		for rows.Next() {
+			var name string
+			var typeid string
+
+			err := rows.Scan(&name, &typeid)
+			if err != nil {
+				log.Println(err)
+			}
+
+			column := util.Column{Name: strings.Title(util.GetName(name)), Column: name, Type: util.GetType(util.GetTableName(tableName), util.GetName(name), typeid, gpa, cnf), OriginalType: typeid}
+			reactColumns = append(reactColumns, column)
+
+			prefix = util.GetPrefix(name)
+		}
+		reactcodegen.ProcessReact(packageName, tableName, prefix, reactColumns, db, gpa, version, auth, cnf)
 	} else {
 		goColumns := make([]util.Column, 0)
 		for rows.Next() {
