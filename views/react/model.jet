@@ -47,7 +47,7 @@ export default class {{.ModelName}}Model {
 
   static async find(params?: {{.ModelName}}SearchParams) {
     const res = await get<ApiResponse<{{.ModelName}}>>('/{{.TableName | lower}}', { params });
-    return res.data.items || [];
+    return res.data.content || [];
   }
 
   static async count(params?: {{.ModelName}}SearchParams) {
@@ -57,7 +57,7 @@ export default class {{.ModelName}}Model {
 
   static async get(id: number) {
     const res = await get<ApiSingleResponse<{{.ModelName}}>>(`/{{.TableName | lower}}/${id}`);
-    return res.data.item;
+    return res.data;
   }
 {{range .SearchMethods}}
   static async {{.MethodName}}({{.ParamName}}: {{.ParamType}}{{if not .IsSingle}}, params?: {{.ModelName}}SearchParams{{end}}) {
