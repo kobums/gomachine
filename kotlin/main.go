@@ -609,6 +609,16 @@ func generateKotlinController(targetPath string, data KotlinTemplateData) {
 		return strings.ToLower(str)
 	})
 
+	// Add helper function to find join by column name
+	views.AddGlobal("findJoinByColumn", func(columnDBName string, joins []KotlinJoin) *KotlinJoin {
+		for _, join := range joins {
+			if join.Column == columnDBName {
+				return &join
+			}
+		}
+		return nil
+	})
+
 	template, err := views.GetTemplate("controller.jet")
 	if err != nil {
 		log.Printf("Failed to load controller template: %v", err)

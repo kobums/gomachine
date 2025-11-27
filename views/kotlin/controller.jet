@@ -6,7 +6,7 @@ import com.gowoobro.gymspring.entity.{{.ModelName}}UpdateRequest
 import com.gowoobro.gymspring.service.{{.ModelName}}Service
 import com.gowoobro.gymspring.entity.{{.ModelName}}Response
 {{range .Enums}}import com.gowoobro.gymspring.enums.{{.EnumPackage}}.{{.Name|title}}
-{{end}}
+{{end}}{{- allJoins := .Joins}}
 import org.springframework.data.domain.Page
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
@@ -22,14 +22,64 @@ class {{.ModelName}}Controller(
         return {{.ModelName}}Response.from({{.ModelName|lower}})
     }
 
+    private fun filterByDateRange(
+        value: LocalDateTime?,
+        startRange: LocalDateTime?,
+        endRange: LocalDateTime?
+    ): Boolean {
+        if (value == null) return false
+        return when {
+            startRange != null && endRange != null -> value in startRange..endRange
+            startRange != null -> value >= startRange
+            endRange != null -> value <= endRange
+            else -> true
+        }
+    }
+
     @GetMapping
     fun get{{.ModelName}}s(
         @RequestParam(defaultValue = "0") page: Int,
-        @RequestParam(defaultValue = "10") pageSize: Int
-    ): ResponseEntity<Page<{{.ModelName}}Response>> {
-        val res = {{.ModelName|lower}}Service.findAll(page, pageSize)
-        val responsePage = res.map { toResponse(it)}
-        return ResponseEntity.ok(responsePage)
+        @RequestParam(defaultValue = "10") pageSize: Int,
+{{range .Columns}}{{if .Name != "Id"}}{{if .KotlinType == "LocalDateTime"}}        @RequestParam(required = false) start{{.Name|lower}}: LocalDateTime?,
+        @RequestParam(required = false) end{{.Name|lower}}: LocalDateTime?,
+{{else}}        @RequestParam(required = false) {{.Name|lower}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}?,
+{{end}}{{end}}{{end}}    ): ResponseEntity<Map<String, Any>> {
+        var results = if ({{range .Columns}}{{if .Name != "Id"}}{{if .KotlinType == "LocalDateTime"}}start{{.Name|lower}} != null || end{{.Name|lower}} != null || {{else}}{{.Name|lower}} != null || {{end}}{{end}}{{end}}false) {
+            var filtered = {{.ModelName|lower}}Service.findAll(0, Int.MAX_VALUE).content
+{{range .Columns}}{{if .Name != "Id"}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if .KotlinType == "LocalDateTime"}}            if (start{{.Name|lower}} != null || end{{.Name|lower}} != null) {
+                filtered = filtered.filter { filterByDateRange(it.{{.Name|lower}}, start{{.Name|lower}}, end{{.Name|lower}}) }
+            }
+{{else}}            if ({{.Name|lower}} != null) {
+                filtered = filtered.filter { it.{{if joinData}}{{joinData.ColumnName}}Id{{else}}{{.Name|lower}}{{end}} == {{.Name|lower}} }
+            }
+{{end}}{{end}}{{end}}            filtered
+        } else {
+            {{.ModelName|lower}}Service.findAll(0, Int.MAX_VALUE).content
+        }
+
+        val totalElements = results.size
+        val totalPages = if (pageSize > 0) (totalElements + pageSize - 1) / pageSize else 1
+        val startIndex = page * pageSize
+        val endIndex = minOf(startIndex + pageSize, totalElements)
+
+        val pagedResults = if (startIndex < totalElements) {
+            results.subList(startIndex, endIndex)
+        } else {
+            emptyList()
+        }
+
+        val response = mapOf(
+            "content" to pagedResults.map { toResponse(it) },
+            "page" to page,
+            "size" to pageSize,
+            "totalElements" to totalElements,
+            "totalPages" to totalPages,
+            "first" to (page == 0),
+            "last" to (page >= totalPages - 1),
+            "empty" to pagedResults.isEmpty()
+        )
+
+        return ResponseEntity.ok(response)
     }
 
     @GetMapping("/{id}")
