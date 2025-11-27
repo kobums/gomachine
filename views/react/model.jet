@@ -1,4 +1,4 @@
-import { get, post, put, del } from '../services/api';
+import { get, post, put, patch, del } from '../services/api';
 import type {
   {{.ModelName}},
   ApiResponse,
@@ -32,6 +32,11 @@ export default class {{.ModelName}}Model {
 
   static async update(id: number, item: Partial<{{.ModelName}}>) {
     const res = await put<{{.ModelName}}>(`/{{.TableName | lower}}/${id}`, item);
+    return res.data;
+  }
+
+  static async patch(id: number, item: Partial<{{.ModelName}}>) {
+    const res = await patch<{{.ModelName}}>(`/{{.TableName | lower}}/${id}`, item);
     return res.data;
   }
 
