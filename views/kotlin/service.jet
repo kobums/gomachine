@@ -3,6 +3,7 @@ package com.gowoobro.gymspring.service
 import com.gowoobro.gymspring.entity.{{.ModelName}}
 import com.gowoobro.gymspring.entity.{{.ModelName}}CreateRequest
 import com.gowoobro.gymspring.entity.{{.ModelName}}UpdateRequest
+import com.gowoobro.gymspring.entity.{{.ModelName}}PatchRequest
 import com.gowoobro.gymspring.repository.{{.ModelName}}Repository
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.PageRequest
@@ -102,5 +103,14 @@ class {{.ModelName}}Service(private val {{.ModelName|lower}}Repository: {{.Model
         } catch (e: Exception) {
             false
         }
+    }
+
+    fun patch(request: {{.ModelName}}PatchRequest): {{.ModelName}}? {
+        val existing = {{.ModelName|lower}}Repository.findById(request.id).orElse(null) ?: return null
+
+        val updated = existing.copy(
+{{range .Columns}}{{if not .IsPrimaryKey}}{{joinData := findJoinByColumn(.DBName, allJoins)}}            {{if joinData}}{{joinData.ColumnName}}Id{{else}}{{.Name|lower}}{{end}} = request.{{.Name|lower}} ?: existing.{{if joinData}}{{joinData.ColumnName}}Id{{else}}{{.Name|lower}}{{end}},
+{{end}}{{end}}        )
+        return {{.ModelName|lower}}Repository.save(updated)
     }
 }

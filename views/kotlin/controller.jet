@@ -3,6 +3,7 @@ package com.gowoobro.gymspring.controller
 import com.gowoobro.gymspring.entity.{{.ModelName}}
 import com.gowoobro.gymspring.entity.{{.ModelName}}CreateRequest
 import com.gowoobro.gymspring.entity.{{.ModelName}}UpdateRequest
+import com.gowoobro.gymspring.entity.{{.ModelName}}PatchRequest
 import com.gowoobro.gymspring.service.{{.ModelName}}Service
 import com.gowoobro.gymspring.entity.{{.ModelName}}Response
 {{range .Enums}}import com.gowoobro.gymspring.enums.{{.EnumPackage}}.{{.Name|title}}
@@ -133,6 +134,20 @@ class {{.ModelName}}Controller(
     ): ResponseEntity<{{.ModelName}}Response> {
         val updatedRequest = request.copy(id = id)
         val res = {{.ModelName|lower}}Service.update(updatedRequest)
+        return if (res != null) {
+            ResponseEntity.ok(toResponse(res))
+        } else {
+            ResponseEntity.notFound().build()
+        }
+    }
+
+    @PatchMapping("/{id}")
+    fun patch{{.ModelName}}(
+        @PathVariable id: Long,
+        @RequestBody request: {{.ModelName}}PatchRequest
+    ): ResponseEntity<{{.ModelName}}Response> {
+        val patchRequest = request.copy(id = id)
+        val res = {{.ModelName|lower}}Service.patch(patchRequest)
         return if (res != null) {
             ResponseEntity.ok(toResponse(res))
         } else {

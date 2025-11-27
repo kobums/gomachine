@@ -28,6 +28,11 @@ data class {{.ModelName}}UpdateRequest(
 {{range .Columns}}    val {{.Name|lower}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
 {{end}})
 
+data class {{.ModelName}}PatchRequest(
+{{range .Columns}}{{if .IsPrimaryKey}}    val {{.Name|lower}}: {{.KotlinType}} = 0,
+{{else}}    val {{.Name|lower}}: {{.KotlinType}}? = null,
+{{end}}{{end}})
+
 {{if len(.Enums) > 0 || len(.Joins) > 0}}data class {{.ModelName}}ExtraInfo(
 {{range .Enums}}    val {{.Name|lower}}: String = "",
 {{end}}
