@@ -12,15 +12,13 @@ import jakarta.persistence.*
 data class {{.ModelName}}(
 {{range .Columns}}{{if .IsPrimaryKey}}    @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-{{end}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if not joinData}}    @Column(name = "{{.DBName}}")
-    val {{.Name|lower}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
-{{end}}{{if joinData}}
-    @Column(name = "{{joinData.Column}}", insertable = false, updatable = false)
-    val {{joinData.ColumnName}}Id: Long = 0L,
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "{{joinData.Column}}")
-    val {{joinData.Alias|lower}}: {{joinData.Name|title}}? = null,
-{{end}}{{end}})
+{{end}}{{joinData := findJoinByColumn(.DBName, allJoins)}}    @Column(name = "{{.DBName}}")
+    val {{if joinData}}{{joinData.ColumnName}}Id{{else}}{{.Name|lower}}{{end}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
+{{end}}) {{if len(.Joins) > 0}}{
+{{range .Joins}}    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "{{.Column}}", insertable = false, updatable = false)
+    var {{.Alias|lower}}: {{.Name|title}}? = null
+{{end}}}{{end}}
 
 data class {{.ModelName}}CreateRequest(
 {{range .Columns}}{{if not .IsPrimaryKey}}    val {{.Name|lower}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
