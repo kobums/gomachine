@@ -1,8 +1,14 @@
 // Auto-generated TypeScript types for {{.ModelName}}
 // Generated from table: {{.TableName}}
-
+{{if len(.Joins) > 0}}
+{{range .UniqueJoinNames}}import type { {{. | title}} } from './{{. | lower}}';
+{{end}}
+{{end}}
 export interface {{.ModelName}} {
 {{range .Columns}}  {{.Name | untitle}}{{if .IsOptional}}?{{end}}: {{.TypeScriptType}};
+{{end}}{{if len(.Joins) > 0}}  extra?: {
+{{range .Joins}}    {{.Alias | lower}}?: {{.Name | title}};
+{{end}}  };
 {{end}}}
 
 // Create request type (omit auto-generated fields)

@@ -46,22 +46,23 @@ type ReactColumn struct {
 	IsOptional     bool
 }
 
-type ReactJoinType struct {
+type ReactJoin struct {
 	Name      string
-	FieldName string
-	Columns   []ReactColumn
+	Column    string
+	Alias     string
+	ModelName string
 }
 
 type ReactTemplateData struct {
-	PackageName   string
-	TableName     string
-	ModelName     string
-	Columns       []ReactColumn
-	Enums         []ReactEnumData
-	HasStatus     bool
-	SearchMethods []ReactSearchMethod
-	HasJoins      bool
-	JoinTypes     []ReactJoinType
+	PackageName     string
+	TableName       string
+	ModelName       string
+	Columns         []ReactColumn
+	Enums           []ReactEnumData
+	HasStatus       bool
+	SearchMethods   []ReactSearchMethod
+	Joins           []ReactJoin
+	UniqueJoinNames []string
 }
 
 func ProcessReact(packageName string, tableName string, prefix string, items []util.Column, db *sql.DB, gpa *config.Gpa, version string, auth string, cnf config.ModelConfig) {
@@ -179,16 +180,49 @@ func ProcessReact(packageName string, tableName string, prefix string, items []u
 		})
 	}
 
+	// Process joins
+	var joins []ReactJoin
+	if gpa != nil && gpa.Join != nil {
+		log.Printf("Processing joins for %s: found %d joins", modelName, len(gpa.Join))
+		for _, join := range gpa.Join {
+			alias := join.Alias
+			if alias == "" {
+				alias = join.Name
+			}
+
+			joins = append(joins, ReactJoin{
+				Name:      join.Name,
+				Column:    join.Column,
+				Alias:     alias,
+				ModelName: strings.Title(join.Name),
+			})
+			log.Printf("  Added join: %s (alias: %s)", join.Name, alias)
+		}
+	} else {
+		joins = make([]ReactJoin, 0)
+		log.Printf("No joins for %s", modelName)
+	}
+
+	// Extract unique join model names for imports
+	uniqueJoinNamesMap := make(map[string]bool)
+	var uniqueJoinNames []string
+	for _, join := range joins {
+		if !uniqueJoinNamesMap[join.Name] {
+			uniqueJoinNamesMap[join.Name] = true
+			uniqueJoinNames = append(uniqueJoinNames, join.Name)
+		}
+	}
+
 	templateData := ReactTemplateData{
-		PackageName:   packageName,
-		TableName:     util.GetTableName(tableName),
-		ModelName:     modelName,
-		Columns:       reactColumns,
-		Enums:         enums,
-		HasStatus:     hasStatus,
-		SearchMethods: searchMethods,
-		HasJoins:      false,
-		JoinTypes:     make([]ReactJoinType, 0),
+		PackageName:     packageName,
+		TableName:       util.GetTableName(tableName),
+		ModelName:       modelName,
+		Columns:         reactColumns,
+		Enums:           enums,
+		HasStatus:       hasStatus,
+		SearchMethods:   searchMethods,
+		Joins:           joins,
+		UniqueJoinNames: uniqueJoinNames,
 	}
 
 	generateReactModel(targetPath, templateData)
