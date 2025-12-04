@@ -21,6 +21,7 @@ export type Update{{.ModelName}}Request = Partial<Omit<{{.ModelName}}, 'id'>>;
 export interface {{.ModelName}}SearchParams {
 {{range .Columns}}  {{.Name | untitle}}?: {{.TypeScriptType}};
 {{end}}  page?: number;
+  pageSize?: number;
   limit?: number;
   sort?: string;
   order?: 'asc' | 'desc';
@@ -31,6 +32,7 @@ export interface ApiResponse<T> {
   content: T[];
   total: number;
   page: number;
+  pageSize: number;
   limit: number;
 }
 
