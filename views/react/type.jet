@@ -19,21 +19,23 @@ export type Update{{.ModelName}}Request = Partial<Omit<{{.ModelName}}, 'id'>>;
 
 // Search params type
 export interface {{.ModelName}}SearchParams {
-{{range .Columns}}  {{.Name | untitle}}?: {{.TypeScriptType}};
-{{end}}  page?: number;
+{{range .Columns}}{{if .IsDateType}}  start{{.Name | untitle}}?: {{.TypeScriptType}};
+  end{{.Name | untitle}}?: {{.TypeScriptType}};
+{{else}}  {{.Name | untitle}}?: {{.TypeScriptType}};
+{{end}}{{end}}  page?: number;
   pageSize?: number;
-  limit?: number;
-  sort?: string;
-  order?: 'asc' | 'desc';
 }
 
 // API response types
 export interface ApiResponse<T> {
   content: T[];
-  total: number;
   page: number;
   pageSize: number;
-  limit: number;
+  totalElements: number;
+  totalPages: number;
+  first: boolean;
+  last: boolean;
+  empty: boolean;
 }
 
 export interface ApiSingleResponse<T> {

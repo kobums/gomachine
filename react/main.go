@@ -41,9 +41,11 @@ type ReactSearchMethod struct {
 type ReactColumn struct {
 	Name           string
 	TypeScriptType string
+	OriginalType   string
 	IsNullable     bool
 	IsPrimaryKey   bool
 	IsOptional     bool
+	IsDateType     bool
 }
 
 type ReactJoin struct {
@@ -171,12 +173,17 @@ func ProcessReact(packageName string, tableName string, prefix string, items []u
 	// Convert util.Column to ReactColumn with TypeScript types
 	reactColumns := make([]ReactColumn, 0)
 	for _, col := range items {
+		originalTypeLower := strings.ToLower(col.OriginalType)
+		isDateType := originalTypeLower == "date" || originalTypeLower == "datetime" || originalTypeLower == "timestamp"
+
 		reactColumns = append(reactColumns, ReactColumn{
 			Name:           col.Name,
 			TypeScriptType: mapMySQLTypeToTypeScript(col.OriginalType),
+			OriginalType:   originalTypeLower,
 			IsNullable:     false, // 나중에 확장 가능
 			IsPrimaryKey:   col.Primary,
 			IsOptional:     col.Primary, // ID는 생성 시 선택적
+			IsDateType:     isDateType,
 		})
 	}
 
