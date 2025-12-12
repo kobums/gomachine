@@ -454,7 +454,7 @@ func generateKotlinEntity(targetPath string, data KotlinTemplateData) {
 		return
 	}
 
-	log.Printf("Generated Kotlin entity: %s", outputPath)
+	log.Printf("Generated Kotlin: %s", outputPath)
 }
 
 func generateKotlinRepository(targetPath string, data KotlinTemplateData) {
@@ -526,7 +526,7 @@ func generateKotlinRepository(targetPath string, data KotlinTemplateData) {
 		return
 	}
 
-	log.Printf("Generated Kotlin repository: %s", outputPath)
+	log.Printf("Generated Kotlin: %s", outputPath)
 }
 
 func generateKotlinService(targetPath string, data KotlinTemplateData) {
@@ -588,7 +588,7 @@ func generateKotlinService(targetPath string, data KotlinTemplateData) {
 		return
 	}
 
-	log.Printf("Generated Kotlin service: %s", outputPath)
+	log.Printf("Generated Kotlin: %s", outputPath)
 }
 
 func generateKotlinController(targetPath string, data KotlinTemplateData) {
@@ -650,7 +650,7 @@ func generateKotlinController(targetPath string, data KotlinTemplateData) {
 		return
 	}
 
-	log.Printf("Generated Kotlin controller: %s", outputPath)
+	log.Printf("Generated Kotlin: %s", outputPath)
 }
 
 func generateKotlinEnums(targetPath string, data KotlinTemplateData) {
@@ -737,5 +737,5 @@ func generateKotlinEnums(targetPath string, data KotlinTemplateData) {
 		return
 	}
 
-	log.Printf("Generated Kotlin enums: %s", outputPath)
+	log.Printf("Generated Kotlin: %s", outputPath)
 }

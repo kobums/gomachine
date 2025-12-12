@@ -200,7 +200,6 @@ func ProcessReact(packageName string, tableName string, prefix string, items []u
 	// Process joins
 	var joins []ReactJoin
 	if gpa != nil && gpa.Join != nil {
-		log.Printf("Processing joins for %s: found %d joins", modelName, len(gpa.Join))
 		for _, join := range gpa.Join {
 			alias := join.Alias
 			if alias == "" {
@@ -213,11 +212,9 @@ func ProcessReact(packageName string, tableName string, prefix string, items []u
 				Alias:     alias,
 				ModelName: strings.Title(join.Name),
 			})
-			log.Printf("  Added join: %s (alias: %s)", join.Name, alias)
 		}
 	} else {
 		joins = make([]ReactJoin, 0)
-		log.Printf("No joins for %s", modelName)
 	}
 
 	// Extract unique join model names for imports
@@ -368,8 +365,47 @@ func generateReactModel(targetPath string, data ReactTemplateData) {
 
 	outputPath := filepath.Join(modelsDir, strings.ToLower(data.TableName)+".ts")
 	if err := util.WriteFile(outputPath, b.String()); err != nil {
-		log.Printf("CRITICAL ERROR: Failed to write React model file %s: %v", outputPath, err)
+		log.Printf("ERROR: Failed to write React model %s: %v", outputPath, err)
 	} else {
-		log.Printf("SUCCESS: React model file written successfully: %s", outputPath)
+		log.Printf("Generated React: %s", outputPath)
+	}
+}
+
+func generateReactTypes(targetPath string, data ReactTemplateData) {
+	// Create types directory
+	typesDir := filepath.Join(targetPath, "src", "types")
+	err := os.MkdirAll(typesDir, 0755)
+	if err != nil {
+		log.Printf("Failed to create types directory: %v", err)
+		return
+	}
+
+	// Load template from ~/bin/buildtool
+	templateDir := filepath.Join(os.Getenv("HOME"), "bin", "buildtool", "react")
+	views := jet.NewSet(
+		jet.NewOSFileSystemLoader(templateDir),
+		jet.InDevelopmentMode(),
+	)
+
+	setupJetGlobals(views)
+
+	template, err := views.GetTemplate("type.jet")
+	if err != nil {
+		log.Printf("Failed to load React types template: %v", err)
+		return
+	}
+
+	// Generate file
+	var b bytes.Buffer
+	if err = template.Execute(&b, nil, data); err != nil {
+		log.Printf("Failed to execute React types template: %v", err)
+		return
+	}
+
+	outputPath := filepath.Join(typesDir, strings.ToLower(data.TableName)+".ts")
+	if err := util.WriteFile(outputPath, b.String()); err != nil {
+		log.Printf("ERROR: Failed to write React types %s: %v", outputPath, err)
+	} else {
+		log.Printf("Generated React: %s", outputPath)
 	}
 }

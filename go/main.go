@@ -322,15 +322,11 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 
 	if cnf.Language == "go" {
 		modelFile := cnf.GoModelFilePath + "/models/" + util.GetTableName(tableName) + ".go"
-		log.Printf("=== PROCESSING GO MODEL FILE ===")
-		log.Printf("Table name: %s", tableName)
-		log.Printf("Model file path: %s", modelFile)
-		log.Printf("Template content length: %d", b.Len())
 
 		if err := util.WriteFile(modelFile, b.String()); err != nil {
-			log.Printf("CRITICAL ERROR: Failed to write model file %s: %v", modelFile, err)
+			log.Printf("ERROR: Failed to write model file %s: %v", modelFile, err)
 		} else {
-			log.Printf("SUCCESS: Model file written successfully: %s", modelFile)
+			log.Printf("Generated Go: %s", modelFile)
 		}
 	}
 
@@ -338,25 +334,19 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 	var b2 bytes.Buffer
 	t2, err := views.GetTemplate("go/rest.jet")
 	if err == nil {
-		log.Printf("REST template loaded successfully")
 		if err = t2.Execute(&b2, v, nil); err != nil {
-			log.Printf("CRITICAL ERROR: REST template execution failed: %v", err)
-		} else {
-			log.Printf("REST template executed successfully, result size: %d", b2.Len())
+			log.Printf("ERROR: REST template execution failed: %v", err)
 		}
 	} else {
-		log.Printf("CRITICAL ERROR: Failed to load REST template: %v", err)
+		log.Printf("ERROR: Failed to load REST template: %v", err)
 	}
 
 	restFile := cnf.GoModelFilePath + "/controllers/rest/" + util.GetTableName(tableName) + ".go"
-	log.Printf("=== PROCESSING GO REST CONTROLLER FILE ===")
-	log.Printf("REST controller file path: %s", restFile)
-	log.Printf("Template content length: %d", b2.Len())
 
 	if err := util.WriteFile(restFile, b2.String()); err != nil {
-		log.Printf("CRITICAL ERROR: Failed to write rest controller file %s: %v", restFile, err)
+		log.Printf("ERROR: Failed to write rest controller file %s: %v", restFile, err)
 	} else {
-		log.Printf("SUCCESS: REST controller file written successfully: %s", restFile)
+		log.Printf("Generated Go: %s", restFile)
 	}
 
 	// Generate const file
@@ -377,26 +367,22 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 	t, err = views.GetTemplate("go/const.jet")
 	if err == nil {
 		if err = t.Execute(&b3, v2, nil); err != nil {
-			log.Printf("CRITICAL ERROR: Const template execution failed: %v", err)
+			log.Printf("ERROR: Const template execution failed: %v", err)
 		}
 	} else {
-		log.Printf("CRITICAL ERROR: Failed to load const template: %v", err)
+		log.Printf("ERROR: Failed to load const template: %v", err)
 	}
 
 	constDir := cnf.GoModelFilePath + "/models/" + util.GetTableName(tableName)
-	log.Printf("Creating const directory: %s", constDir)
 	if err := os.MkdirAll(constDir, 0755); err != nil {
-		log.Printf("Failed to create const directory %s: %v", constDir, err)
+		log.Printf("ERROR: Failed to create const directory %s: %v", constDir, err)
 	}
 
 	constFile := constDir + "/" + util.GetTableName(tableName) + ".go"
-	log.Printf("=== PROCESSING GO CONST FILE ===")
-	log.Printf("Const file path: %s", constFile)
-	log.Printf("Template content length: %d", b3.Len())
 
 	if err := util.WriteFile(constFile, b3.String()); err != nil {
-		log.Printf("CRITICAL ERROR: Failed to write const file %s: %v", constFile, err)
+		log.Printf("ERROR: Failed to write const file %s: %v", constFile, err)
 	} else {
-		log.Printf("SUCCESS: Const file written successfully: %s", constFile)
+		log.Printf("Generated Go: %s", constFile)
 	}
 }

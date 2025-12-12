@@ -52,11 +52,9 @@ func main() {
 	modelConfigDir := configDir
 
 	if pointerConfig.ModelJsonPath != "" {
-		log.Printf("Found ModelJsonPath in config: %s", pointerConfig.ModelJsonPath)
 		modelConfigDir = pointerConfig.ModelJsonPath
 		modelConfig = config.Init(modelConfigDir)
 	} else {
-		log.Println("No ModelJsonPath found, using config from config/model.json")
 		modelConfig = pointerConfig
 	}
 	
@@ -70,9 +68,6 @@ func main() {
 	if len(os.Args) > 3 && os.Args[3] != "" {
 		packageName = os.Args[3]
 	}
-
-	log.Printf("Package name: %s", packageName)
-	log.Printf("Language: %s", modelConfig.Language)
 
 	gpas := modelConfig.Gpa
 	

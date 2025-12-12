@@ -328,15 +328,11 @@ func ProcessDart(packageName string, tableName string, prefix string, items []ut
 			}
 
 			dartFile := dartModelPath + util.GetTableName(tableName) + ".dart"
-			log.Printf("=== PROCESSING DART MODEL FILE ===")
-			log.Printf("Table name: %s", tableName)
-			log.Printf("Dart file path: %s", dartFile)
-			log.Printf("Template content length: %d", b.Len())
 
 			if err := util.WriteFile(dartFile, b.String()); err != nil {
-				log.Printf("CRITICAL ERROR: Failed to write dart file %s: %v", dartFile, err)
+				log.Printf("ERROR: Failed to write dart file %s: %v", dartFile, err)
 			} else {
-				log.Printf("SUCCESS: Dart model file written successfully: %s", dartFile)
+				log.Printf("Generated Dart: %s", dartFile)
 			}
 		}
 	} else {
