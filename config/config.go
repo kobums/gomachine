@@ -56,6 +56,8 @@ type ModelConfig struct {
 	GoModelFilePath string `json:"goModelFilePath"`
 	DartModelFilePath string `json:"dartModelFilePath"`
 	KotlinModelFilePath string `json:"kotlinModelFilePath"`
+	ReactModelFilePath string `json:"reactModelFilePath"`
+	ModelJsonPath     string `json:"modelJsonPath"`
 	Gpa       []Gpa  `json:"table"`
 }
 

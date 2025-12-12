@@ -44,20 +44,21 @@ func main() {
 		return
 	}
 
-	// goModelFilePath 가져오기
-	goModelPath := config.GetGoModelFilePath(configDir)
-	if goModelPath == "" {
-		log.Println("goModelFilePath not found in config, using current directory")
-		goModelPath = configDir
-	}
+	// config/model.json 로드 ("pointer" config to find the real model.json location)
+	configPath := filepath.Join(configDir, "config")
+	pointerConfig := config.Init(configPath)
 	
-	// 절대 경로로 변환하여 로그 출력
-	if targetPath, err := filepath.Abs(goModelPath); err == nil {
-		log.Printf("Absolute target path: %s", targetPath)
-	}
+	var modelConfig config.ModelConfig
+	modelConfigDir := configDir
 
-	// ModelConfig 로드
-	modelConfig := config.Init(goModelPath)
+	if pointerConfig.ModelJsonPath != "" {
+		log.Printf("Found ModelJsonPath in config: %s", pointerConfig.ModelJsonPath)
+		modelConfigDir = pointerConfig.ModelJsonPath
+		modelConfig = config.Init(modelConfigDir)
+	} else {
+		log.Println("No ModelJsonPath found, using config from config/model.json")
+		modelConfig = pointerConfig
+	}
 	
 	// os.Args로 언어가 지정된 경우 오버라이드
 	if len(os.Args) > 2 && os.Args[2] != "" {

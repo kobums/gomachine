@@ -129,10 +129,20 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 	
 	// Determine target path
 	var targetPath string
-	if len(os.Args) > 1 && os.Args[1] != "" {
+	if cnf.KotlinModelFilePath != "" {
+		targetPath = cnf.KotlinModelFilePath
+	} else if len(os.Args) > 1 && os.Args[1] != "" {
 		targetPath = os.Args[1]
 	} else {
 		targetPath = "../gym/gymspring"
+	}
+
+	// Make sure the target directory exists
+	if _, err := os.Stat(targetPath); os.IsNotExist(err) {
+		err := os.MkdirAll(targetPath, 0755)
+		if err != nil {
+			log.Printf("Failed to create target directory: %v", err)
+		}
 	}
 
 	// Build enum map for easy lookup
@@ -383,7 +393,7 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 
 func generateKotlinEntity(targetPath string, data KotlinTemplateData) {
 	// Create entity directory
-	entityDir := filepath.Join(targetPath, "src", "main", "kotlin", "com", "gowoobro", "gymspring", "entity")
+	entityDir := filepath.Join(targetPath, "entity")
 	err := os.MkdirAll(entityDir, 0755)
 	if err != nil {
 		log.Printf("Failed to create entity directory: %v", err)
@@ -449,7 +459,7 @@ func generateKotlinEntity(targetPath string, data KotlinTemplateData) {
 
 func generateKotlinRepository(targetPath string, data KotlinTemplateData) {
 	// Create repository directory
-	repositoryDir := filepath.Join(targetPath, "src", "main", "kotlin", "com", "gowoobro", "gymspring", "repository")
+	repositoryDir := filepath.Join(targetPath, "repository")
 	err := os.MkdirAll(repositoryDir, 0755)
 	if err != nil {
 		log.Printf("Failed to create repository directory: %v", err)
@@ -521,7 +531,7 @@ func generateKotlinRepository(targetPath string, data KotlinTemplateData) {
 
 func generateKotlinService(targetPath string, data KotlinTemplateData) {
 	// Create service directory
-	serviceDir := filepath.Join(targetPath, "src", "main", "kotlin", "com", "gowoobro", "gymspring", "service")
+	serviceDir := filepath.Join(targetPath, "service")
 	err := os.MkdirAll(serviceDir, 0755)
 	if err != nil {
 		log.Printf("Failed to create service directory: %v", err)
@@ -583,7 +593,7 @@ func generateKotlinService(targetPath string, data KotlinTemplateData) {
 
 func generateKotlinController(targetPath string, data KotlinTemplateData) {
 	// Create controller directory
-	controllerDir := filepath.Join(targetPath, "src", "main", "kotlin", "com", "gowoobro", "gymspring", "controller")
+	controllerDir := filepath.Join(targetPath, "controller")
 	err := os.MkdirAll(controllerDir, 0755)
 	if err != nil {
 		log.Printf("Failed to create controller directory: %v", err)
@@ -645,7 +655,7 @@ func generateKotlinController(targetPath string, data KotlinTemplateData) {
 
 func generateKotlinEnums(targetPath string, data KotlinTemplateData) {
 	// Create enums directory
-	enumsDir := filepath.Join(targetPath, "src", "main", "kotlin", "com", "gowoobro", "gymspring", "enums", strings.ToLower(data.ModelName))
+	enumsDir := filepath.Join(targetPath, "enums", strings.ToLower(data.ModelName))
 	err := os.MkdirAll(enumsDir, 0755)
 	if err != nil {
 		log.Printf("Failed to create enums directory: %v", err)

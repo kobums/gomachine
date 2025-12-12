@@ -315,7 +315,19 @@ func ProcessDart(packageName string, tableName string, prefix string, items []ut
 			log.Println(err)
 		} else {
 			// Output directly to DartModelFilePath with just the table name
-			dartFile := cnf.DartModelFilePath + util.GetTableName(tableName) + ".dart"
+			dartModelPath := cnf.DartModelFilePath
+			if dartModelPath == "" {
+				dartModelPath = "../gym/app/lib/model/"
+			}
+
+			// Ensure directory exists
+			if _, err := os.Stat(dartModelPath); os.IsNotExist(err) {
+				if err := os.MkdirAll(dartModelPath, 0755); err != nil {
+					log.Printf("CRITICAL ERROR: Failed to create dart directory %s: %v", dartModelPath, err)
+				}
+			}
+
+			dartFile := dartModelPath + util.GetTableName(tableName) + ".dart"
 			log.Printf("=== PROCESSING DART MODEL FILE ===")
 			log.Printf("Table name: %s", tableName)
 			log.Printf("Dart file path: %s", dartFile)

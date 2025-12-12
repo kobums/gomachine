@@ -72,10 +72,20 @@ func ProcessReact(packageName string, tableName string, prefix string, items []u
 
 	// Determine target path
 	var targetPath string
-	if len(os.Args) > 1 && os.Args[1] != "" {
+	if cnf.ReactModelFilePath != "" {
+		targetPath = cnf.ReactModelFilePath
+	} else if len(os.Args) > 1 && os.Args[1] != "" {
 		targetPath = os.Args[1]
 	} else {
 		targetPath = "../gym/front"
+	}
+
+	// Make sure the target directory exists
+	if _, err := os.Stat(targetPath); os.IsNotExist(err) {
+		err := os.MkdirAll(targetPath, 0755)
+		if err != nil {
+			log.Printf("Failed to create target directory: %v", err)
+		}
 	}
 
 	// Get enum data from GPA
@@ -233,7 +243,6 @@ func ProcessReact(packageName string, tableName string, prefix string, items []u
 	}
 
 	generateReactModel(targetPath, templateData)
-	generateReactTypes(targetPath, templateData)
 }
 
 func mapMySQLTypeToTypeScript(mysqlType string) string {
@@ -362,44 +371,5 @@ func generateReactModel(targetPath string, data ReactTemplateData) {
 		log.Printf("CRITICAL ERROR: Failed to write React model file %s: %v", outputPath, err)
 	} else {
 		log.Printf("SUCCESS: React model file written successfully: %s", outputPath)
-	}
-}
-
-func generateReactTypes(targetPath string, data ReactTemplateData) {
-	// Create types directory
-	typesDir := filepath.Join(targetPath, "src", "types")
-	err := os.MkdirAll(typesDir, 0755)
-	if err != nil {
-		log.Printf("Failed to create types directory: %v", err)
-		return
-	}
-
-	// Load template from ~/bin/buildtool
-	templateDir := filepath.Join(os.Getenv("HOME"), "bin", "buildtool", "react")
-	views := jet.NewSet(
-		jet.NewOSFileSystemLoader(templateDir),
-		jet.InDevelopmentMode(),
-	)
-
-	setupJetGlobals(views)
-
-	template, err := views.GetTemplate("type.jet")
-	if err != nil {
-		log.Printf("Failed to load React types template: %v", err)
-		return
-	}
-
-	// Generate file
-	var b bytes.Buffer
-	if err = template.Execute(&b, nil, data); err != nil {
-		log.Printf("Failed to execute React types template: %v", err)
-		return
-	}
-
-	outputPath := filepath.Join(typesDir, strings.ToLower(data.TableName)+".ts")
-	if err := util.WriteFile(outputPath, b.String()); err != nil {
-		log.Printf("CRITICAL ERROR: Failed to write React types file %s: %v", outputPath, err)
-	} else {
-		log.Printf("SUCCESS: React types file written successfully: %s", outputPath)
 	}
 }
