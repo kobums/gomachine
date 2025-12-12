@@ -120,78 +120,100 @@ func readColumn(packageName string, tableName string, db *sql.DB, gpa *config.Gp
 
 	if err != nil {
 		log.Println(err)
+		return
 	}
+	defer rows.Close()
 
+	// Store raw column data first
+	type RawCol struct {
+		Name     string
+		DataType string
+	}
+	var rawCols []RawCol
 	prefix := ""
 
-	// Process based on language
-	if cnf.Language == "dart" || cnf.Language == "flutter" {
-		dartColumns := make([]util.Column, 0)
-		for rows.Next() {
-			var name string
-			var typeid string
+	for rows.Next() {
+		var name string
+		var typeid string
 
-			err := rows.Scan(&name, &typeid)
-			if err != nil {
-				log.Println(err)
-			}
-
-			column := util.Column{Name: strings.Title(util.GetName(name)), Column: name, Type: util.GetType(util.GetTableName(tableName), util.GetName(name), typeid, gpa, cnf), OriginalType: typeid}
-			dartColumns = append(dartColumns, column)
-
-			prefix = util.GetPrefix(name)
+		err := rows.Scan(&name, &typeid)
+		if err != nil {
+			log.Println(err)
+			continue
 		}
-		dartcodegen.ProcessDart(packageName, tableName, prefix, dartColumns, db, gpa, version, auth, cnf)
-	} else if cnf.Language == "kotlin" || cnf.Language == "spring" {
-		kotlinColumns := make([]util.Column, 0)
-		for rows.Next() {
-			var name string
-			var typeid string
-
-			err := rows.Scan(&name, &typeid)
-			if err != nil {
-				log.Println(err)
-			}
-
-			column := util.Column{Name: strings.Title(util.GetName(name)), Column: name, Type: util.GetType(util.GetTableName(tableName), util.GetName(name), typeid, gpa, cnf), OriginalType: typeid}
-			kotlinColumns = append(kotlinColumns, column)
-
-			prefix = util.GetPrefix(name)
-		}
-		kotlincodegen.ProcessKotlin(packageName, tableName, prefix, kotlinColumns, db, gpa, version, auth, cnf)
-	} else if cnf.Language == "react" || cnf.Language == "typescript" {
-		reactColumns := make([]util.Column, 0)
-		for rows.Next() {
-			var name string
-			var typeid string
-
-			err := rows.Scan(&name, &typeid)
-			if err != nil {
-				log.Println(err)
-			}
-
-			column := util.Column{Name: strings.Title(util.GetName(name)), Column: name, Type: util.GetType(util.GetTableName(tableName), util.GetName(name), typeid, gpa, cnf), OriginalType: typeid}
-			reactColumns = append(reactColumns, column)
-
-			prefix = util.GetPrefix(name)
-		}
-		reactcodegen.ProcessReact(packageName, tableName, prefix, reactColumns, db, gpa, version, auth, cnf)
-	} else {
-		goColumns := make([]util.Column, 0)
-		for rows.Next() {
-			var name string
-			var typeid string
-
-			err := rows.Scan(&name, &typeid)
-			if err != nil {
-				log.Println(err)
-			}
-
-			column := util.Column{Name: strings.Title(util.GetName(name)), Column: name, Type: util.GetType(util.GetTableName(tableName), util.GetName(name), typeid, gpa, cnf), OriginalType: typeid}
-			goColumns = append(goColumns, column)
-
-			prefix = util.GetPrefix(name)
-		}
-		gocodegen.ProcessGo(packageName, tableName, prefix, goColumns, db, gpa, version, auth, cnf)
+		rawCols = append(rawCols, RawCol{Name: name, DataType: typeid})
+		prefix = util.GetPrefix(name)
 	}
+
+	// Process Dart
+	{
+		localCnf := cnf
+		localCnf.Language = "dart"
+		dartColumns := make([]util.Column, 0)
+		for _, raw := range rawCols {
+			column := util.Column{
+				Name:         strings.Title(util.GetName(raw.Name)),
+				Column:       raw.Name,
+				Type:         util.GetType(util.GetTableName(tableName), util.GetName(raw.Name), raw.DataType, gpa, localCnf),
+				OriginalType: raw.DataType,
+				Prefix:       util.GetPrefix(raw.Name),
+			}
+			dartColumns = append(dartColumns, column)
+		}
+		dartcodegen.ProcessDart(packageName, tableName, prefix, dartColumns, db, gpa, version, auth, localCnf)
+	}
+
+	// Process Kotlin
+	{
+		localCnf := cnf
+		localCnf.Language = "kotlin"
+		kotlinColumns := make([]util.Column, 0)
+		for _, raw := range rawCols {
+			column := util.Column{
+				Name:         strings.Title(util.GetName(raw.Name)),
+				Column:       raw.Name,
+				Type:         util.GetType(util.GetTableName(tableName), util.GetName(raw.Name), raw.DataType, gpa, localCnf),
+				OriginalType: raw.DataType,
+				Prefix:       util.GetPrefix(raw.Name),
+			}
+			kotlinColumns = append(kotlinColumns, column)
+		}
+		kotlincodegen.ProcessKotlin(packageName, tableName, prefix, kotlinColumns, db, gpa, version, auth, localCnf)
+	}
+
+	// Process React
+	{
+		localCnf := cnf
+		localCnf.Language = "react"
+		reactColumns := make([]util.Column, 0)
+		for _, raw := range rawCols {
+			column := util.Column{
+				Name:         strings.Title(util.GetName(raw.Name)),
+				Column:       raw.Name,
+				Type:         util.GetType(util.GetTableName(tableName), util.GetName(raw.Name), raw.DataType, gpa, localCnf),
+				OriginalType: raw.DataType,
+				Prefix:       util.GetPrefix(raw.Name),
+			}
+			reactColumns = append(reactColumns, column)
+		}
+		reactcodegen.ProcessReact(packageName, tableName, prefix, reactColumns, db, gpa, version, auth, localCnf)
+	}
+
+	// Process Go
+	{
+		localCnf := cnf
+		localCnf.Language = "go"
+		goColumns := make([]util.Column, 0)
+		for _, raw := range rawCols {
+			column := util.Column{
+				Name:         strings.Title(util.GetName(raw.Name)),
+				Column:       raw.Name,
+				Type:         util.GetType(util.GetTableName(tableName), util.GetName(raw.Name), raw.DataType, gpa, localCnf),
+				OriginalType: raw.DataType,
+				Prefix:       util.GetPrefix(raw.Name),
+			}
+			goColumns = append(goColumns, column)
+		}
+		gocodegen.ProcessGo(packageName, tableName, prefix, goColumns, db, gpa, version, auth, localCnf)
+}
 }
