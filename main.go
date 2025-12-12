@@ -103,11 +103,6 @@ func main() {
 		readColumn(packageName, name, db, gpa, modelConfig.Buildtool, modelConfig.Auth, modelConfig)
 		tables = append(tables, tableName)
 	}
-	
-	// Generate router file for Go
-	if modelConfig.Language == "" || modelConfig.Language == "go" || modelConfig.Language == "golang" {
-		gocodegen.GenerateGoRouter(packageName, modelConfig)
-	}
 }
 
 func readColumn(packageName string, tableName string, db *sql.DB, gpa *config.Gpa, version string, auth string, cnf config.ModelConfig) {

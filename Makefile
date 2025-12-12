@@ -10,7 +10,7 @@ request: request.go
 	go build -o bin/request request.go
 
 # Build model generator using Go modules
-model: main.go util/utils.go go/main.go go/router.go dart/main.go
+model: main.go util/utils.go go/main.go dart/main.go kotlin/main.go react/main.go
 	go build -o bin/model .
 
 doc: doc.go
@@ -20,11 +20,11 @@ watch: watch.go
 	go build -o bin/watch watch.go
 
 # Run model generator from source files
-run: main.go util/utils.go go/main.go go/router.go dart/main.go
+run: main.go util/utils.go go/main.go dart/main.go kotlin/main.go react/main.go
 	go run .
 
 # Build Linux binary for model generator
-model-linux: main.go util/utils.go go/main.go go/router.go dart/main.go
+model-linux: main.go util/utils.go go/main.go dart/main.go kotlin/main.go react/main.go
 	env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags '-s' -o bin/model.linux .
 
 install: model

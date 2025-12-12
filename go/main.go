@@ -14,6 +14,22 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+type RouteParam struct {
+	Name      string
+	Type      string
+	ParamType string // "path", "query", "body"
+}
+
+type Route struct {
+	Method         string
+	URL            string
+	FuncName       string
+	ControllerName string
+	ParamCode      string
+	ParamStr       string
+	Params         []RouteParam
+}
+
 func ProcessGo(packageName string, tableName string, prefix string, items []util.Column, db *sql.DB, gpa *config.Gpa, version string, auth string, cnf config.ModelConfig) {
 	path := fmt.Sprintf("%v/bin/buildtool", os.Getenv("HOME"))
 
@@ -384,5 +400,268 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 		log.Printf("ERROR: Failed to write const file %s: %v", constFile, err)
 	} else {
 		log.Printf("Generated Go: %s", constFile)
+	}
+
+	// Generate domain router file
+	generateDomainRouter(views, packageName, tableName, items, gpa, cnf)
+}
+
+func generateDomainRouter(views *jet.Set, packageName string, tableName string, items []util.Column, gpa *config.Gpa, cnf config.ModelConfig) {
+	domainName := util.GetTableName(tableName)
+
+	routes := make([]Route, 0)
+	controllerName := "rest." + strings.Title(domainName) + "Controller"
+
+	// Add standard CRUD routes
+	// GET /domain - Index
+	routes = append(routes, Route{
+		Method:         "Get",
+		URL:            "/" + domainName,
+		FuncName:       "Index",
+		ControllerName: controllerName,
+		ParamCode:      "\t\tpage_, _ := strconv.Atoi(c.Query(\"page\"))\n\t\tpagesize_, _ := strconv.Atoi(c.Query(\"pagesize\"))",
+		ParamStr:       "page_, pagesize_",
+	})
+
+	// GET /domain/:id - Read
+	routes = append(routes, Route{
+		Method:         "Get",
+		URL:            "/" + domainName + "/:id",
+		FuncName:       "Read",
+		ControllerName: controllerName,
+		ParamCode:      "\t\tid_, _ := strconv.ParseInt(c.Params(\"id\"), 10, 64)",
+		ParamStr:       "id_",
+	})
+
+	// POST /domain - Insert
+	routes = append(routes, Route{
+		Method:         "Post",
+		URL:            "/" + domainName,
+		FuncName:       "Insert",
+		ControllerName: controllerName,
+		ParamCode:      fmt.Sprintf("\t\titem_ := &models.%s{}\n\t\terr := c.BodyParser(item_)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t}", strings.Title(domainName)),
+		ParamStr:       "item_",
+	})
+
+	// POST /domain/batch - Insertbatch
+	routes = append(routes, Route{
+		Method:         "Post",
+		URL:            "/" + domainName + "/batch",
+		FuncName:       "Insertbatch",
+		ControllerName: controllerName,
+		ParamCode:      fmt.Sprintf("\t\tvar items_ *[]models.%s\n\t\titems__ref := &items_\n\t\terr := c.BodyParser(items__ref)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t}", strings.Title(domainName)),
+		ParamStr:       "items_",
+	})
+
+	// POST /domain/count - Count
+	routes = append(routes, Route{
+		Method:         "Post",
+		URL:            "/" + domainName + "/count",
+		FuncName:       "Count",
+		ControllerName: controllerName,
+		ParamCode:      "",
+		ParamStr:       "",
+	})
+
+	// PUT /domain - Update
+	routes = append(routes, Route{
+		Method:         "Put",
+		URL:            "/" + domainName,
+		FuncName:       "Update",
+		ControllerName: controllerName,
+		ParamCode:      fmt.Sprintf("\t\titem_ := &models.%s{}\n\t\terr := c.BodyParser(item_)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t}", strings.Title(domainName)),
+		ParamStr:       "item_",
+	})
+
+	// DELETE /domain - Delete
+	routes = append(routes, Route{
+		Method:         "Delete",
+		URL:            "/" + domainName,
+		FuncName:       "Delete",
+		ControllerName: controllerName,
+		ParamCode:      fmt.Sprintf("\t\titem_ := &models.%s{}\n\t\terr := c.BodyParser(item_)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t}", strings.Title(domainName)),
+		ParamStr:       "item_",
+	})
+
+	// DELETE /domain/batch - Deletebatch
+	routes = append(routes, Route{
+		Method:         "Delete",
+		URL:            "/" + domainName + "/batch",
+		FuncName:       "Deletebatch",
+		ControllerName: controllerName,
+		ParamCode:      fmt.Sprintf("\t\titem_ := &[]models.%s{}\n\t\terr := c.BodyParser(item_)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t}", strings.Title(domainName)),
+		ParamStr:       "item_",
+	})
+
+	// Add custom method routes from GPA
+	if gpa != nil && gpa.Method != nil {
+		for _, method := range gpa.Method {
+			route := generateRouteFromMethod(method, domainName, items, controllerName)
+			if route != nil {
+				routes = append(routes, *route)
+			}
+		}
+	}
+
+	v := make(jet.VarMap)
+	v.Set("packageName", packageName)
+	v.Set("domainName", domainName)
+	v.Set("routes", routes)
+	v.Set("controllerType", "rest")
+	v.Set("needsLog", true)
+
+	var b bytes.Buffer
+	t, err := views.GetTemplate("go/domain_router.jet")
+	if err != nil {
+		log.Printf("ERROR: Failed to load domain router template: %v", err)
+		return
+	}
+
+	if err = t.Execute(&b, v, nil); err != nil {
+		log.Printf("ERROR: Domain router template execution failed: %v", err)
+		return
+	}
+
+	routerDir := cnf.GoModelFilePath + "/router/routers"
+	if err := os.MkdirAll(routerDir, 0755); err != nil {
+		log.Printf("ERROR: Failed to create router directory %s: %v", routerDir, err)
+		return
+	}
+
+	routerFile := routerDir + "/" + domainName + ".go"
+	if err := util.WriteFile(routerFile, b.String()); err != nil {
+		log.Printf("ERROR: Failed to write router file %s: %v", routerFile, err)
+	} else {
+		log.Printf("Generated Go: %s", routerFile)
+	}
+}
+
+func generateRouteFromMethod(method string, domainName string, items []util.Column, controllerName string) *Route {
+	methodLower := strings.ToLower(method)
+
+	// GetBy methods
+	if strings.HasPrefix(methodLower, "getby") {
+		fieldName := method[5:]
+		fieldLower := strings.ToLower(fieldName)
+		paramType := getParamType(fieldName, items)
+
+		return &Route{
+			Method:         "Get",
+			URL:            fmt.Sprintf("/%s/get/%s/:%s", domainName, fieldLower, fieldLower),
+			FuncName:       method,
+			ControllerName: controllerName,
+			ParamCode:      generateParamCode(fieldName, fieldLower, paramType),
+			ParamStr:       fieldLower + "_",
+		}
+	}
+
+	// FindBy methods
+	if strings.HasPrefix(methodLower, "findby") {
+		fieldName := method[6:]
+		fieldLower := strings.ToLower(fieldName)
+		paramType := getParamType(fieldName, items)
+
+		return &Route{
+			Method:         "Get",
+			URL:            fmt.Sprintf("/%s/find/%s/:%s", domainName, fieldLower, fieldLower),
+			FuncName:       method,
+			ControllerName: controllerName,
+			ParamCode:      generateParamCode(fieldName, fieldLower, paramType),
+			ParamStr:       fieldLower + "_",
+		}
+	}
+
+	// CountBy methods
+	if strings.HasPrefix(methodLower, "countby") {
+		fieldName := method[7:]
+		fieldLower := strings.ToLower(fieldName)
+		paramType := getParamType(fieldName, items)
+
+		return &Route{
+			Method:         "Get",
+			URL:            fmt.Sprintf("/%s/count/%s/:%s", domainName, fieldLower, fieldLower),
+			FuncName:       method,
+			ControllerName: controllerName,
+			ParamCode:      generateParamCode(fieldName, fieldLower, paramType),
+			ParamStr:       fieldLower + "_",
+		}
+	}
+
+	// UpdateXxxByYyy methods
+	if strings.HasPrefix(methodLower, "update") && strings.Contains(methodLower, "by") {
+		parts := strings.Split(method[6:], "By")
+		if len(parts) == 2 {
+			updateField := parts[0]
+			whereField := parts[1]
+			updateFieldLower := strings.ToLower(updateField)
+			whereFieldLower := strings.ToLower(whereField)
+
+			updateType := getParamType(updateField, items)
+			whereType := getParamType(whereField, items)
+
+			paramCode := fmt.Sprintf("\t\tvar results map[string]interface{}\n\t\tjsonData := c.Body()\n\t\tjsonErr := json.Unmarshal(jsonData, &results)\n\t\tif jsonErr != nil {\n\t\t    log.Error().Msg(jsonErr.Error())\n\t\t}\n")
+			paramCode += generateUpdateParamExtract(updateFieldLower, updateType)
+			paramCode += generateUpdateParamExtract(whereFieldLower, whereType)
+
+			return &Route{
+				Method:         "Put",
+				URL:            fmt.Sprintf("/%s/%s/%s", domainName, updateFieldLower, whereFieldLower),
+				FuncName:       method,
+				ControllerName: controllerName,
+				ParamCode:      paramCode,
+				ParamStr:       fmt.Sprintf("%s_, %s_", updateFieldLower, whereFieldLower),
+			}
+		}
+	}
+
+	return nil
+}
+
+func getParamType(fieldName string, items []util.Column) string {
+	for _, item := range items {
+		if strings.EqualFold(item.Name, fieldName) {
+			return item.Type
+		}
+	}
+	return "string"
+}
+
+func generateParamCode(fieldName string, fieldLower string, paramType string) string {
+	// Check if it's an enum type (contains ".")
+	if strings.Contains(paramType, ".") {
+		// Enum type from models package
+		parts := strings.Split(paramType, ".")
+		enumPkg := parts[0]
+		enumType := parts[1]
+		return fmt.Sprintf("\t\tvar %s_ %s.%s\n\t\t%s__, _ := strconv.Atoi(c.Params(\"%s\"))\n\t\t%s_ = %s.%s(%s__)",
+			fieldLower, enumPkg, enumType, fieldLower, fieldLower, fieldLower, enumPkg, enumType, fieldLower)
+	}
+
+	switch paramType {
+	case "int", "int32":
+		return fmt.Sprintf("\t\t%s_, _ := strconv.Atoi(c.Params(\"%s\"))", fieldLower, fieldLower)
+	case "int64":
+		return fmt.Sprintf("\t\t%s_, _ := strconv.ParseInt(c.Params(\"%s\"), 10, 64)", fieldLower, fieldLower)
+	case "bool":
+		return fmt.Sprintf("\t\t%s_, _ := strconv.ParseBool(c.Params(\"%s\"))", fieldLower, fieldLower)
+	case "float64":
+		return fmt.Sprintf("\t\t%s_, _ := strconv.ParseFloat(c.Params(\"%s\"), 64)", fieldLower, fieldLower)
+	default:
+		return fmt.Sprintf("\t\t%s_ := c.Params(\"%s\")", fieldLower, fieldLower)
+	}
+}
+
+func generateUpdateParamExtract(fieldLower string, paramType string) string {
+	switch paramType {
+	case "int", "int32":
+		return fmt.Sprintf("\t\tvar %s_ int\n\t\tif v, flag := results[\"%s\"]; flag {\n\t\t\t%s_ = int(v.(float64))\n\t\t}\n", fieldLower, fieldLower, fieldLower)
+	case "int64":
+		return fmt.Sprintf("\t\tvar %s_ int64\n\t\tif v, flag := results[\"%s\"]; flag {\n\t\t\t%s_ = int64(v.(float64))\n\t\t}\n", fieldLower, fieldLower, fieldLower)
+	case "bool":
+		return fmt.Sprintf("\t\tvar %s_ bool\n\t\tif v, flag := results[\"%s\"]; flag {\n\t\t\t%s_ = v.(bool)\n\t\t}\n", fieldLower, fieldLower, fieldLower)
+	case "float64":
+		return fmt.Sprintf("\t\tvar %s_ float64\n\t\tif v, flag := results[\"%s\"]; flag {\n\t\t\t%s_ = v.(float64)\n\t\t}\n", fieldLower, fieldLower, fieldLower)
+	default:
+		return fmt.Sprintf("\t\tvar %s_ string\n\t\tif v, flag := results[\"%s\"]; flag {\n\t\t\t%s_ = v.(string)\n\t\t}\n", fieldLower, fieldLower, fieldLower)
 	}
 }
