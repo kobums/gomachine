@@ -306,36 +306,30 @@ func ProcessDart(packageName string, tableName string, prefix string, items []ut
 		v.Set("imports", util.Unique(funcs))
 	}
 
-	var templateBuffers []bytes.Buffer
-
-	arr := []string{"model", "params", "provider", "repository"}
-	for _, a := range arr {
-		modelFilename := "dart/" + a + ".jet"
-		t, err := views.GetTemplate(modelFilename)
-		if err == nil {
-			var b bytes.Buffer
-			if err = t.Execute(&b, v, nil); err != nil {
-				log.Println(err)
-			}
-			templateBuffers = append(templateBuffers, b)
-		} else {
-			log.Println("error ========================")
+	// Only process the model template as it now includes the manager and other necessary parts
+	modelFilename := "dart/model.jet"
+	t, err := views.GetTemplate(modelFilename)
+	if err == nil {
+		var b bytes.Buffer
+		if err = t.Execute(&b, v, nil); err != nil {
 			log.Println(err)
-			log.Println("error ========================")
-		}
-	}
-
-	for i, b := range templateBuffers {
-		dartFile := cnf.DartModelFilePath + arr[i] + "/" + util.GetTableName(tableName) + "_" + arr[i] + ".dart"
-		log.Printf("=== PROCESSING DART %s FILE ===", strings.ToUpper(arr[i]))
-		log.Printf("Table name: %s", tableName)
-		log.Printf("Dart file path: %s", dartFile)
-		log.Printf("Template content length: %d", b.Len())
-
-		if err := util.WriteFile(dartFile, b.String()); err != nil {
-			log.Printf("CRITICAL ERROR: Failed to write dart file %s: %v", dartFile, err)
 		} else {
-			log.Printf("SUCCESS: Dart %s file written successfully: %s", arr[i], dartFile)
+			// Output directly to DartModelFilePath with just the table name
+			dartFile := cnf.DartModelFilePath + util.GetTableName(tableName) + ".dart"
+			log.Printf("=== PROCESSING DART MODEL FILE ===")
+			log.Printf("Table name: %s", tableName)
+			log.Printf("Dart file path: %s", dartFile)
+			log.Printf("Template content length: %d", b.Len())
+
+			if err := util.WriteFile(dartFile, b.String()); err != nil {
+				log.Printf("CRITICAL ERROR: Failed to write dart file %s: %v", dartFile, err)
+			} else {
+				log.Printf("SUCCESS: Dart model file written successfully: %s", dartFile)
+			}
 		}
+	} else {
+		log.Println("error ========================")
+		log.Println(err)
+		log.Println("error ========================")
 	}
 }

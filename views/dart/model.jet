@@ -1,17 +1,81 @@
-import 'package:json_annotation/json_annotation.dart';
+import 'package:common_control/common_control.dart';
+{{range items}}{{if .Type != "double" && .Type != "String" && .Type != "int" && .Type != "bool"}}import 'package:dreamcam/models/{{.Type|lower}}.dart';
+{{end}}{{end}}
 
-part '{{partName}}_model.g.dart';
+class {{name}} {
+{{range items}}  {{if .Type == "double" || .Type == "String" || .Type == "int" || .Type == "bool"}}{{.Type}} {{.Name|lower}};{{else}}{{.Type}} {{.Name|lower}};{{end}}
+{{end}}  bool checked;
+  Map<String, dynamic> extra;
 
-@JsonSerializable()
-class {{name}}Model {
-  {{range items}}
-  {{if .Type == "double" || .Type == "String" || .Type == "int" || .Type == "bool"}}final {{.Type}} {{.Name|lower}};{{else}}{{name}}{{.Type}} {{.Name|lower}};{{end}}{{end}}
-
-  {{name}}Model({
-    {{range i, v := items}}{{if i > 0}},{{end}}
-    required this.{{v.Name|lower}}{{end}},
+  {{name}}({
+{{range items}}    this.{{.Name|lower}} = {{if .Type == "int"}}0{{else if .Type == "double"}}0.0{{else if .Type == "bool"}}false{{else if .Type == "String"}}''{{else}}{{if .Type}}{{.Type}}(){{else}}null{{end}}{{end}},
+{{end}}    this.extra = const {},
+    this.checked = false,
   });
 
-  factory {{name}}Model.fromJson(Map<String, dynamic> json) =>
-      _${{name}}ModelFromJson(json);
+  factory {{name}}.fromJson(Map<String, dynamic> json) {
+    return {{name}}(
+{{range items}}      {{.Name|lower}}: {{if .Type == "double" || .Type == "String" || .Type == "int" || .Type == "bool"}}json['{{.Name|lower}}'] as {{.Type}}{{else}}{{.Type}}.fromJson(json['{{.Name|lower}}']){{end}},
+{{end}}      extra: json['extra'] == null ? <String, dynamic>{} : json['extra'] as Map<String, dynamic>,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+{{range items}}    '{{.Name|lower}}': {{if .Type == "double" || .Type == "String" || .Type == "int" || .Type == "bool"}}{{.Name|lower}}{{else}}{{.Name|lower}}.toJson(){{end}},
+{{end}}  };
+
+  {{name}} clone() {
+    return {{name}}.fromJson(toJson());
+  }
+}
+
+class {{name}}Manager {
+  static const baseUrl = '/api/{{name|lower}}';
+
+  static Future<List<{{name}}>> find({
+    int page = 0,
+    int pagesize = 20,
+    String? params,
+  }) async {
+    var result = await Http.get(baseUrl, {
+      'page': page,
+      'pagesize': pagesize,
+    }, params);
+    if (result == null || result['items'] == null) {
+      return List<{{name}}>.empty(growable: true);
+    }
+
+    return result['items'].map<{{name}}>((json) => {{name}}.fromJson(json)).toList();
+  }
+
+  static Future<int> count({String? params}) async {
+    var result = await Http.get('$baseUrl/count', {}, params);
+    if (result == null || result['total'] == null) {
+      return 0;
+    }
+
+    return int.parse(result['total']);
+  }
+
+  static Future<{{name}}> get(int id) async {
+    var result = await Http.get('$baseUrl/$id');
+    if (result == null || result['item'] == null) {
+      return {{name}}();
+    }
+
+    return {{name}}.fromJson(result['item']);
+  }
+
+  static Future<int> insert({{name}} item) async {
+    var result = await Http.insert(baseUrl, item.toJson());
+    return result;
+  }
+
+  static update({{name}} item) async {
+    await Http.put(baseUrl, item.toJson());
+  }
+
+  static delete({{name}} item) async {
+    await Http.delete(baseUrl, item.toJson());
+  }
 }
