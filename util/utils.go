@@ -32,6 +32,17 @@ type Column struct {
 	Primary      bool
 }
 
+type EnumValue struct {
+	Key   string
+	Code  int
+	Label string
+}
+
+type EnumData struct {
+	Name string
+	Data []EnumValue
+}
+
 func CopyFile(src, dst string) {
 	in, err := os.Open(src)
 	if err != nil {

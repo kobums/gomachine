@@ -117,6 +117,15 @@ func ProcessDart(packageName string, tableName string, prefix string, items []ut
 		return "="
 	})
 
+	views.AddGlobal("isEnum", func(typeName string, enums []util.EnumData) bool {
+		for _, e := range enums {
+			if e.Name == typeName {
+				return true
+			}
+		}
+		return false
+	})
+
 	views.AddGlobal("javascriptfunction", func(str string) string {
 		return strings.ToLower(str[0:1]) + str[1:]
 	})
@@ -202,12 +211,45 @@ func ProcessDart(packageName string, tableName string, prefix string, items []ut
 		v.Set("sessions", make([]config.SessionPair, 0))
 		v.Set("search", false)
 		v.Set("imports", make([]string, 0))
+		v.Set("enums", make([]util.EnumData, 0))
 	} else {
 		for i := range gpa.Join {
 			gpa.Join[i].Prefix = util.TablePrefix(gpa.Join[i].Name, packageName, db)
 		}
+
+		// Process map data into enums for Dart
+		enums := make([]util.EnumData, 0)
+		for _, mapItem := range gpa.Map {
+			enumData := util.EnumData{
+				Name: strings.Title(mapItem.Name),
+				Data: make([]util.EnumValue, 0),
+			}
+
+			for idx, dataStr := range mapItem.Data {
+				if dataStr == "" {
+					continue
+				}
+				parts := strings.Split(dataStr, ":")
+				if len(parts) == 2 {
+					enumValue := util.EnumValue{
+						Key:   parts[0],
+						Code:  idx,
+						Label: parts[1],
+					}
+					enumData.Data = append(enumData.Data, enumValue)
+				}
+			}
+
+			if len(enumData.Data) > 0 {
+				log.Printf("Adding enum for table %s: %s with %d values", tableName, enumData.Name, len(enumData.Data))
+				enums = append(enums, enumData)
+			}
+		}
+		log.Printf("Total enums for table %s: %d", tableName, len(enums))
+
 		v.Set("consts", gpa.Map)
 		v.Set("methods", gpa.Method)
+		v.Set("enums", enums)
 		if len(gpa.Primary) == 0 {
 			gpa.Primary = append(gpa.Primary, "id")
 		}
@@ -312,7 +354,7 @@ func ProcessDart(packageName string, tableName string, prefix string, items []ut
 	if err == nil {
 		var b bytes.Buffer
 		if err = t.Execute(&b, v, nil); err != nil {
-			log.Println(err)
+			log.Println("Template execution error:", err)
 		} else {
 			// Output directly to DartModelFilePath with just the table name
 			dartModelPath := cnf.DartModelFilePath
