@@ -337,7 +337,7 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 	}
 
 	if cnf.Language == "go" {
-		modelFile := cnf.GoModelFilePath + "/models/" + util.GetTableName(tableName) + ".go"
+		modelFile := cnf.GoModelFilePath + "models/" + util.GetTableName(tableName) + ".go"
 
 		if err := util.WriteFile(modelFile, b.String()); err != nil {
 			log.Printf("ERROR: Failed to write model file %s: %v", modelFile, err)
@@ -357,7 +357,7 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 		log.Printf("ERROR: Failed to load REST template: %v", err)
 	}
 
-	restFile := cnf.GoModelFilePath + "/controllers/rest/" + util.GetTableName(tableName) + ".go"
+	restFile := cnf.GoModelFilePath + "controllers/rest/" + util.GetTableName(tableName) + ".go"
 
 	if err := util.WriteFile(restFile, b2.String()); err != nil {
 		log.Printf("ERROR: Failed to write rest controller file %s: %v", restFile, err)
@@ -389,7 +389,7 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 		log.Printf("ERROR: Failed to load const template: %v", err)
 	}
 
-	constDir := cnf.GoModelFilePath + "/models/" + util.GetTableName(tableName)
+	constDir := cnf.GoModelFilePath + "models/" + util.GetTableName(tableName)
 	if err := os.MkdirAll(constDir, 0755); err != nil {
 		log.Printf("ERROR: Failed to create const directory %s: %v", constDir, err)
 	}
@@ -522,7 +522,7 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 		return
 	}
 
-	routerDir := cnf.GoModelFilePath + "/router/routers"
+	routerDir := cnf.GoModelFilePath + "router/routers"
 	if err := os.MkdirAll(routerDir, 0755); err != nil {
 		log.Printf("ERROR: Failed to create router directory %s: %v", routerDir, err)
 		return

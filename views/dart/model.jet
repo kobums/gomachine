@@ -1,4 +1,4 @@
-import 'package:common_control/common_control.dart';
+import 'package:app/config/http.dart';
 {{range items}}{{if .Type != "double" && .Type != "String" && .Type != "int" && .Type != "bool" && !isEnum(.Type, enums)}}import 'package:gym/models/{{.Type|lower}}.dart';
 {{end}}{{end}}
 {{range enums}}

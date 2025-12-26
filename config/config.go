@@ -84,8 +84,8 @@ func Init(dir string) ModelConfig {
 }
 
 func GetGoModelFilePath(dir string) string {
-	log.Println("config dir", path.Join(dir, "config/model.json"))
-	file, err := os.Open(path.Join(dir, "config/model.json"))
+	log.Println("config dir", path.Join(dir, "model.json"))
+	file, err := os.Open(path.Join(dir, "model.json"))
 	if err != nil {
 		log.Println("Error opening model.json:", err)
 		return ""

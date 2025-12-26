@@ -321,13 +321,9 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 			columnName = strings.ToLower(columnName[0:1]) + columnName[1:] // make first letter lowercase
 
 			// Build full column name with prefix (e.g., "gym" -> "m_gym")
-			fullColumnName := join.Column
-			if join.Prefix != "" {
-				fullColumnName = join.Prefix + "_" + join.Column
-			} else {
-				// Use table prefix if join prefix not specified
-				fullColumnName = prefix + "_" + join.Column
-			}
+			// Always use current table's prefix for the join column
+			fullColumnName := prefix + "_" + join.Column
+			// log.Printf("[Join Processing] Table: %s, Prefix: %s, Join.Column: %s, FullColumnName: %s", tableName, prefix, join.Column, fullColumnName)
 
 			kotlinJoin := KotlinJoin{
 				Name:            join.Name,
@@ -423,7 +419,7 @@ func generateKotlinEntity(targetPath string, data KotlinTemplateData) {
 	views.AddGlobal("findJoinByColumn", func(columnDBName string, joins []KotlinJoin) *KotlinJoin {
 		// log.Printf("Finding join for column: %s", columnDBName)
 		for _, join := range joins {
-			// log.Printf("  Checking join[%d]: Column=%s, Name=%s, Alias=%s", i, join.Column, join.Name, join.Alias)
+			// log.Printf("  Checking join: Column=%s, ColumnName=%s, Name=%s, Alias=%s", join.Column, join.ColumnName, join.Name, join.Alias)
 			if join.Column == columnDBName {
 				// log.Printf("  MATCH FOUND!")
 				return &join
