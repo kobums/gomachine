@@ -59,11 +59,11 @@ class {{name}}Manager {
       'page': page,
       'pagesize': pagesize,
     }, params);
-    if (result == null || result['items'] == null) {
+    if (result == null || result['content'] == null) {
       return List<{{name}}>.empty(growable: true);
     }
 
-    return result['items'].map<{{name}}>((json) => {{name}}.fromJson(json)).toList();
+    return result['content'].map<{{name}}>((json) => {{name}}.fromJson(json)).toList();
   }
 
   static Future<int> count({String? params}) async {
@@ -81,7 +81,7 @@ class {{name}}Manager {
       return {{name}}();
     }
 
-    return {{name}}.fromJson(result['item']);
+    return {{name}}.fromJson(result);
   }
 
   static Future<int> insert({{name}} item) async {
