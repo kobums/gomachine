@@ -40,7 +40,7 @@ class {{.ModelName}}Controller(
     @GetMapping
     fun get{{.ModelName}}s(
         @RequestParam(defaultValue = "0") page: Int,
-        @RequestParam(defaultValue = "10") pageSize: Int,
+        @RequestParam(defaultValue = "10") pagesize: Int,
 {{range .Columns}}{{if .Name != "Id"}}{{if .KotlinType == "LocalDateTime"}}        @RequestParam(required = false) start{{.Name|lower}}: LocalDateTime?,
         @RequestParam(required = false) end{{.Name|lower}}: LocalDateTime?,
 {{else}}        @RequestParam(required = false) {{.Name|lower}}: {{if .IsEnum}}Int?{{else}}{{.KotlinType}}?{{end}},
@@ -59,9 +59,9 @@ class {{.ModelName}}Controller(
         }
 
         val totalElements = results.size
-        val totalPages = if (pageSize > 0) (totalElements + pageSize - 1) / pageSize else 1
-        val startIndex = page * pageSize
-        val endIndex = minOf(startIndex + pageSize, totalElements)
+        val totalPages = if (pagesize > 0) (totalElements + pagesize - 1) / pagesize else 1
+        val startIndex = page * pagesize
+        val endIndex = minOf(startIndex + pagesize, totalElements)
 
         val pagedResults = if (startIndex < totalElements) {
             results.subList(startIndex, endIndex)
@@ -72,7 +72,7 @@ class {{.ModelName}}Controller(
         val response = mapOf(
             "content" to pagedResults.map { toResponse(it) },
             "page" to page,
-            "size" to pageSize,
+            "size" to pagesize,
             "totalElements" to totalElements,
             "totalPages" to totalPages,
             "first" to (page == 0),

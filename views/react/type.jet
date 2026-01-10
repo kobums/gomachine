@@ -23,14 +23,14 @@ export interface {{.ModelName}}SearchParams {
   end{{.Name | untitle}}?: {{.TypeScriptType}};
 {{else}}  {{.Name | untitle}}?: {{.TypeScriptType}};
 {{end}}{{end}}  page?: number;
-  pageSize?: number;
+  pagesize?: number;
 }
 
 // API response types
 export interface ApiResponse<T> {
   content: T[];
   page: number;
-  pageSize: number;
+  pagesize: number;
   totalElements: number;
   totalPages: number;
   first: boolean;

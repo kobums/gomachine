@@ -57,7 +57,7 @@ export default class {{.ModelName}}Model {
 
   static async findall(params?: {{.ModelName}}SearchParams) {
     params!.page = 0;
-    params!.pageSize = 9999;
+    params!.pagesize = 9999;
     const res = await get<ApiResponse<{{.ModelName}}>>('/{{.TableName | lower}}', { params });
     return res.data.content || [];
   }

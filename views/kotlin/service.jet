@@ -20,8 +20,8 @@ import org.springframework.transaction.annotation.Transactional
 @Transactional
 class {{.ModelName}}Service(private val {{.ModelName|lower}}Repository: {{.ModelName}}Repository{{if .ModelName == "User"}}, private val passwordEncoder: PasswordEncoder{{end}}) {
 
-    fun findAll(page: Int = 0, pageSize: Int = 10): Page<{{.ModelName}}> {
-        val pageable: Pageable = PageRequest.of(page, pageSize)
+    fun findAll(page: Int = 0, pagesize: Int = 10): Page<{{.ModelName}}> {
+        val pageable: Pageable = PageRequest.of(page, pagesize)
         return {{.ModelName|lower}}Repository.findAll(pageable)
     }
 
