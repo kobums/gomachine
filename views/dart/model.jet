@@ -22,13 +22,12 @@ enum {{name}}{{.Name}} {
 {{end}}
 class {{name}} {
 {{range items}}  {{if .Type == "double" || .Type == "String" || .Type == "int" || .Type == "bool"}}{{.Type}} {{.Name|lower}};{{else if isEnum(.Type, enums)}}{{name}}{{.Type}} {{.Name|lower}};{{else}}{{.Type}} {{.Name|lower}};{{end}}
-{{end}}  bool checked;
+{{end}}
   Map<String, dynamic> extra;
 
   {{name}}({
 {{range items}}    this.{{.Name|lower}} = {{if .Type == "int"}}0{{else if .Type == "double"}}0.0{{else if .Type == "bool"}}false{{else if .Type == "String"}}''{{else if isEnum(.Type, enums)}}{{name}}{{.Type}}.none{{else}}{{if .Type}}{{.Type}}(){{else}}null{{end}}{{end}},
 {{end}}    this.extra = const {},
-    this.checked = false,
   });
 
   factory {{name}}.fromJson(Map<String, dynamic> json) {

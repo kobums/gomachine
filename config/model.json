@@ -1,8 +1,9 @@
 {
-  "database": "gym",
-  "user": "gym",
+  "database": "tomelater",
+  "user": "tomelater",
   "server": "140.82.12.99",
-  "password": "gymdb",
+  "password": "tomelaterdb",
   "language": "go",
-  "modelJsonPath": "../gym/gymspring/"
+  "_modelJsonPath": "../gym/gymspring/",
+  "modelJsonPath": "../to_me_a_year_later/docs/"
 }

@@ -240,6 +240,7 @@ func ProcessReact(packageName string, tableName string, prefix string, items []u
 	}
 
 	generateReactModel(targetPath, templateData)
+	generateReactTypes(targetPath, templateData)
 }
 
 func mapMySQLTypeToTypeScript(mysqlType string) string {
