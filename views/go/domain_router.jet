@@ -1,7 +1,7 @@
 package routers
 
 import (
-{{if domainName == "user"}}
+{{if needsJson}}
 	"encoding/json"
 {{end}}
 	"strconv"
@@ -13,8 +13,8 @@ import (
 {{else}}
 	"{{packageName}}/controllers/rest"
 {{end}}
-{{if domainName == "user"}}
-	"{{packageName}}/models/user"
+{{range enumImports}}
+	"{{packageName}}/models/{{.}}"
 {{end}}
 	"{{packageName}}/models"
 	"github.com/gofiber/fiber/v2"

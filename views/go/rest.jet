@@ -3,6 +3,7 @@ package rest
 
 import (
 	"{{packageName}}/controllers"
+	{{if name == "User"}}"{{packageName}}/global/jwt"{{end}}
 	"{{packageName}}/models"
 {{range imports}}
 	"{{packageName}}/models/{{.|lower}}"
@@ -227,6 +228,15 @@ func (c *{{name}}Controller) Insert(item *models.{{name}}{{if name == "User"}}Up
     {{end}}
     {{end}}
     
+    {{if name == "User"}}
+    if item.Password != "" {
+        hashed, err := jwt.GeneratePasswd(item.Password)
+        if err == nil {
+            item.Password = hashed
+        }
+    }
+    {{end}}
+
 	conn := c.NewConnection()
     
 	manager := models.New{{name}}Manager(conn)
@@ -271,6 +281,14 @@ func (c *{{name}}Controller) Insertbatch(item *[]models.{{name}}{{if name == "Us
 	manager := models.New{{name}}Manager(conn)
 
     for i := 0; i < rows; i++ {
+        {{if name == "User"}}
+        if (*item)[i].Password != "" {
+            hashed, err := jwt.GeneratePasswd((*item)[i].Password)
+            if err == nil {
+                (*item)[i].Password = hashed
+            }
+        }
+        {{end}}
 	    err := manager.Insert(&((*item)[i]))
         if err != nil {
             c.Set("code", "error")    
@@ -296,6 +314,15 @@ func (c *{{name}}Controller) Update(item *models.{{name}}{{if name == "User"}}Up
     {{end}}
     {{end}}
     
+    {{if name == "User"}}
+    if item.Password != "" {
+        hashed, err := jwt.GeneratePasswd(item.Password)
+        if err == nil {
+            item.Password = hashed
+        }
+    }
+    {{end}}
+
 	conn := c.NewConnection()
 
 	manager := models.New{{name}}Manager(conn)

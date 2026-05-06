@@ -433,13 +433,18 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 		ParamStr:       "id_",
 	})
 
+	modelNameForUpdate := strings.Title(domainName)
+	if domainName == "user" {
+		modelNameForUpdate = "UserUpdate"
+	}
+
 	// POST /domain - Insert
 	routes = append(routes, Route{
 		Method:         "Post",
 		URL:            "/" + domainName,
 		FuncName:       "Insert",
 		ControllerName: controllerName,
-		ParamCode:      fmt.Sprintf("\t\titem_ := &models.%s{}\n\t\terr := c.BodyParser(item_)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t}", strings.Title(domainName)),
+		ParamCode:      fmt.Sprintf("\t\titem_ := &models.%s{}\n\t\terr := c.BodyParser(item_)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t}", modelNameForUpdate),
 		ParamStr:       "item_",
 	})
 
@@ -449,7 +454,7 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 		URL:            "/" + domainName + "/batch",
 		FuncName:       "Insertbatch",
 		ControllerName: controllerName,
-		ParamCode:      fmt.Sprintf("\t\tvar items_ *[]models.%s\n\t\titems__ref := &items_\n\t\terr := c.BodyParser(items__ref)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t}", strings.Title(domainName)),
+		ParamCode:      fmt.Sprintf("\t\tvar items_ *[]models.%s\n\t\titems__ref := &items_\n\t\terr := c.BodyParser(items__ref)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t}", modelNameForUpdate),
 		ParamStr:       "items_",
 	})
 
@@ -469,7 +474,7 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 		URL:            "/" + domainName,
 		FuncName:       "Update",
 		ControllerName: controllerName,
-		ParamCode:      fmt.Sprintf("\t\titem_ := &models.%s{}\n\t\terr := c.BodyParser(item_)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t}", strings.Title(domainName)),
+		ParamCode:      fmt.Sprintf("\t\titem_ := &models.%s{}\n\t\terr := c.BodyParser(item_)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t}", modelNameForUpdate),
 		ParamStr:       "item_",
 	})
 
@@ -493,12 +498,37 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 		ParamStr:       "item_",
 	})
 
+	needsJson := false
+	enumImports := make([]string, 0)
+
 	// Add custom method routes from GPA
 	if gpa != nil && gpa.Method != nil {
 		for _, method := range gpa.Method {
+			if strings.HasPrefix(strings.ToLower(method), "update") && strings.Contains(strings.ToLower(method), "by") {
+				needsJson = true
+			}
+
 			route := generateRouteFromMethod(method, domainName, items, controllerName)
 			if route != nil {
 				routes = append(routes, *route)
+			}
+		}
+	}
+
+	for _, item := range items {
+		if strings.Contains(item.Type, ".") {
+			parts := strings.Split(item.Type, ".")
+			enumPkg := parts[0]
+
+			found := false
+			for _, e := range enumImports {
+				if e == enumPkg {
+					found = true
+					break
+				}
+			}
+			if !found {
+				enumImports = append(enumImports, enumPkg)
 			}
 		}
 	}
@@ -509,6 +539,8 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 	v.Set("routes", routes)
 	v.Set("controllerType", "rest")
 	v.Set("needsLog", true)
+	v.Set("needsJson", needsJson)
+	v.Set("enumImports", enumImports)
 
 	var b bytes.Buffer
 	t, err := views.GetTemplate("go/domain_router.jet")
