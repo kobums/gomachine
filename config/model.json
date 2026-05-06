@@ -1,9 +1,9 @@
 {
-  "database": "tomelater",
-  "user": "tomelater",
+  "database": "gowoobro",
+  "user": "gowoobro",
   "server": "140.82.12.99",
-  "password": "tomelaterdb",
+  "password": "tigerstone",
   "language": "go",
-  "_modelJsonPath": "../gym/gymspring/",
-  "modelJsonPath": "../to_me_a_year_later/docs/"
+  "_modelJsonPath": "../fotstat/fotstat_go/",
+  "modelJsonPath": "../fotstat/fotstat_go/"
 }
