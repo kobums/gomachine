@@ -1,0 +1,8 @@
+{
+  "database": "your-db-name",
+  "user": "your-db-user",
+  "server": "your-db-host",
+  "password": "",
+  "language": "go",
+  "modelJsonPath": "../your-project/your-project_go/"
+}
