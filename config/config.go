@@ -80,6 +80,17 @@ func Init(dir string) ModelConfig {
 
 	json.Unmarshal(data, &modelConfig)
 
+	// DB 접속 정보는 model.json 에 커밋하지 않고 환경변수로 주입할 수 있다 (설정 시 model.json 값보다 우선).
+	if v := os.Getenv("DB_HOST"); v != "" {
+		modelConfig.Server = v
+	}
+	if v := os.Getenv("DB_USER"); v != "" {
+		modelConfig.User = v
+	}
+	if v := os.Getenv("DB_PASSWORD"); v != "" {
+		modelConfig.Password = v
+	}
+
 	return modelConfig
 }
 

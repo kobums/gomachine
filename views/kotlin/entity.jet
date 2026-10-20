@@ -41,16 +41,16 @@ data class {{.ModelName}}PatchRequest(
 {{end}}
 
 data class {{.ModelName}}Response(
-{{range .Columns}}    val {{.Name|lower}}: {{.DBType}}{{if .IsNullable}}?{{end}},
-{{end}}
+{{range .Columns}}{{if .Name != "Passwd"}}    val {{.Name|lower}}: {{.DBType}}{{if .IsNullable}}?{{end}},
+{{end}}{{end}}
     val extra: {{if len(.Enums) > 0 || len(.Joins) > 0}}{{.ModelName}}ExtraInfo{{else}}Map<String, Any?> = emptyMap(){{end}}
 ){
     companion object {
         fun from({{.ModelName|lower}}: {{.ModelName}}): {{.ModelName}}Response {
             {{range .Joins}}val {{.Alias|lower}}Response = {{.ParentModelName|lower}}.{{.Alias|lower}}?.let { {{.Name|title}}Response.from(it) }
             {{end}}return {{.ModelName}}Response(
-{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if not joinData}}                {{.Name|lower}} = {{if .IsEnum}}{{.ModelName|lower}}.{{.Name|lower}}.ordinal{{else if .KotlinType=="LocalDateTime"}}{{if .IsNullable}}{{.ModelName|lower}}.{{.Name|lower}}?.toString()?.replace("T", " ") ?: ""{{else}}{{.ModelName|lower}}.{{.Name|lower}}.toString().replace("T", " "){{end}}{{else}}{{.ModelName|lower}}.{{.Name|lower}}{{end}},
-{{end}}{{if joinData}}                {{.Name|lower}} = {{.ModelName|lower}}.{{joinData.ColumnName}}Id,
+{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if not joinData}}{{if .Name != "Passwd"}}                {{.Name|lower}} = {{if .IsEnum}}{{.ModelName|lower}}.{{.Name|lower}}.ordinal{{else if .KotlinType=="LocalDateTime"}}{{if .IsNullable}}{{.ModelName|lower}}.{{.Name|lower}}?.toString()?.replace("T", " ") ?: ""{{else}}{{.ModelName|lower}}.{{.Name|lower}}.toString().replace("T", " "){{end}}{{else}}{{.ModelName|lower}}.{{.Name|lower}}{{end}},
+{{end}}{{end}}{{if joinData}}                {{.Name|lower}} = {{.ModelName|lower}}.{{joinData.ColumnName}}Id,
 {{end}}{{end}}
                 extra = {{if len(.Enums) > 0 || len(.Joins) > 0}}{{.ModelName}}ExtraInfo(
                     {{- if len(.Enums) > 0}}

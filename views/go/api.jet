@@ -7,6 +7,7 @@ import (
 	"{{packageName}}/models/{{.|lower}}"
 {{end}}
 	"errors"
+	"regexp"
 	"strings"
 )
 
@@ -21,7 +22,7 @@ func (c *{{name}}Controller) Index(page int, pagesize int) {
 
 	var args []interface{}
 
-{{range items}}{{if .Name != "Id"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}	_startdate := c.Get("startdate")
+{{range items}}{{if .Name != "Id" && .Name != "Passwd"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}	_startdate := c.Get("startdate")
 	_enddate := c.Get("enddate")
 	_longtime := c.Geti("longtime")
 	if _longtime == 1 {
@@ -86,7 +87,10 @@ func (c *{{name}}Controller) Index(page int, pagesize int) {
 			}
 		}
 
-		args = append(args, models.Ordering(str))
+		// orderby 는 ORDER BY 절에 그대로 들어가므로 "컬럼 [asc|desc]" 목록 형태만 허용한다 (SQL injection 방지).
+		if regexp.MustCompile(`^\s*[A-Za-z0-9_]+(\s+(?i:asc|desc))?\s*(,\s*[A-Za-z0-9_]+(\s+(?i:asc|desc))?\s*)*$`).MatchString(orderby) {
+			args = append(args, models.Ordering(str))
+		}
 	}
 
 	items := manager.Find(args)
@@ -105,7 +109,7 @@ func (c *{{name}}Controller) Count() {
 
 	var args []interface{}
 
-{{range items}}{{if .Name != "Id"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}	_startdate := c.Get("startdate")
+{{range items}}{{if .Name != "Id" && .Name != "Passwd"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}	_startdate := c.Get("startdate")
 	_enddate := c.Get("enddate")
 	if _startdate != "" && _enddate != "" {
 		var v [2]string

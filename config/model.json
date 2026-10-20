@@ -1,9 +1,0 @@
-{
-  "database": "gowoobro",
-  "user": "gowoobro",
-  "server": "140.82.12.99",
-  "password": "tigerstone",
-  "language": "go",
-  "_modelJsonPath": "../fotstat/fotstat_go/",
-  "modelJsonPath": "../fotstat/fotstat_go/"
-}

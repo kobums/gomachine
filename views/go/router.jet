@@ -39,10 +39,25 @@ func getArrayCommai(name string) []int {
 
 func SetRouter(r *fiber.App) {
 {{if auth == "jwt"}}
-    r.Get("/api/jwt", func(c *fiber.Ctx) error {
+	// 로그인은 POST 바디(JSON 또는 form)로 자격 증명을 받는다.
+	// 쿼리스트링에 비밀번호가 실리면 액세스 로그·프록시·브라우저 기록에 남는다.
+	r.Post("/api/jwt", func(c *fiber.Ctx) error {
+		var req struct {
+			Loginid string `json:"loginid" form:"loginid"`
+			Passwd  string `json:"passwd" form:"passwd"`
+		}
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"code": "error", "message": "invalid request"})
+		}
+		return c.JSON(JwtAuth(c, req.Loginid, req.Passwd))
+	})
+	// Deprecated: GET /api/jwt?loginid=&passwd= 는 이미 배포된 클라이언트 호환용으로만 남겨 둔다.
+	// 새 클라이언트는 POST /api/jwt 를 사용할 것. 요청 로거는 ${url} 대신 ${path} 를 써서
+	// 쿼리스트링(비밀번호)이 로그에 남지 않게 해야 한다.
+	r.Get("/api/jwt", func(c *fiber.Ctx) error {
 		loginid := c.Query("loginid")
-        passwd := c.Query("passwd")
-        return c.JSON(JwtAuth(c, loginid, passwd))
+		passwd := c.Query("passwd")
+		return c.JSON(JwtAuth(c, loginid, passwd))
 	})
 {{end}}
 	apiGroup := r.Group("/api")
