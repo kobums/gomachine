@@ -317,7 +317,29 @@ func (c *{{name}}Controller) Update(item *models.{{name}}{{if name == "User"}}Up
     }    
     {{end}}
     {{end}}
-    
+
+    {{if auth == "jwt" && len(sessions) > 0}}
+    // 소유권 검사: 기존 행이 현재 세션 사용자 것인지 확인한다 (남의 행 수정/삭제 방지).
+    if existing := models.New{{name}}Manager(c.NewConnection()).Get(item.Id); existing == nil {
+        c.Set("code", "error")
+        return
+    } else {
+        {{range sessions}}
+        if existing.{{.Column|title}} != c.Session.{{.Key|title}} {
+            c.Set("code", "auth error")
+            return
+        }
+        {{end}}
+    }
+    {{end}}
+    {{if auth == "jwt" && name == "User"}}
+    // 회원 정보는 본인만 수정/삭제할 수 있다.
+    if c.Session == nil || item.Id != c.Session.Id {
+        c.Set("code", "auth error")
+        return
+    }
+    {{end}}
+
     {{if name == "User"}}
     if item.Password != "" {
         hashed, err := jwt.GeneratePasswd(item.Password)
@@ -342,6 +364,28 @@ func (c *{{name}}Controller) Delete(item *models.{{name}}) {
     {{if auth == "jwt" && len(sessions) > 0}}
     if c.Session == nil {
         c.Set("code", "error")
+        return
+    }
+    {{end}}
+
+    {{if auth == "jwt" && len(sessions) > 0}}
+    // 소유권 검사: 기존 행이 현재 세션 사용자 것인지 확인한다 (남의 행 수정/삭제 방지).
+    if existing := models.New{{name}}Manager(c.NewConnection()).Get(item.Id); existing == nil {
+        c.Set("code", "error")
+        return
+    } else {
+        {{range sessions}}
+        if existing.{{.Column|title}} != c.Session.{{.Key|title}} {
+            c.Set("code", "auth error")
+            return
+        }
+        {{end}}
+    }
+    {{end}}
+    {{if auth == "jwt" && name == "User"}}
+    // 회원 정보는 본인만 수정/삭제할 수 있다.
+    if c.Session == nil || item.Id != c.Session.Id {
+        c.Set("code", "auth error")
         return
     }
     {{end}}
@@ -371,8 +415,28 @@ func (c *{{name}}Controller) Deletebatch(item *[]models.{{name}}) {
 	manager := models.New{{name}}Manager(conn)
 
     for _, v := range *item {
-        
-    
+        {{if auth == "jwt" && len(sessions) > 0}}
+        // 소유권 검사: 기존 행이 현재 세션 사용자 것인지 확인한다 (남의 행 수정/삭제 방지).
+        if existing := manager.Get(v.Id); existing == nil {
+            c.Set("code", "error")
+            return
+        } else {
+            {{range sessions}}
+            if existing.{{.Column|title}} != c.Session.{{.Key|title}} {
+                c.Set("code", "auth error")
+                return
+            }
+            {{end}}
+        }
+        {{end}}
+        {{if auth == "jwt" && name == "User"}}
+        // 회원 정보는 본인만 수정/삭제할 수 있다.
+        if c.Session == nil || v.Id != c.Session.Id {
+            c.Set("code", "auth error")
+            return
+        }
+        {{end}}
+
 	    err := manager.Delete(v.Id)
         if err != nil {
             c.Set("code", "error")    
