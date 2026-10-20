@@ -67,7 +67,7 @@ func (c *{{name}}Controller) Index(page int, pagesize int) {
 
     var args []interface{}
     
-    {{range items}}{{if .Name != "Id"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}_start{{.Name|lower}} := c.Get("start{{.Name|lower}}")
+    {{range items}}{{if .Name != "Id" && .Name != "Passwd"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}_start{{.Name|lower}} := c.Get("start{{.Name|lower}}")
     _end{{.Name|lower}} := c.Get("end{{.Name|lower}}")
     if _start{{.Name|lower}} != "" && _end{{.Name|lower}} != "" {        
         var v [2]string
@@ -169,7 +169,7 @@ func (c *{{name}}Controller) Count() {
 
     var args []interface{}
     
-    {{range items}}{{if .Name != "Id"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}_start{{.Name|lower}} := c.Get("start{{.Name|lower}}")
+    {{range items}}{{if .Name != "Id" && .Name != "Passwd"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}_start{{.Name|lower}} := c.Get("start{{.Name|lower}}")
     _end{{.Name|lower}} := c.Get("end{{.Name|lower}}")
 
     if _start{{.Name|lower}} != "" && _end{{.Name|lower}} != "" {        

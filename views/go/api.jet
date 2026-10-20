@@ -22,7 +22,7 @@ func (c *{{name}}Controller) Index(page int, pagesize int) {
 
 	var args []interface{}
 
-{{range items}}{{if .Name != "Id"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}	_startdate := c.Get("startdate")
+{{range items}}{{if .Name != "Id" && .Name != "Passwd"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}	_startdate := c.Get("startdate")
 	_enddate := c.Get("enddate")
 	_longtime := c.Geti("longtime")
 	if _longtime == 1 {
@@ -109,7 +109,7 @@ func (c *{{name}}Controller) Count() {
 
 	var args []interface{}
 
-{{range items}}{{if .Name != "Id"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}	_startdate := c.Get("startdate")
+{{range items}}{{if .Name != "Id" && .Name != "Passwd"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}	_startdate := c.Get("startdate")
 	_enddate := c.Get("enddate")
 	if _startdate != "" && _enddate != "" {
 		var v [2]string
