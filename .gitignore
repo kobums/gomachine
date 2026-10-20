@@ -1,1 +1,4 @@
 /config/model.json
+
+# build output (Makefile builds here, then copies to ~/bin)
+/bin/
