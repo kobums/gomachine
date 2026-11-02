@@ -7,6 +7,7 @@ import (
 	"gomachine/config"
 	"gomachine/util"
 	"os"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -124,6 +125,15 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 		return strings.ToLower(join.Name)
 	})
 
+	views.AddGlobal("isProtected", func(str string, cols []string) bool {
+		for _, v := range cols {
+			if strings.EqualFold(v, str) {
+				return true
+			}
+		}
+		return false
+	})
+
 	views.AddGlobal("compareColumn", func(str string, cols []config.GpaCompare) string {
 		for _, v := range cols {
 			if util.GetName(strings.ToLower(str)) == v.Name {
@@ -210,6 +220,26 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 
 	v.Set("items", items)
 	v.Set("auth", auth)
+
+	modelName := strings.Title(util.GetTableName(tableName))
+	passwordColumn := util.PasswordColumn(items)
+	protects := util.ProtectedColumns(modelName, items, gpa)
+	createdColumn := ""
+	for _, item := range items {
+		if item.Name == "Createddate" {
+			createdColumn = item.Name
+		}
+	}
+	// adminLevel 이 숫자로 설정되어 있고 jwt 인증이면 세션 Level 이 그 이상인 관리자는 보호 컬럼을 바꿀 수 있다.
+	adminLevelNum, adminErr := strconv.Atoi(strings.TrimSpace(cnf.AdminLevel))
+	adminCheck := auth == "jwt" && adminErr == nil && len(protects) > 0
+
+	v.Set("inputName", inputModelName(modelName, items))
+	v.Set("passwordColumn", passwordColumn)
+	v.Set("createdColumn", createdColumn)
+	v.Set("protects", protects)
+	v.Set("adminCheck", adminCheck)
+	v.Set("adminLevelNum", adminLevelNum)
 	if gpa == nil {
 		v.Set("consts", make([]string, 0))
 		v.Set("methods", make([]string, 0))
@@ -408,6 +438,15 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 	generateDomainRouter(views, packageName, tableName, items, gpa, cnf)
 }
 
+// inputModelName 은 REST Insert/Update 입력 구조체 이름이다.
+// User 테이블이나 비밀번호 컬럼이 있는 테이블은 비밀번호를 입력받을 수 있는 {Name}Update 를 쓴다 (출력용 구조체는 비밀번호를 json 에서 숨긴다).
+func inputModelName(modelName string, items []util.Column) string {
+	if modelName == "User" || util.PasswordColumn(items) != "" {
+		return modelName + "Update"
+	}
+	return modelName
+}
+
 func generateDomainRouter(views *jet.Set, packageName string, tableName string, items []util.Column, gpa *config.Gpa, cnf config.ModelConfig) {
 	domainName := util.GetTableName(tableName)
 
@@ -435,10 +474,7 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 		ParamStr:       "id_",
 	})
 
-	modelNameForUpdate := strings.Title(domainName)
-	if domainName == "user" {
-		modelNameForUpdate = "UserUpdate"
-	}
+	modelNameForUpdate := inputModelName(strings.Title(domainName), items)
 
 	// POST /domain - Insert
 	routes = append(routes, Route{

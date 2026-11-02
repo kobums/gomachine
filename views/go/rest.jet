@@ -3,11 +3,12 @@ package rest
 
 import (
 	"{{packageName}}/controllers"
-	{{if name == "User"}}"{{packageName}}/global/jwt"{{end}}
+	{{if passwordColumn != ""}}"{{packageName}}/global/jwt"{{end}}
 	"{{packageName}}/models"
 {{range imports}}
 	"{{packageName}}/models/{{.|lower}}"
 {{end}}
+    {{if adminCheck}}"reflect"{{end}}
     "regexp"
     "strings"
 )
@@ -16,8 +17,32 @@ type {{name}}Controller struct {
 	controllers.Controller
 }
 
+{{if adminCheck}}
+// isAdmin 은 세션 사용자의 Level 이 adminLevel({{adminLevelNum}}) 이상인지 확인한다. 세션에 Level 필드가 없으면 false.
+func (c *{{name}}Controller) isAdmin() bool {
+    if c.Session == nil {
+        return false
+    }
+    v := reflect.Indirect(reflect.ValueOf(c.Session))
+    if v.Kind() != reflect.Struct {
+        return false
+    }
+    f := v.FieldByName("Level")
+    if !f.IsValid() {
+        return false
+    }
+    switch f.Kind() {
+    case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+        return f.Int() >= {{adminLevelNum}}
+    case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+        return int64(f.Uint()) >= {{adminLevelNum}}
+    }
+    return false
+}
+{{end}}
+
 func (c *{{name}}Controller) Read(id int64) {
-    {{if auth == "jwt" && len(sessions) > 0}}
+    {{if auth == "jwt"}}
     if c.Session == nil {
         c.Result["code"] = "auth error"
         return
@@ -36,6 +61,11 @@ func (c *{{name}}Controller) Read(id int64) {
 	item := manager.Get(id)
 
     {{if auth == "jwt" && len(sessions) > 0}}
+    // 없는 행이면 세션 비교 전에 에러로 돌려준다 (nil 역참조 방지).
+    if item == nil {
+        c.Result["code"] = "error"
+        return
+    }
     {{range sessions}}
     if item.{{.Column|title}} != c.Session.{{.Key|title}} {
         c.Result["code"] = "auth error"
@@ -48,7 +78,7 @@ func (c *{{name}}Controller) Read(id int64) {
 }
 
 func (c *{{name}}Controller) Index(page int, pagesize int) {
-    {{if auth == "jwt" && len(sessions) > 0}}
+    {{if auth == "jwt"}}
     if c.Session == nil {
         c.Result["code"] = "auth error"
         return
@@ -67,7 +97,7 @@ func (c *{{name}}Controller) Index(page int, pagesize int) {
 
     var args []interface{}
     
-    {{range items}}{{if .Name != "Id" && .Name != "Passwd"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}_start{{.Name|lower}} := c.Get("start{{.Name|lower}}")
+    {{range items}}{{if .Name != "Id" && .Name != "Passwd" && .Name != "Password"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}_start{{.Name|lower}} := c.Get("start{{.Name|lower}}")
     _end{{.Name|lower}} := c.Get("end{{.Name|lower}}")
     if _start{{.Name|lower}} != "" && _end{{.Name|lower}} != "" {        
         var v [2]string
@@ -150,7 +180,7 @@ func (c *{{name}}Controller) Index(page int, pagesize int) {
 }
 
 func (c *{{name}}Controller) Count() {
-    {{if auth == "jwt" && len(sessions) > 0}}
+    {{if auth == "jwt"}}
     if c.Session == nil {
         c.Result["code"] = "auth error"
         return
@@ -169,7 +199,7 @@ func (c *{{name}}Controller) Count() {
 
     var args []interface{}
     
-    {{range items}}{{if .Name != "Id" && .Name != "Passwd"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}_start{{.Name|lower}} := c.Get("start{{.Name|lower}}")
+    {{range items}}{{if .Name != "Id" && .Name != "Passwd" && .Name != "Password"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}_start{{.Name|lower}} := c.Get("start{{.Name|lower}}")
     _end{{.Name|lower}} := c.Get("end{{.Name|lower}}")
 
     if _start{{.Name|lower}} != "" && _end{{.Name|lower}} != "" {        
@@ -216,8 +246,8 @@ func (c *{{name}}Controller) Count() {
 	c.Set("total", total)
 }
 
-func (c *{{name}}Controller) Insert(item *models.{{name}}{{if name == "User"}}Update{{end}}) {
-    {{if auth == "jwt" && len(sessions) > 0 && name != "User"}}
+func (c *{{name}}Controller) Insert(item *models.{{inputName}}) {
+    {{if auth == "jwt" && name != "User"}}
     if c.Session == nil {
         c.Set("code", "error")
         return
@@ -231,13 +261,24 @@ func (c *{{name}}Controller) Insert(item *models.{{name}}{{if name == "User"}}Up
     }    
     {{end}}
     {{end}}
-    
-    {{if name == "User"}}
-    if item.Password != "" {
-        hashed, err := jwt.GeneratePasswd(item.Password)
-        if err == nil {
-            item.Password = hashed
+
+    // id 는 자동 증가 값을 쓴다. 클라이언트가 보낸 id 는 무시한다.
+    item.Id = 0
+    {{range protects}}
+    // 보호 컬럼은 클라이언트 값을 받지 않는다.
+    {{if adminCheck}}if !c.isAdmin() {
+        item.{{.}} = models.{{inputName}}{}.{{.}}
+    }{{else}}item.{{.}} = models.{{inputName}}{}.{{.}}{{end}}
+    {{end}}
+    {{if passwordColumn != ""}}
+    if item.{{passwordColumn}} != "" {
+        hashed, err := jwt.GeneratePasswd(item.{{passwordColumn}})
+        if err != nil {
+            c.Set("code", "error")
+            c.Set("error", err)
+            return
         }
+        item.{{passwordColumn}} = hashed
     }
     {{end}}
 
@@ -256,18 +297,19 @@ func (c *{{name}}Controller) Insert(item *models.{{name}}{{if name == "User"}}Up
     item.Id = id
 }
 
-func (c *{{name}}Controller) Insertbatch(item *[]models.{{name}}{{if name == "User"}}Update{{end}}) {  
+func (c *{{name}}Controller) Insertbatch(item *[]models.{{inputName}}) {  
     if item == nil || len(*item) == 0 {
         return
     }
 
     rows := len(*item)
     
-    {{if auth == "jwt" && len(sessions) > 0 && name != "User"}}
+    {{if auth == "jwt"}}
     if c.Session == nil {
         c.Set("code", "error")
         return
     }
+    {{if name != "User"}}
     {{range sessions}}
     if c.Session.{{.Key|title}} == 0 {
         c.Set("code", "error")
@@ -279,18 +321,30 @@ func (c *{{name}}Controller) Insertbatch(item *[]models.{{name}}{{if name == "Us
     }    
     {{end}}
     {{end}}
+    {{end}}
     
 	conn := c.NewConnection()
     
 	manager := models.New{{name}}Manager(conn)
 
     for i := 0; i < rows; i++ {
-        {{if name == "User"}}
-        if (*item)[i].Password != "" {
-            hashed, err := jwt.GeneratePasswd((*item)[i].Password)
-            if err == nil {
-                (*item)[i].Password = hashed
+        // id 는 자동 증가 값을 쓴다. 클라이언트가 보낸 id 는 무시한다.
+        (*item)[i].Id = 0
+        {{range protects}}
+        // 보호 컬럼은 클라이언트 값을 받지 않는다.
+        {{if adminCheck}}if !c.isAdmin() {
+            (*item)[i].{{.}} = models.{{inputName}}{}.{{.}}
+        }{{else}}(*item)[i].{{.}} = models.{{inputName}}{}.{{.}}{{end}}
+        {{end}}
+        {{if passwordColumn != ""}}
+        if (*item)[i].{{passwordColumn}} != "" {
+            hashed, err := jwt.GeneratePasswd((*item)[i].{{passwordColumn}})
+            if err != nil {
+                c.Set("code", "error")
+                c.Set("error", err)
+                return
             }
+            (*item)[i].{{passwordColumn}} = hashed
         }
         {{end}}
 	    err := manager.Insert(&((*item)[i]))
@@ -302,8 +356,8 @@ func (c *{{name}}Controller) Insertbatch(item *[]models.{{name}}{{if name == "Us
     }
 }
 
-func (c *{{name}}Controller) Update(item *models.{{name}}{{if name == "User"}}Update{{end}}) {
-    {{if auth == "jwt" && len(sessions) > 0}}
+func (c *{{name}}Controller) Update(item *models.{{inputName}}) {
+    {{if auth == "jwt"}}
     if c.Session == nil {
         c.Set("code", "error")
         return
@@ -317,41 +371,57 @@ func (c *{{name}}Controller) Update(item *models.{{name}}{{if name == "User"}}Up
     }    
     {{end}}
     {{end}}
-
-    {{if auth == "jwt" && len(sessions) > 0}}
-    // 소유권 검사: 기존 행이 현재 세션 사용자 것인지 확인한다 (남의 행 수정/삭제 방지).
-    if existing := models.New{{name}}Manager(c.NewConnection()).Get(item.Id); existing == nil {
-        c.Set("code", "error")
-        return
-    } else {
-        {{range sessions}}
-        if existing.{{.Column|title}} != c.Session.{{.Key|title}} {
-            c.Set("code", "auth error")
-            return
-        }
-        {{end}}
-    }
-    {{end}}
     {{if auth == "jwt" && name == "User"}}
-    // 회원 정보는 본인만 수정/삭제할 수 있다.
-    if c.Session == nil || item.Id != c.Session.Id {
+    // 회원 정보는 본인만 수정/삭제할 수 있다{{if adminCheck}} (관리자 제외){{end}}.
+    if {{if adminCheck}}!c.isAdmin() && {{end}}item.Id != c.Session.Id {
         c.Set("code", "auth error")
         return
-    }
-    {{end}}
-
-    {{if name == "User"}}
-    if item.Password != "" {
-        hashed, err := jwt.GeneratePasswd(item.Password)
-        if err == nil {
-            item.Password = hashed
-        }
     }
     {{end}}
 
 	conn := c.NewConnection()
 
 	manager := models.New{{name}}Manager(conn)
+
+    // 기존 행을 읽어 소유권을 확인하고, 클라이언트가 바꾸면 안 되는 값은 기존 값을 유지한다.
+    existing := manager.Get(item.Id)
+    if existing == nil {
+        c.Set("code", "error")
+        return
+    }
+    {{if auth == "jwt"}}
+    {{range sessions}}
+    // 소유권 검사: 기존 행이 현재 세션 사용자 것인지 확인한다 (남의 행 수정/삭제 방지).
+    if existing.{{.Column|title}} != c.Session.{{.Key|title}} {
+        c.Set("code", "auth error")
+        return
+    }
+    {{end}}
+    {{end}}
+    {{if createdColumn != ""}}
+    item.{{createdColumn}} = existing.{{createdColumn}}
+    {{end}}
+    {{range protects}}
+    // 보호 컬럼은 기존 값을 유지한다.
+    {{if adminCheck}}if !c.isAdmin() {
+        item.{{.}} = existing.{{.}}
+    }{{else}}item.{{.}} = existing.{{.}}{{end}}
+    {{end}}
+    {{if passwordColumn != ""}}
+    // 비밀번호를 보내지 않으면 기존 해시를 유지한다.
+    if item.{{passwordColumn}} == "" {
+        item.{{passwordColumn}} = existing.{{passwordColumn}}
+    } else {
+        hashed, err := jwt.GeneratePasswd(item.{{passwordColumn}})
+        if err != nil {
+            c.Set("code", "error")
+            c.Set("error", err)
+            return
+        }
+        item.{{passwordColumn}} = hashed
+    }
+    {{end}}
+
     err := manager.Update(item)
     if err != nil {
         c.Set("code", "error")    
@@ -361,7 +431,7 @@ func (c *{{name}}Controller) Update(item *models.{{name}}{{if name == "User"}}Up
 }
 
 func (c *{{name}}Controller) Delete(item *models.{{name}}) {
-    {{if auth == "jwt" && len(sessions) > 0}}
+    {{if auth == "jwt"}}
     if c.Session == nil {
         c.Set("code", "error")
         return
@@ -383,8 +453,8 @@ func (c *{{name}}Controller) Delete(item *models.{{name}}) {
     }
     {{end}}
     {{if auth == "jwt" && name == "User"}}
-    // 회원 정보는 본인만 수정/삭제할 수 있다.
-    if c.Session == nil || item.Id != c.Session.Id {
+    // 회원 정보는 본인만 수정/삭제할 수 있다{{if adminCheck}} (관리자 제외){{end}}.
+    if {{if adminCheck}}!c.isAdmin() && {{end}}item.Id != c.Session.Id {
         c.Set("code", "auth error")
         return
     }
@@ -403,12 +473,15 @@ func (c *{{name}}Controller) Delete(item *models.{{name}}) {
 }
 
 func (c *{{name}}Controller) Deletebatch(item *[]models.{{name}}) {
-    {{if auth == "jwt" && len(sessions) > 0}}
+    {{if auth == "jwt"}}
     if c.Session == nil {
         c.Set("code", "error")
         return
     }
     {{end}}
+    if item == nil {
+        return
+    }
     
     conn := c.NewConnection()
 
@@ -430,8 +503,8 @@ func (c *{{name}}Controller) Deletebatch(item *[]models.{{name}}) {
         }
         {{end}}
         {{if auth == "jwt" && name == "User"}}
-        // 회원 정보는 본인만 수정/삭제할 수 있다.
-        if c.Session == nil || v.Id != c.Session.Id {
+        // 회원 정보는 본인만 수정/삭제할 수 있다{{if adminCheck}} (관리자 제외){{end}}.
+        if {{if adminCheck}}!c.isAdmin() && {{end}}v.Id != c.Session.Id {
             c.Set("code", "auth error")
             return
         }
@@ -446,15 +519,16 @@ func (c *{{name}}Controller) Deletebatch(item *[]models.{{name}}) {
     }
 }
 
-{{range funcs}}
-{{if querytype(.Name) == "Update"}}// @Put(){{end}}{{if querytype(.Name) == "Delete"}}// @Delete(){{end}}
-func (c *{{name}}Controller) {{.Name}}({{range i, v := .Wheres}}{{if i > 0}} ,{{end}}{{v.Column|lower}} {{v.Type}}{{end}}) {{if querytype(.Name) == "Get"}}*models.{{name}} {{else if querytype(.Name) == "Find"}}[]models.{{name}} {{else if querytype(.Name) == "Count"}}int {{end}}{
-    {{if auth == "jwt" && len(sessions) > 0}}
+{{range _, f := funcs}}
+{{qt := querytype(f.Name)}}
+{{if qt == "Update"}}// @Put(){{end}}{{if qt == "Delete"}}// @Delete(){{end}}
+func (c *{{name}}Controller) {{f.Name}}({{range i, v := f.Wheres}}{{if i > 0}} ,{{end}}{{v.Column|lower}} {{v.Type}}{{end}}) {{if qt == "Get"}}*models.{{name}} {{else if qt == "Find"}}[]models.{{name}} {{else if qt == "Count"}}int {{end}}{
+    {{if auth == "jwt"}}
     if c.Session == nil {
         c.Result["code"] = "auth error"
-        {{if querytype(.Name) == "Get" || querytype(.Name) == "Find"}}
+        {{if qt == "Get" || qt == "Find"}}
         return nil
-        {{else if querytype(.Name) == "Count"}}
+        {{else if qt == "Count"}}
         return 0
         {{else}}
         return
@@ -463,15 +537,15 @@ func (c *{{name}}Controller) {{.Name}}({{range i, v := .Wheres}}{{if i > 0}} ,{{
     {{range _, s:= sessions}}
     if c.Session.{{s.Key|title}} == 0 {
         c.Result["code"] = "auth error"
-        {{if querytype(.Name) == "Get" || querytype(.Name) == "Find"}}
+        {{if qt == "Get" || qt == "Find"}}
         return nil
-        {{else if querytype(.Name) == "Count"}}
+        {{else if qt == "Count"}}
         return 0
         {{else}}
         return
         {{end}}
     } else {
-        {{range i, v := .Wheres}}
+        {{range i, v := f.Wheres}}
         {{if lower(s.Column) == lower(v.Column)}}
         {{v.Column|lower}} = c.Session.{{s.Key|title}}
         {{end}}
@@ -479,23 +553,56 @@ func (c *{{name}}Controller) {{.Name}}({{range i, v := .Wheres}}{{if i > 0}} ,{{
     }
     {{end}}
     {{end}}
+    {{locked := false}}{{if qt == "Update"}}{{range i, v := f.Wheres}}{{if v.Compare == "column" && isProtected(v.Column, protects)}}{{locked = true}}{{end}}{{end}}{{end}}
+    {{if locked && !adminCheck}}
+    // 보호 컬럼은 클라이언트가 바꿀 수 없다.
+    c.Result["code"] = "auth error"
+    {{else}}
+    {{if locked}}
+    // 보호 컬럼은 관리자만 바꿀 수 있다.
+    if !c.isAdmin() {
+        c.Result["code"] = "auth error"
+        return
+    }
+    {{end}}
     conn := c.NewConnection()
 
 	manager := models.New{{name}}Manager(conn)
-    {{if querytype(.Name) == "Get" || querytype(.Name) == "Find" || querytype(.Name) == "Count"}}
-    item := manager.{{.Name}}({{range i, v := .Wheres}}{{if i > 0}}, {{end}}{{v.Column|lower}}{{end}})
-    {{if querytype(.Name) == "Get"}}
+    {{if qt == "Get" || qt == "Find" || qt == "Count"}}
+    item := manager.{{f.Name}}({{range i, v := f.Wheres}}{{if i > 0}}, {{end}}{{v.Column|lower}}{{end}}{{if auth == "jwt"}}{{range sessions}}, models.Where{Column:"{{.Column|lower}}", Value:c.Session.{{.Key|title}}, Compare:"="}{{end}}{{end}})
+    {{if qt == "Get"}}
     c.Set("item", item)
     {{end}}
-    {{if querytype(.Name) == "Find"}}
+    {{if qt == "Find"}}
     c.Set("items", item)
     {{end}}
-    {{if querytype(.Name) == "Count"}}
+    {{if qt == "Count"}}
     c.Set("count", item)
     {{end}}
     return item
     {{else}}
-    manager.{{.Name}}({{range i, v := .Wheres}}{{if i > 0}}, {{end}}{{v.Column|lower}}{{end}})
+    {{if auth == "jwt"}}
+    {{range sessions}}
+    // 소유권 검사: 조건에 맞는 행 중 다른 사용자 소유 행이 있으면 거부한다 (남의 행 수정/삭제 방지).
+    if manager.Count([]interface{}{ {{range i, v := f.Wheres}}{{if qt == "Delete" || v.Compare == "where"}}models.Where{Column:"{{v.Column|lower}}", Value:{{v.Column|lower}}, Compare:"{{if v.Compare == "where"}}={{else}}{{v.Compare}}{{end}}"}, {{end}}{{end}}models.Where{Column:"{{.Column|lower}}", Value:c.Session.{{.Key|title}}, Compare:"<>"}}) > 0 {
+        c.Result["code"] = "auth error"
+        return
+    }
+    {{end}}
+    {{if name == "User"}}
+    // 회원 정보는 본인만 수정/삭제할 수 있다{{if adminCheck}} (관리자 제외){{end}}.
+    if {{if adminCheck}}!c.isAdmin() && {{end}}manager.Count([]interface{}{ {{range i, v := f.Wheres}}{{if qt == "Delete" || v.Compare == "where"}}models.Where{Column:"{{v.Column|lower}}", Value:{{v.Column|lower}}, Compare:"{{if v.Compare == "where"}}={{else}}{{v.Compare}}{{end}}"}, {{end}}{{end}}models.Where{Column:"id", Value:c.Session.Id, Compare:"<>"}}) > 0 {
+        c.Result["code"] = "auth error"
+        return
+    }
+    {{end}}
+    {{end}}
+    err := manager.{{f.Name}}({{range i, v := f.Wheres}}{{if i > 0}}, {{end}}{{v.Column|lower}}{{end}})
+    if err != nil {
+        c.Set("code", "error")
+        c.Set("error", err)
+    }
+    {{end}}
     {{end}}
 }
 {{end}}

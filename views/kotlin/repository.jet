@@ -26,7 +26,7 @@ interface {{.ModelName}}Repository : JpaRepository<{{.ModelName}}, Long> {
 {{range entityGraphPaths}}{{if .IsLast}}        "{{.Path}}"{{else}}        "{{.Path}}",{{end}}
 {{end}}    ])
 {{end}}    override fun findById(id: Long): java.util.Optional<{{.ModelName}}>
-{{range .Columns }}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{ if .Name != "Id"}}{{"\n"}}{{if not joinData}}{{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
+{{range .Columns }}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{ if .Name != "Id" && not .IsPassword}}{{"\n"}}{{if not joinData}}{{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
 {{range entityGraphPaths}}{{if .IsLast}}        "{{.Path}}"{{else}}        "{{.Path}}",{{end}}
 {{end}}    ])
 {{end}}    fun findBy{{.Name}}({{.Name|lower}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): List<{{.ModelName}}>

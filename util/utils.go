@@ -310,3 +310,54 @@ func Unique(items []Func) []string {
 
 	return ret
 }
+
+// IsPasswordColumn 은 비밀번호 컬럼(Passwd 또는 Password)인지 확인한다.
+func IsPasswordColumn(name string) bool {
+	return name == "Passwd" || name == "Password"
+}
+
+// PasswordColumn 은 비밀번호 컬럼의 Name 을 돌려준다. 없으면 "".
+func PasswordColumn(items []Column) string {
+	for _, item := range items {
+		if IsPasswordColumn(item.Name) {
+			return item.Name
+		}
+	}
+	return ""
+}
+
+// ProtectedColumns 는 REST 입력으로 받지 않을 컬럼의 Name 목록을 돌려준다.
+// gpa.protect 가 있으면 그것을 쓰고, 없으면 User 테이블의 Level 컬럼을 기본으로 보호한다.
+// id 와 session 컬럼은 따로 처리(자동 증가 / 세션 값으로 고정)하므로 제외한다.
+func ProtectedColumns(modelName string, items []Column, gpa *config.Gpa) []string {
+	ret := make([]string, 0)
+	if gpa != nil && len(gpa.Protect) > 0 {
+		for _, p := range gpa.Protect {
+			for _, item := range items {
+				if strings.EqualFold(item.Name, p) && item.Name != "Id" && !isSessionColumn(item.Name, gpa) {
+					ret = append(ret, item.Name)
+					break
+				}
+			}
+		}
+		return ret
+	}
+
+	if modelName == "User" {
+		for _, item := range items {
+			if item.Name == "Level" {
+				ret = append(ret, item.Name)
+			}
+		}
+	}
+	return ret
+}
+
+func isSessionColumn(name string, gpa *config.Gpa) bool {
+	for _, pair := range gpa.Session {
+		if strings.EqualFold(pair.Column, name) {
+			return true
+		}
+	}
+	return false
+}

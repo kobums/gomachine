@@ -17,11 +17,12 @@ import (
 
 type {{name}} struct {
     {{range items}}        
-    {{.Name|title}}                {{if .Name == "Id"}}int64{{else}}{{.Type}}{{end}} `json:{{if .Name == "Passwd"}}"-"{{else}}"{{.Name|lower}}"{{end}}` {{end}}
+    {{.Name|title}}                {{if .Name == "Id"}}int64{{else}}{{.Type}}{{end}} `json:{{if .Name == passwordColumn}}"-"{{else}}"{{.Name|lower}}"{{end}}` {{end}}
     
     Extra                    map[string]interface{} `json:"extra"`
 }
-{{if name == "User"}}type {{name}}Update struct {
+{{if inputName != name}}// {{name}}Update 는 REST 입력용 구조체다. 비밀번호를 입력받을 수 있고, 출력용 {{name}} 은 비밀번호를 json 에서 숨긴다.
+type {{name}}Update struct {
     {{range items}}        
     {{.Name|title}}                {{if .Name == "Id"}}int64{{else}}{{.Type}}{{end}} `json:"{{.Name|lower}}"` {{end}}
     
@@ -40,7 +41,7 @@ type {{name}}Manager struct {
     SelectLog bool
     Log bool
 }
-{{if name == "User"}}func (c *{{name}}) ConvertUpdate() *{{name}}Update {    
+{{if inputName != name}}func (c *{{name}}) ConvertUpdate() *{{name}}Update {    
     item := &{{name}}Update{}
     {{range items}}        
     item.{{.Name|title}} = c.{{.Name|title}}{{end}}
@@ -211,10 +212,10 @@ func (p *{{name}}Manager) Truncate() error {
        }
     }
 
-    return nil
+    return err
 }
 
-func (p *{{name}}Manager) Insert(item *{{if name == "User"}}{{name}}Update{{else}}{{name}}{{end}}) error {
+func (p *{{name}}Manager) Insert(item *{{inputName}}) error {
     if !p.Conn.IsConnect() {
         return errors.New("Connection Error")
     }
@@ -338,7 +339,7 @@ func (p *{{name}}Manager) DeleteWhere(args []interface{}) error {
     return err
 }
 
-func (p *{{name}}Manager) Update(item *{{if name == "User"}}{{name}}Update{{else}}{{name}}{{end}}) error {
+func (p *{{name}}Manager) Update(item *{{inputName}}) error {
     if !p.Conn.IsConnect() {
         return errors.New("Connection Error")
     }

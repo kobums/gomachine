@@ -24,6 +24,17 @@ type KotlinColumn struct {
 	DefaultValue string
 	IsEnum       bool
 	EnumType     string
+	IsPassword   bool // 비밀번호 컬럼: 응답/검색에서 제외하고 저장 시 해시한다
+	IsProtected  bool // 보호 컬럼: Create/Update/Patch 요청으로 바꿀 수 없다
+}
+
+// KotlinSession 은 세션 값(SessionProvider.currentValue(Key))과 엔티티 컬럼의 매핑이다.
+type KotlinSession struct {
+	Key          string
+	Field        string // 엔티티 프로퍼티 이름
+	RequestField string // Create/Update/Patch 요청 프로퍼티 이름
+	Convert      string // 세션 값(Long)을 컬럼 타입으로 바꾸는 접미사 (예: ".toInt()")
+	IsPrimaryKey bool   // id 컬럼이면 요청 값을 덮어쓰지 않는다 (경로 변수 id 와 소유권 검사로 충분)
 }
 
 type KotlinEnumData struct {
@@ -61,6 +72,9 @@ type KotlinTemplateData struct {
 	Joins            []KotlinJoin
 	UniqueJoinNames  []string          // Unique join model names for imports
 	EntityGraphPaths []EntityGraphPath // Nested entity graph paths for @EntityGraph with metadata
+	HasPassword      bool
+	PasswordField    string          // 비밀번호 컬럼의 프로퍼티 이름 (passwd / password)
+	Sessions         []KotlinSession // auth=jwt 이고 session 설정이 있을 때만 채워진다
 }
 
 // Build a global map of all table joins for recursive entity graph path building
@@ -153,6 +167,7 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 		}
 	}
 
+	protects := util.ProtectedColumns(modelName, columns, gpa)
 	kotlinColumns := make([]KotlinColumn, 0)
 	hasDateTime := false
 	hasDecimal := false
@@ -245,6 +260,12 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 			DefaultValue: defaultValue,
 			IsEnum:       isEnumType,
 			EnumType:     enumTypeName,
+			IsPassword:   util.IsPasswordColumn(col.Name) && col.Type == "String",
+		}
+		for _, p := range protects {
+			if p == col.Name && !isPrimaryKey {
+				kotlinCol.IsProtected = true
+			}
 		}
 		kotlinColumns = append(kotlinColumns, kotlinCol)
 	}
@@ -356,6 +377,19 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 	visited := make(map[string]bool)
 	entityGraphPaths := buildEntityGraphPaths(joins, globalJoinsMap, visited)
 
+	passwordField := ""
+	for _, col := range kotlinColumns {
+		if col.IsPassword {
+			passwordField = strings.ToLower(col.Name)
+			break
+		}
+	}
+
+	sessions := buildKotlinSessions(auth, gpa, kotlinColumns, joins)
+	if len(sessions) > 0 {
+		generateSessionProvider(targetPath)
+	}
+
 	templateData := KotlinTemplateData{
 		PackageName:      packageName,
 		TableName:        tableName,
@@ -367,6 +401,9 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 		Joins:            joins,
 		UniqueJoinNames:  uniqueJoinNames,
 		EntityGraphPaths: entityGraphPaths,
+		HasPassword:      passwordField != "",
+		PasswordField:    passwordField,
+		Sessions:         sessions,
 	}
 
 	// Generate entity file
@@ -385,6 +422,83 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 	if len(enums) > 0 {
 		generateKotlinEnums(targetPath, templateData)
 	}
+}
+
+// buildKotlinSessions 는 auth=jwt 이고 session 설정이 있을 때 소유권 검사용 매핑을 만든다.
+func buildKotlinSessions(auth string, gpa *config.Gpa, columns []KotlinColumn, joins []KotlinJoin) []KotlinSession {
+	ret := make([]KotlinSession, 0)
+	if auth != "jwt" || gpa == nil {
+		return ret
+	}
+
+	for _, pair := range gpa.Session {
+		found := false
+		for _, col := range columns {
+			if !strings.EqualFold(col.Name, pair.Column) {
+				continue
+			}
+			found = true
+
+			field := strings.ToLower(col.Name)
+			for _, join := range joins {
+				if join.Column == col.DBName {
+					field = join.ColumnName + "Id"
+				}
+			}
+
+			convert := ""
+			switch col.KotlinType {
+			case "Long":
+				convert = ""
+			case "Int":
+				convert = ".toInt()"
+			case "String":
+				convert = ".toString()"
+			default:
+				log.Printf("WARNING: session column %s has unsupported type %s, ownership check skipped", col.Name, col.KotlinType)
+				found = false
+			}
+			if found {
+				ret = append(ret, KotlinSession{Key: strings.ToLower(pair.Key), Field: field, RequestField: strings.ToLower(col.Name), Convert: convert, IsPrimaryKey: col.IsPrimaryKey})
+			}
+			break
+		}
+		if !found {
+			log.Printf("WARNING: session column %s not found in %s", pair.Column, gpa.Name)
+		}
+	}
+	return ret
+}
+
+// generateSessionProvider 는 대상 프로젝트가 구현해야 할 SessionProvider 인터페이스를 한 번만 만든다 (이미 있으면 덮어쓰지 않는다).
+func generateSessionProvider(targetPath string) {
+	configDir := filepath.Join(targetPath, "config")
+	outputPath := filepath.Join(configDir, "SessionProvider.kt")
+	if _, err := os.Stat(outputPath); err == nil {
+		return
+	}
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		log.Printf("Failed to create config directory: %v", err)
+		return
+	}
+
+	content := `package com.gowoobro.gymspring.config
+
+// 생성된 컨트롤러가 소유권 검사에 쓰는 현재 로그인 사용자 정보.
+// 대상 프로젝트에서 인증 방식(JWT 필터, Spring Security 등)에 맞게 @Component 로 구현해야 한다.
+interface SessionProvider {
+    // 현재 로그인 사용자의 id. 비로그인이면 null.
+    fun currentUserId(): Long?
+
+    // model.json session 의 key 에 해당하는 세션 값. 기본은 "id" 만 지원한다.
+    fun currentValue(key: String): Long? = if (key == "id") currentUserId() else null
+}
+`
+	if err := util.WriteFile(outputPath, content); err != nil {
+		log.Printf("Failed to write SessionProvider: %v", err)
+		return
+	}
+	log.Printf("Generated Kotlin: %s", outputPath)
 }
 
 func generateKotlinEntity(targetPath string, data KotlinTemplateData) {

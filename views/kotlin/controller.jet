@@ -6,9 +6,11 @@ import com.gowoobro.gymspring.entity.{{.ModelName}}UpdateRequest
 import com.gowoobro.gymspring.entity.{{.ModelName}}PatchRequest
 import com.gowoobro.gymspring.service.{{.ModelName}}Service
 import com.gowoobro.gymspring.entity.{{.ModelName}}Response
-{{range .Enums}}import com.gowoobro.gymspring.enums.{{.EnumPackage}}.{{.Name|title}}
+{{if len(.Sessions) > 0}}import com.gowoobro.gymspring.config.SessionProvider
+{{end}}{{range .Enums}}import com.gowoobro.gymspring.enums.{{.EnumPackage}}.{{.Name|title}}
 {{end}}{{- allJoins := .Joins}}
 import org.springframework.data.domain.Page
+import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 {{if .HasDateTime}}import java.time.LocalDateTime{{end}}
@@ -17,8 +19,36 @@ import org.springframework.web.bind.annotation.*
 @RestController
 @RequestMapping("/api/{{.ModelName|lower}}")
 class {{.ModelName}}Controller(
-    private val {{.ModelName|lower}}Service: {{.ModelName}}Service) {
+    private val {{.ModelName|lower}}Service: {{.ModelName}}Service{{if len(.Sessions) > 0}},
+    private val sessionProvider: SessionProvider{{end}}) {
+{{sessions := .Sessions}}{{modelVar := lower(.ModelName)}}
+{{if len(sessions) > 0}}
+    // 로그인 여부: 소유권 검사에 쓰는 세션 값이 모두 있어야 한다.
+    private fun isLoggedIn(): Boolean {
+{{range sessions}}        if (sessionProvider.currentValue("{{.Key}}") == null) return false
+{{end}}        return true
+    }
 
+    // 소유권 검사: 행이 현재 세션 사용자 것인지 확인한다 (남의 행 조회/수정/삭제 방지).
+    private fun isOwned(entity: {{.ModelName}}): Boolean {
+{{range sessions}}        val {{.Key}}Value = sessionProvider.currentValue("{{.Key}}") ?: return false
+        if (entity.{{.Field}} != {{.Key}}Value{{.Convert}}) return false
+{{end}}        return true
+    }
+
+    private fun ownedOrNull(id: Long): {{.ModelName}}? {
+        val entity = {{modelVar}}Service.findById(id) ?: return null
+        return if (isOwned(entity)) entity else null
+    }
+{{end}}
+{{if len(sessions) > 0 && .ModelName != "User"}}
+    // 생성 요청의 세션 컬럼은 클라이언트 값 대신 세션 값으로 고정한다.
+    private fun withSession(request: {{.ModelName}}CreateRequest): {{.ModelName}}CreateRequest {
+        var ret = request
+{{range sessions}}{{if not .IsPrimaryKey}}        ret = ret.copy({{.RequestField}} = sessionProvider.currentValue("{{.Key}}")!!{{.Convert}})
+{{end}}{{end}}        return ret
+    }
+{{end}}
     private fun toResponse({{.ModelName|lower}}: {{.ModelName}}): {{.ModelName}}Response {
         return {{.ModelName}}Response.from({{.ModelName|lower}})
     }
@@ -41,13 +71,14 @@ class {{.ModelName}}Controller(
     fun get{{.ModelName}}s(
         @RequestParam(defaultValue = "0") page: Int,
         @RequestParam(defaultValue = "10") pagesize: Int,
-{{range .Columns}}{{if .Name != "Id"}}{{if .KotlinType == "LocalDateTime"}}        @RequestParam(required = false) start{{.Name|lower}}: LocalDateTime?,
+{{range .Columns}}{{if .Name != "Id" && not .IsPassword}}{{if .KotlinType == "LocalDateTime"}}        @RequestParam(required = false) start{{.Name|lower}}: LocalDateTime?,
         @RequestParam(required = false) end{{.Name|lower}}: LocalDateTime?,
 {{else}}        @RequestParam(required = false) {{.Name|lower}}: {{if .IsEnum}}Int?{{else}}{{.KotlinType}}?{{end}},
 {{end}}{{end}}{{end}}    ): ResponseEntity<Map<String, Any>> {
-        var results = if ({{range .Columns}}{{if .Name != "Id"}}{{if .KotlinType == "LocalDateTime"}}start{{.Name|lower}} != null || end{{.Name|lower}} != null || {{else}}{{.Name|lower}} != null || {{end}}{{end}}{{end}}false) {
+{{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
+{{end}}        var results = if ({{range .Columns}}{{if .Name != "Id" && not .IsPassword}}{{if .KotlinType == "LocalDateTime"}}start{{.Name|lower}} != null || end{{.Name|lower}} != null || {{else}}{{.Name|lower}} != null || {{end}}{{end}}{{end}}false) {
             var filtered = {{.ModelName|lower}}Service.findAll(0, Int.MAX_VALUE).content
-{{range .Columns}}{{if .Name != "Id"}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if .KotlinType == "LocalDateTime"}}            if (start{{.Name|lower}} != null || end{{.Name|lower}} != null) {
+{{range .Columns}}{{if .Name != "Id" && not .IsPassword}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if .KotlinType == "LocalDateTime"}}            if (start{{.Name|lower}} != null || end{{.Name|lower}} != null) {
                 filtered = filtered.filter { filterByDateRange(it.{{.Name|lower}}, start{{.Name|lower}}, end{{.Name|lower}}) }
             }
 {{else}}            if ({{.Name|lower}} != null) {
@@ -58,7 +89,9 @@ class {{.ModelName}}Controller(
             {{.ModelName|lower}}Service.findAll(0, Int.MAX_VALUE).content
         }
 
-        val totalElements = results.size
+{{if len(sessions) > 0}}        // 현재 세션 사용자 소유 행만 돌려준다.
+        results = results.filter { isOwned(it) }
+{{end}}        val totalElements = results.size
         val totalPages = if (pagesize > 0) (totalElements + pagesize - 1) / pagesize else 1
         val startIndex = page * pagesize
         val endIndex = minOf(startIndex + pagesize, totalElements)
@@ -85,32 +118,40 @@ class {{.ModelName}}Controller(
 
     @GetMapping("/{id}")
     fun get{{.ModelName}}(@PathVariable id: Long): ResponseEntity<{{.ModelName}}Response> {
-        val res = {{.ModelName|lower}}Service.findById(id)
-        return if (res != null) {
+{{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
+        val res = ownedOrNull(id)
+{{else}}        val res = {{.ModelName|lower}}Service.findById(id)
+{{end}}        return if (res != null) {
             ResponseEntity.ok(toResponse(res))
         } else {
             ResponseEntity.notFound().build()
         }
     }
 
-{{range .Columns}}{{if .Name != "Id"}}
+{{range .Columns}}{{if .Name != "Id" && not .IsPassword}}
     @GetMapping("/search/{{.Name|lower}}")
     fun get{{.ModelName}}By{{.Name}}(@RequestParam {{.Name|lower}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): ResponseEntity<List<{{.ModelName}}Response>> {
-        val res = {{.ModelName|lower}}Service.findBy{{.Name}}({{.Name|lower}})
-        return ResponseEntity.ok(res.map { toResponse(it) } )
+{{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
+        val res = {{.ModelName|lower}}Service.findBy{{.Name}}({{.Name|lower}}).filter { isOwned(it) }
+{{else}}        val res = {{.ModelName|lower}}Service.findBy{{.Name}}({{.Name|lower}})
+{{end}}        return ResponseEntity.ok(res.map { toResponse(it) } )
     }
 {{end}}{{end}}
 
     @GetMapping("/count")
     fun getCount(): ResponseEntity<Map<String, Long>> {
-        val count = {{.ModelName|lower}}Service.count()
-        return ResponseEntity.ok(mapOf("count" to count))
+{{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
+        // TODO: 소유 행 수를 리포지토리 count 쿼리로 바꾸면 전체 조회를 피할 수 있다.
+        val count = {{.ModelName|lower}}Service.findAll(0, Int.MAX_VALUE).content.count { isOwned(it) }.toLong()
+{{else}}        val count = {{.ModelName|lower}}Service.count()
+{{end}}        return ResponseEntity.ok(mapOf("count" to count))
     }
 
     @PostMapping
     fun create{{.ModelName}}(@RequestBody request: {{.ModelName}}CreateRequest): ResponseEntity<{{.ModelName}}Response> {
-        return try {
-            val res = {{.ModelName|lower}}Service.create(request)
+{{if len(sessions) > 0 && .ModelName != "User"}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
+{{end}}        return try {
+            val res = {{.ModelName|lower}}Service.create({{if len(sessions) > 0 && .ModelName != "User"}}withSession(request){{else}}request{{end}})
             ResponseEntity.ok(toResponse(res))
         } catch (e: Exception) {
             ResponseEntity.badRequest().build()
@@ -119,8 +160,9 @@ class {{.ModelName}}Controller(
 
     @PostMapping("/batch")
     fun create{{.ModelName}}s(@RequestBody requests: List<{{.ModelName}}CreateRequest>): ResponseEntity<List<{{.ModelName}}Response>> {
-        return try {
-            val res = {{.ModelName|lower}}Service.createBatch(requests)
+{{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
+{{end}}        return try {
+            val res = {{.ModelName|lower}}Service.createBatch({{if len(sessions) > 0 && .ModelName != "User"}}requests.map { withSession(it) }{{else}}requests{{end}})
             return ResponseEntity.ok(res.map { toResponse(it) } )
         } catch (e: Exception) {
             ResponseEntity.badRequest().build()
@@ -132,8 +174,12 @@ class {{.ModelName}}Controller(
         @PathVariable id: Long,
         @RequestBody request: {{.ModelName}}UpdateRequest
     ): ResponseEntity<{{.ModelName}}Response> {
-        val updatedRequest = request.copy(id = id)
-        val res = {{.ModelName|lower}}Service.update(updatedRequest)
+{{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
+        if (ownedOrNull(id) == null) return ResponseEntity.notFound().build()
+        // 세션 컬럼은 클라이언트 값 대신 세션 값으로 고정한다.
+        val updatedRequest = request.copy(id = id{{range sessions}}{{if not .IsPrimaryKey}}, {{.RequestField}} = sessionProvider.currentValue("{{.Key}}")!!{{.Convert}}{{end}}{{end}})
+{{else}}        val updatedRequest = request.copy(id = id)
+{{end}}        val res = {{.ModelName|lower}}Service.update(updatedRequest)
         return if (res != null) {
             ResponseEntity.ok(toResponse(res))
         } else {
@@ -146,8 +192,12 @@ class {{.ModelName}}Controller(
         @PathVariable id: Long,
         @RequestBody request: {{.ModelName}}PatchRequest
     ): ResponseEntity<{{.ModelName}}Response> {
-        val patchRequest = request.copy(id = id)
-        val res = {{.ModelName|lower}}Service.patch(patchRequest)
+{{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
+        if (ownedOrNull(id) == null) return ResponseEntity.notFound().build()
+        // 세션 컬럼은 클라이언트 값 대신 세션 값으로 고정한다.
+        val patchRequest = request.copy(id = id{{range sessions}}{{if not .IsPrimaryKey}}, {{.RequestField}} = sessionProvider.currentValue("{{.Key}}")!!{{.Convert}}{{end}}{{end}})
+{{else}}        val patchRequest = request.copy(id = id)
+{{end}}        val res = {{.ModelName|lower}}Service.patch(patchRequest)
         return if (res != null) {
             ResponseEntity.ok(toResponse(res))
         } else {
@@ -157,13 +207,20 @@ class {{.ModelName}}Controller(
 
     @DeleteMapping("/{id}")
     fun delete{{.ModelName}}(@PathVariable id: Long): ResponseEntity<Map<String, Boolean>> {
-        val success = {{.ModelName|lower}}Service.deleteById(id)
+{{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
+        if (ownedOrNull(id) == null) return ResponseEntity.notFound().build()
+{{end}}        val success = {{.ModelName|lower}}Service.deleteById(id)
         return ResponseEntity.ok(mapOf("success" to success))
     }
 
     @DeleteMapping("/batch")
     fun delete{{.ModelName}}s(@RequestBody entities: List<{{.ModelName}}>): ResponseEntity<Map<String, Boolean>> {
-        val success = {{.ModelName|lower}}Service.deleteBatch(entities)
+{{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
+        // 클라이언트가 보낸 엔티티 대신 DB 에서 다시 읽은 본인 소유 행만 삭제한다.
+        val owned = entities.map { ownedOrNull(it.id) ?: return ResponseEntity.status(HttpStatus.FORBIDDEN).build() }
+        val success = {{.ModelName|lower}}Service.deleteBatch(owned)
+{{else}}        val success = {{.ModelName|lower}}Service.deleteBatch(entities)
+{{end}}
         return ResponseEntity.ok(mapOf("success" to success))
     }
 }

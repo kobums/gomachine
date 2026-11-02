@@ -42,6 +42,8 @@ type Gpa struct {
 	Session []SessionPair `json:"session"`
 	Search  bool          `json:"search"`
 	Primary []string      `json:"primary"`
+	// REST Insert/Update 에서 클라이언트 값을 받지 않을 컬럼 (예: ["level"]). Insert 는 0 값, Update 는 기존 DB 값 유지.
+	Protect []string `json:"protect"`
 }
 
 type ModelConfig struct {
