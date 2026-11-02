@@ -68,8 +68,6 @@ type ReactTemplateData struct {
 }
 
 func ProcessReact(packageName string, tableName string, prefix string, items []util.Column, db *sql.DB, gpa *config.Gpa, version string, auth string, cnf config.ModelConfig) {
-	modelName := strings.Title(util.GetTableName(tableName))
-
 	// Determine target path
 	var targetPath string
 	if cnf.ReactModelFilePath != "" {
@@ -87,6 +85,16 @@ func ProcessReact(packageName string, tableName string, prefix string, items []u
 			log.Printf("Failed to create target directory: %v", err)
 		}
 	}
+
+	templateData := BuildTemplateData(packageName, tableName, items, gpa)
+
+	generateReactModel(targetPath, templateData)
+	generateReactTypes(targetPath, templateData)
+}
+
+// BuildTemplateData 는 TypeScript 계열 생성기(react, vue)가 함께 쓰는 템플릿 데이터를 만든다.
+func BuildTemplateData(packageName string, tableName string, items []util.Column, gpa *config.Gpa) ReactTemplateData {
+	modelName := strings.Title(util.GetTableName(tableName))
 
 	// Get enum data from GPA
 	var enums []ReactEnumData
@@ -239,8 +247,7 @@ func ProcessReact(packageName string, tableName string, prefix string, items []u
 		UniqueJoinNames: uniqueJoinNames,
 	}
 
-	generateReactModel(targetPath, templateData)
-	generateReactTypes(targetPath, templateData)
+	return templateData
 }
 
 func mapMySQLTypeToTypeScript(mysqlType string) string {
@@ -279,7 +286,8 @@ func getTypeScriptType(fieldName string, columns []util.Column, enums []ReactEnu
 	return "string"
 }
 
-func setupJetGlobals(views *jet.Set) {
+// SetupJetGlobals 는 TypeScript 템플릿에서 쓰는 헬퍼 함수를 등록한다.
+func SetupJetGlobals(views *jet.Set) {
 	views.AddGlobal("title", func(str string) string {
 		if str == "" {
 			return ""
@@ -349,7 +357,7 @@ func generateReactModel(targetPath string, data ReactTemplateData) {
 		jet.InDevelopmentMode(),
 	)
 
-	setupJetGlobals(views)
+	SetupJetGlobals(views)
 
 	template, err := views.GetTemplate("model.jet")
 	if err != nil {
@@ -388,7 +396,7 @@ func generateReactTypes(targetPath string, data ReactTemplateData) {
 		jet.InDevelopmentMode(),
 	)
 
-	setupJetGlobals(views)
+	SetupJetGlobals(views)
 
 	template, err := views.GetTemplate("type.jet")
 	if err != nil {

@@ -3,6 +3,18 @@
   "user": "your-db-user",
   "server": "your-db-host",
   "password": "",
-  "language": "go",
+  "languages": {
+    "all": false,
+    "go": true,
+    "spring": false,
+    "flutter": false,
+    "react": false,
+    "vue": false
+  },
+  "goModelFilePath": "",
+  "kotlinModelFilePath": "../your-project/your-project_spring",
+  "dartModelFilePath": "../your-project/your-project_app/lib/model/",
+  "reactModelFilePath": "../your-project/your-project_front",
+  "vueModelFilePath": "../your-project/your-project_vue",
   "modelJsonPath": "../your-project/your-project_go/"
 }

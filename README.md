@@ -2,7 +2,7 @@
 
 이 프로그램은 Go를 이용하여 귀찮고 반복되는 것들을 안하게 하기 위함이다.
 
-아직 go, flutter만 사용하게 되어있다.
+go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생성할 수 있다.
 
 ## 실행
 
@@ -11,6 +11,33 @@
 2. make install
 
 3. 경로를 잘 맞춰야 한다.
+
+## 생성 언어 선택
+
+`model.json` 의 `languages` 에서 언어별로 켜고 끈다. `"all": true` 면 전부 생성한다.
+
+```json
+"languages": { "all": false, "go": true, "spring": true, "flutter": false, "react": true, "vue": true },
+"kotlinModelFilePath": "../proj/proj_spring",
+"reactModelFilePath": "../proj/proj_front",
+"vueModelFilePath": "../proj/proj_vue"
+```
+
+- 지원 언어: `go`, `spring`(=`kotlin`), `flutter`(=`dart`), `react`, `vue`
+- go 외 언어는 `*ModelFilePath` 가 비어 있으면 경고만 찍고 건너뛴다.
+- `languages` 가 없으면 예전 `language` 문자열을 쓰고, 그것도 없으면 go 만 생성한다.
+- 실행 인자로 덮어쓸 수 있다: `buildtool-model . go,react` 또는 `buildtool-model . all`
+
+## Vue (Vue 3 + TypeScript)
+
+`vueModelFilePath` 아래에 테이블마다 세 파일을 만든다.
+
+- `src/types/{table}.ts` — 모델 인터페이스, 검색 파라미터, 응답 타입
+- `src/models/{table}.ts` — API 호출 클래스 (`{Model}Model.find/get/insert/update/remove`, enum 상수, `searchByXxx`)
+- `src/composables/use{Model}.ts` — `items`, `item`, `total`, `loading`, `error` ref 와 `fetchPage/fetchAll/fetchOne/create/update/remove`
+
+대상 프로젝트에는 axios 같은 시그니처의 `src/services/api.ts` (`get`, `post`, `put`, `patch`, `del`) 가 있어야 한다.
+API 경로는 react 와 같이 spring 백엔드(`/{table}/{id}`, `/{table}/search/{field}`)에 맞춰져 있다.
 
 ## 생성된 Go 모델이 기대하는 models/db.go
 

@@ -55,10 +55,10 @@ export default class {{.ModelName}}Model {
     return res.data.content || [];
   }
 
-  static async findall(params?: {{.ModelName}}SearchParams) {
-    params!.page = 0;
-    params!.pagesize = 9999;
-    const res = await get<ApiResponse<{{.ModelName}}>>('/{{.TableName | lower}}', { params });
+  static async findall(params: {{.ModelName}}SearchParams = {}) {
+    const res = await get<ApiResponse<{{.ModelName}}>>('/{{.TableName | lower}}', {
+      params: { ...params, page: 0, pagesize: 9999 },
+    });
     return res.data.content || [];
   }
 
@@ -77,11 +77,11 @@ export default class {{.ModelName}}Model {
     return res.data;
   }
 {{range .SearchMethods}}
+  // 백엔드 /search/{field} 는 목록(List)을 그대로 돌려준다.
   static async {{.MethodName}}({{.ParamName}}: {{.ParamType}}{{if not .IsSingle}}, params?: {{.ModelName}}SearchParams{{end}}) {
-    const res = await get<{{if .IsSingle}}ApiSingleResponse<{{.ModelName}}>{{else}}ApiResponse<{{.ModelName}}>{{end}}>(
-      `/{{.TableName | lower}}/search/{{.FieldName | lower}}?{{.FieldName | lower}}={{.TemplateParam}}`{{if not .IsSingle}},
-      { params }{{end}}
-    );
-    return {{if .IsSingle}}res.data.item{{else}}res.data.items || []{{end}};
+    const res = await get<{{.ModelName}}[]>('/{{.TableName | lower}}/search/{{.FieldName | lower}}', {
+      params: { {{if not .IsSingle}}...params, {{end}}{{.FieldName | lower}}: {{.ParamName}} },
+    });
+    return {{if .IsSingle}}res.data?.[0] ?? null{{else}}res.data || []{{end}};
   }
 {{end}}}

@@ -777,13 +777,13 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
     var params []interface{}
 
     {{flag := false}}
-    query := "select sum({{prefix}}_{{range items}}{{if .Name == "Price" || .Name == "Totalprice" || .Name == "Count" || .Name == "Score"}}{{if flag == true}},{{end}}{{.Name|lower}}{{flag = true}}{{end}}{{end}}) from {{tableName}}"
+    query := "select {{range items}}{{if .Name == "Price" || .Name == "Totalprice" || .Name == "Count" || .Name == "Score"}}{{if flag == true}}, {{end}}ifnull(sum({{.Column}}), 0){{flag = true}}{{end}}{{end}} from {{tableName}}"
 
     if p.Index != "" {
         query = query + " use index(" + p.Index + ") "
     }
 
-    query += "where 1=1 "
+    query += " where 1=1 "
 
     page := 0
     pagesize := 0

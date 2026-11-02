@@ -10,7 +10,7 @@ request: request.go
 	go build -o bin/request request.go
 
 # Build model generator using Go modules
-model: main.go util/utils.go go/main.go dart/main.go kotlin/main.go react/main.go
+model: main.go util/utils.go go/main.go dart/main.go kotlin/main.go react/main.go vue/main.go
 	go build -o bin/model .
 
 doc: doc.go
@@ -20,11 +20,11 @@ watch: watch.go
 	go build -o bin/watch watch.go
 
 # Run model generator from source files
-run: main.go util/utils.go go/main.go dart/main.go kotlin/main.go react/main.go
+run: main.go util/utils.go go/main.go dart/main.go kotlin/main.go react/main.go vue/main.go
 	go run .
 
 # Build Linux binary for model generator
-model-linux: main.go util/utils.go go/main.go dart/main.go kotlin/main.go react/main.go
+model-linux: main.go util/utils.go go/main.go dart/main.go kotlin/main.go react/main.go vue/main.go
 	env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags '-s' -o bin/model.linux .
 
 install: model
@@ -49,8 +49,10 @@ test:
 	#mysql -u root anb < build/test.sql
 	go test -v ./...
 
+# 로컬 빌드 산출물과 install 이 설치한 파일만 지운다 (~/bin 의 다른 파일은 건드리지 않음)
 clean:
-	rm -f ~/bin/*
+	rm -rf bin
+	rm -rf ~/bin/buildtool ~/bin/buildtool-model ~/bin/buildtool-model.linux
 
 # Development helpers
 fmt:

@@ -163,13 +163,15 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 
 	views.AddGlobal("columns", func(str string) []util.Column {
 		query := "select column_name as column_name, data_type as data_type from information_schema.columns where table_schema = '" + packageName + "' and table_name = '" + strings.ToLower(str) + "_tb'"
-		rows, err := db.Query(query)
+		columns := make([]util.Column, 0)
 
+		rows, err := db.Query(query)
 		if err != nil {
 			log.Println(err)
+			return columns
 		}
+		defer rows.Close()
 
-		columns := make([]util.Column, 0)
 		for rows.Next() {
 			var name string
 			var typeid string
@@ -444,7 +446,7 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 		URL:            "/" + domainName,
 		FuncName:       "Insert",
 		ControllerName: controllerName,
-		ParamCode:      fmt.Sprintf("\t\titem_ := &models.%s{}\n\t\terr := c.BodyParser(item_)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t}", modelNameForUpdate),
+		ParamCode:      fmt.Sprintf("\t\titem_ := &models.%s{}\n\t\terr := c.BodyParser(item_)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t    return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{\"code\": \"bad request\"})\n\t\t}", modelNameForUpdate),
 		ParamStr:       "item_",
 	})
 
@@ -454,7 +456,7 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 		URL:            "/" + domainName + "/batch",
 		FuncName:       "Insertbatch",
 		ControllerName: controllerName,
-		ParamCode:      fmt.Sprintf("\t\tvar items_ *[]models.%s\n\t\titems__ref := &items_\n\t\terr := c.BodyParser(items__ref)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t}", modelNameForUpdate),
+		ParamCode:      fmt.Sprintf("\t\tvar items_ *[]models.%s\n\t\titems__ref := &items_\n\t\terr := c.BodyParser(items__ref)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t    return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{\"code\": \"bad request\"})\n\t\t}", modelNameForUpdate),
 		ParamStr:       "items_",
 	})
 
@@ -474,7 +476,7 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 		URL:            "/" + domainName,
 		FuncName:       "Update",
 		ControllerName: controllerName,
-		ParamCode:      fmt.Sprintf("\t\titem_ := &models.%s{}\n\t\terr := c.BodyParser(item_)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t}", modelNameForUpdate),
+		ParamCode:      fmt.Sprintf("\t\titem_ := &models.%s{}\n\t\terr := c.BodyParser(item_)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t    return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{\"code\": \"bad request\"})\n\t\t}", modelNameForUpdate),
 		ParamStr:       "item_",
 	})
 
@@ -484,7 +486,7 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 		URL:            "/" + domainName,
 		FuncName:       "Delete",
 		ControllerName: controllerName,
-		ParamCode:      fmt.Sprintf("\t\titem_ := &models.%s{}\n\t\terr := c.BodyParser(item_)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t}", strings.Title(domainName)),
+		ParamCode:      fmt.Sprintf("\t\titem_ := &models.%s{}\n\t\terr := c.BodyParser(item_)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t    return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{\"code\": \"bad request\"})\n\t\t}", strings.Title(domainName)),
 		ParamStr:       "item_",
 	})
 
@@ -494,7 +496,7 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 		URL:            "/" + domainName + "/batch",
 		FuncName:       "Deletebatch",
 		ControllerName: controllerName,
-		ParamCode:      fmt.Sprintf("\t\titem_ := &[]models.%s{}\n\t\terr := c.BodyParser(item_)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t}", strings.Title(domainName)),
+		ParamCode:      fmt.Sprintf("\t\titem_ := &[]models.%s{}\n\t\terr := c.BodyParser(item_)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t    return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{\"code\": \"bad request\"})\n\t\t}", strings.Title(domainName)),
 		ParamStr:       "item_",
 	})
 
@@ -631,7 +633,7 @@ func generateRouteFromMethod(method string, domainName string, items []util.Colu
 			updateType := getParamType(updateField, items)
 			whereType := getParamType(whereField, items)
 
-			paramCode := fmt.Sprintf("\t\tvar results map[string]interface{}\n\t\tjsonData := c.Body()\n\t\tjsonErr := json.Unmarshal(jsonData, &results)\n\t\tif jsonErr != nil {\n\t\t    log.Error().Msg(jsonErr.Error())\n\t\t}\n")
+			paramCode := fmt.Sprintf("\t\tvar results map[string]interface{}\n\t\tjsonData := c.Body()\n\t\tjsonErr := json.Unmarshal(jsonData, &results)\n\t\tif jsonErr != nil {\n\t\t    log.Error().Msg(jsonErr.Error())\n\t\t    return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{\"code\": \"bad request\"})\n\t\t}\n")
 			paramCode += generateUpdateParamExtract(updateFieldLower, updateType)
 			paramCode += generateUpdateParamExtract(whereFieldLower, whereType)
 
@@ -684,16 +686,22 @@ func generateParamCode(fieldName string, fieldLower string, paramType string) st
 }
 
 func generateUpdateParamExtract(fieldLower string, paramType string) string {
+	// JSON 값의 타입이 맞지 않으면 패닉 대신 400 을 반환하도록 타입 단언 결과를 확인한다.
+	extract := func(varType string, assertType string, convert string) string {
+		return fmt.Sprintf("\t\tvar %[1]s_ %[2]s\n\t\tif v, flag := results[\"%[1]s\"]; flag {\n\t\t\t%[1]s__, ok := v.(%[3]s)\n\t\t\tif !ok {\n\t\t\t\treturn c.Status(fiber.StatusBadRequest).JSON(fiber.Map{\"code\": \"bad request\"})\n\t\t\t}\n\t\t\t%[1]s_ = %[4]s\n\t\t}\n",
+			fieldLower, varType, assertType, fmt.Sprintf(convert, fieldLower+"__"))
+	}
+
 	switch paramType {
 	case "int", "int32":
-		return fmt.Sprintf("\t\tvar %s_ int\n\t\tif v, flag := results[\"%s\"]; flag {\n\t\t\t%s_ = int(v.(float64))\n\t\t}\n", fieldLower, fieldLower, fieldLower)
+		return extract("int", "float64", "int(%s)")
 	case "int64":
-		return fmt.Sprintf("\t\tvar %s_ int64\n\t\tif v, flag := results[\"%s\"]; flag {\n\t\t\t%s_ = int64(v.(float64))\n\t\t}\n", fieldLower, fieldLower, fieldLower)
+		return extract("int64", "float64", "int64(%s)")
 	case "bool":
-		return fmt.Sprintf("\t\tvar %s_ bool\n\t\tif v, flag := results[\"%s\"]; flag {\n\t\t\t%s_ = v.(bool)\n\t\t}\n", fieldLower, fieldLower, fieldLower)
+		return extract("bool", "bool", "%s")
 	case "float64":
-		return fmt.Sprintf("\t\tvar %s_ float64\n\t\tif v, flag := results[\"%s\"]; flag {\n\t\t\t%s_ = v.(float64)\n\t\t}\n", fieldLower, fieldLower, fieldLower)
+		return extract("float64", "float64", "%s")
 	default:
-		return fmt.Sprintf("\t\tvar %s_ string\n\t\tif v, flag := results[\"%s\"]; flag {\n\t\t\t%s_ = v.(string)\n\t\t}\n", fieldLower, fieldLower, fieldLower)
+		return extract("string", "string", "%s")
 	}
 }

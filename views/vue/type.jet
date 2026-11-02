@@ -1,0 +1,43 @@
+// Auto-generated TypeScript types for {{.ModelName}}
+// Generated from table: {{.TableName}}
+{{if len(.Joins) > 0}}
+{{range .UniqueJoinNames}}import type { {{. | title}} } from './{{. | lower}}';
+{{end}}
+{{end}}
+export interface {{.ModelName}} {
+{{range .Columns}}  {{.Name | untitle}}{{if .IsOptional}}?{{end}}: {{.TypeScriptType}};
+{{end}}{{if len(.Joins) > 0}}  extra?: {
+{{range .Joins}}    {{.Alias | lower}}?: {{.Name | title}};
+{{end}}  };
+{{end}}}
+
+// Create request type (omit auto-generated fields)
+export type Create{{.ModelName}}Request = Omit<{{.ModelName}}, 'id'>;
+
+// Update request type (all fields optional except id)
+export type Update{{.ModelName}}Request = Partial<Omit<{{.ModelName}}, 'id'>>;
+
+// Search params type
+export interface {{.ModelName}}SearchParams {
+{{range .Columns}}{{if .IsDateType}}  start{{.Name | untitle}}?: {{.TypeScriptType}};
+  end{{.Name | untitle}}?: {{.TypeScriptType}};
+{{else}}  {{.Name | untitle}}?: {{.TypeScriptType}};
+{{end}}{{end}}  page?: number;
+  pagesize?: number;
+}
+
+// API response types
+export interface ApiResponse<T> {
+  content: T[];
+  page: number;
+  pagesize: number;
+  totalElements: number;
+  totalPages: number;
+  first: boolean;
+  last: boolean;
+  empty: boolean;
+}
+
+export interface ApiSingleResponse<T> {
+  item: T;
+}
