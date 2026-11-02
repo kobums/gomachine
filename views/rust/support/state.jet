@@ -1,0 +1,22 @@
+// buildtool 이 만드는 파일이다 (다시 생성하면 덮어쓴다).
+// 앱 상태. 생성 핸들러는 State<MySqlPool> 로 풀만 꺼내 쓰므로, 상태를 직접 만들 때는 FromRef<내 상태> for MySqlPool 만 구현하면 된다.
+
+use axum::extract::FromRef;
+use sqlx::MySqlPool;
+
+#[derive(Clone)]
+pub struct AppState {
+    pub pool: MySqlPool,
+}
+
+impl AppState {
+    pub fn new(pool: MySqlPool) -> Self {
+        AppState { pool }
+    }
+}
+
+impl FromRef<AppState> for MySqlPool {
+    fn from_ref(state: &AppState) -> Self {
+        state.pool.clone()
+    }
+}

@@ -135,9 +135,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Rust 는 실행마다 한 번 지원 모듈을 만들고(Prepare), 테이블을 모두 만든 뒤 모듈 목록 / 경로를 쓴다(Finish).
+	rustCnf := modelConfig
+	rustCnf.Language = "rust"
+	if hasLanguage(enabled, "rust") {
+		rustcodegen.Prepare(rustCnf)
+	}
+
 	for _, name := range names {
 		readColumn(packageName, name, db, tableGpa[name], modelConfig.Buildtool, modelConfig.Auth, modelConfig, enabled)
 	}
+
+	if hasLanguage(enabled, "rust") {
+		rustcodegen.Finish(rustCnf)
+	}
+}
+
+func hasLanguage(languages []string, lang string) bool {
+	for _, l := range languages {
+		if l == lang {
+			return true
+		}
+	}
+	return false
 }
 
 // checkSessions 는 session 설정 컬럼이 있고 정수(Spring 만 생성하면 문자열도) 컬럼인지 확인한다. Rust 는 Go 와 같이 정수만 된다.

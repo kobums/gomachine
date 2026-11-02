@@ -411,7 +411,8 @@ React/Vue(그리고 Dart)가 두 백엔드 중 어느 것에도 붙을 수 있�
 
 ## Rust (axum + sqlx)
 
-작업 중이다. 지금은 설정과 이름 / 타입 규칙만 있고 `rust` 를 켜면 테이블마다 "not implemented yet" 경고만 찍는다.
+작업 중이다. 지금은 설정, 이름 / 타입 규칙, 런타임 지원 모듈(`src/support`)까지 있고, 테이블 모델 / 핸들러는 아직 만들지 않는다
+(`rust` 를 켜면 테이블마다 "not implemented yet" 경고를 찍는다).
 
 - `rustModelFilePath`: crate 루트 (`Cargo.toml` 이 있는 디렉터리). 생성 파일은 그 아래 `src/` 에 둔다. 모듈은 `crate::` 경로로 참조한다.
 - Go 와 같은 HTTP 계약(HTTP 200 + `code`, 파라미터 해석 실패만 400)이고, 같은 DB / 계정(bcrypt `$2a$` cost 10, 같은 JWT)을 쓴다.
@@ -423,3 +424,99 @@ React/Vue(그리고 Dart)가 두 백엔드 중 어느 것에도 붙을 수 있�
   struct / enum 이 생성 코드가 쓰는 타입(`Result`, `Option`, `Path`, `Json`, `Value`, `Error`, `Session` ...)과 같으면
   `Model` / `Enum` 접미사 (`result_tb` → `ResultModel`, enum `type` → `TypeEnum`). 모듈 / 파일은 Go 파일 이름과 같은 소문자이고
   예약어나 `mod`, `support`, `handlers`, `models`, `routes`, `custom` 이면 뒤에 `_` 다.
+
+### 생성 파일
+
+| 파일 | 종류 | 내용 |
+|---|---|---|
+| `src/support/mod.rs` | 생성 | 아래 모듈 선언과 자주 쓰는 타입 re-export (`AppState`, `Session`, `ApiResult`, `bad_request`, `Where`, `Arg` ...) |
+| `src/support/query.rs` | 생성 | Go `models/db.go` 의 `Where` / `Custom` / `Paging` / `Ordering` 과 `WhereClause` 규칙 |
+| `src/support/response.rs` | 생성 | `ApiResult` (Go `c.Result`), `bad_request()` |
+| `src/support/session.rs` | 생성 | `Session`, `Option<Session>` 추출기, `is_admin` |
+| `src/support/state.rs` | 생성 | `AppState { pool }`, `FromRef<AppState> for MySqlPool` |
+| `src/support/password.rs` | 생성 | `generate_passwd` / `verify_passwd` (Go `jwt.GeneratePasswd`) |
+| `src/support/clock.rs` | 생성 | `now()` (createddate, `timezone` 설정), `local_now(fmt)` |
+| `src/support/row.rs` | 생성 | 날짜 자리표시 값 → `""`, DECIMAL 문자열 → `f64` |
+| `src/support/serde_ext.rs` | 생성 | 너그러운 bool, base64 바이트, `double_option` |
+| `src/support/error.rs` | 생성 | `Error` (응답은 HTTP 200 `{"code":"error"}`), `log_sql` |
+| `src/models/mod.rs`, `src/handlers/mod.rs`, `src/routes.rs` | 생성 | 테이블 모듈 목록과 `routes::routes()` (지금은 비어 있다) |
+| `src/support/auth.rs` | **사용자** | JWT → `Session`. Go 백엔드의 토큰 형식에 맞게 고치는 곳 |
+| `src/main.rs` | **사용자** | `src/main.rs` 와 `src/lib.rs` 가 모두 없을 때만 만든다 |
+
+- 생성 파일은 실행마다 다시 만들되 내용이 같으면 쓰지 않는다 (수정 시각 유지, cargo 재빌드 없음). 고치면 다음 실행에 되돌아간다.
+- 사용자 파일은 없을 때만 만들고 절대 덮어쓰지 않는다. 다시 받으려면 지우고 실행한다.
+- 지원 모듈은 실행마다 한 번(`rustcodegen.Prepare`, 테이블 생성 전), 모듈 목록 / 경로는 모든 테이블 뒤에(`rustcodegen.Finish`) 쓴다.
+- crate 루트(`src/main.rs` 또는 `src/lib.rs`)에 `mod support; mod models; mod handlers; mod routes;` 가 있어야 한다. 직접 만든 루트에
+  빠져 있으면 경고를 찍는다. 생성한 `main.rs` 는 `DATABASE_URL`(필수)로 풀을 만들고, `RUST_LOG`(기본 `info`)로 tracing 을 켜고,
+  `routes::routes()` 를 `/api` 아래에 붙이고, `PORT`(기본 8080)에서 연다. CORS 는 `CORS_ORIGINS`(쉼표 구분)가 있으면 그 origin 만,
+  없으면 모든 origin 을 허용한다 (credentials 없음).
+- 지원 파일에는 `#[cfg(test)]` 단위 테스트가 들어 있다 (`cargo test`).
+
+### Cargo.toml
+
+생성기는 `Cargo.toml` 을 고치지 않는다. `[dependencies]` 에 빠진 crate 가 있으면 넣어야 할 줄을 경고로 찍는다 (이름만 확인한다).
+
+```toml
+[dependencies]
+axum = "0.8.9"
+tokio = { version = "1.54", features = ["macros", "rt-multi-thread", "net"] }
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls", "mysql", "mysql-rsa", "derive", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_with = "3"
+jsonwebtoken = { version = "11.1", features = ["rust_crypto"] }
+bcrypt = "0.19.3"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+thiserror = "2"
+tracing = "0.1"
+# 생성한 main.rs 가 쓴다
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower-http = { version = "0.6", features = ["cors"] }
+# timezone 이 Asia/Seoul / UTC / local 이 아닌 IANA 이름일 때만
+chrono-tz = "0.10"
+```
+
+### 지원 모듈 API (`crate::support`)
+
+- 조회 조건 (`query`):
+  - `Bind` = `I32 | I64 | U32 | U64 | F64 | Bool | Str | Bytes | Null | List(Vec<Bind>) | Pair(..)`. 정수 / 실수 / bool / 문자열 /
+    `Vec<u8>` / `Option<T>`(None → NULL)에서 `.into()` 된다. `Bind::list(iter)` 는 in, `Bind::pair(a, b)` 는 between 값.
+  - `Where::new(column, value, compare)`, `Where::eq(column, value)`, `Custom::new(sql, params)`,
+    `Arg::{Where, Custom, Paging { page, pagesize }, Ordering(String)}`.
+  - `push_where(qb, prefix, &where)` 는 Go `WhereClause` 와 같다: `" and {prefix}{column} {op} ?"`. column 은
+    `^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$`, op 는 `= != <> < <= > >= like, not like, in, not in, between`
+    (대소문자 / 공백 수 무시)만 되고 어긋나면 `" and 1=0"`. in / not in 은 원소마다 바인딩하고 빈 목록이면 in 은 `" and 1=0"`,
+    not in 은 `" and 1=1"` (단일 값은 원소 하나). between 은 값 두 개가 아니면 `" and 1=0"`. like 는 보낸 값 그대로다.
+  - `push_custom(qb, &custom)`: `" and " + sql`, 따옴표 밖의 `?` 마다 params 를 바인딩한다. 개수가 다르면 `" and 1=0"`.
+  - `apply_args(qb, prefix, &[Arg]) -> Page` 는 Where / Custom 을 붙이고 Paging / Ordering 을 모은다.
+    `push_order_page(qb, &page, default_column)` 은 Go Find 와 같다: 페이지면 `order by {order 또는 default desc} limit ? offset ?`
+    (offset = (page-1)*pagesize), 아니면 `order by {order 또는 default}`. Ordering 은 SQL 에 그대로 들어가므로 검증한 값만 넘긴다.
+  - `valid_column(name)` (Go `ValidColumn`).
+  - sqlx 0.9 의 `query()` 는 `&'static str` 이나 `AssertSqlSafe(String)` 만 받는다. 생성 코드는 `QueryBuilder<MySql>` 를 쓴다.
+- 응답 (`response`): `ApiResult::ok() / error() / auth_error() / with_code(code)`, `.set(key, value)`, `.code(code)`, `.insert(..)`,
+  `IntoResponse` 는 항상 HTTP 200 JSON 객체. `bad_request()` 는 HTTP 400 `{"code":"bad request"}` (라우터 파라미터 해석 실패).
+- 세션 (`session`): `Session { id: i64, level: Option<i64>, values: HashMap<String, i64> }`, `session.value(key)` 는 model.json
+  `session` key 의 값 (없으면 0 → Go 와 같이 `auth error`). 핸들러는 `Option<Session>` 으로 받는다 (토큰이 없거나 잘못되면 `None`,
+  Go 의 nil Session). `is_admin(Option<&Session>, admin_level: Option<i64>)` 은 level ≥ adminLevel.
+- 인증 (`auth.rs`, 사용자 파일): 기본은 `Authorization: Bearer <token>`, HS256, 비밀 키 `JWT_SECRET` 환경변수(없으면 모두 비로그인 +
+  경고), claim `{"id", "level"?, "exp"}` (exp 필수). Go 백엔드의 JWT 형식은 대상 프로젝트마다 다르므로 이 파일의 `Claims` /
+  `session_from_parts` 를 맞춘다. 추출기는 `support::auth::session_from_parts(&Parts) -> Option<Session>` (async) 만 부른다.
+- 상태 (`state`): `AppState { pool: MySqlPool }`. 생성 경로는 `Router<S>` (where `MySqlPool: FromRef<S>`) 라서 상태를 직접 만들 때는
+  `FromRef<내 상태> for MySqlPool` 만 구현하면 된다.
+- 비밀번호 (`password`): `generate_passwd(&str) -> Result<String, Error>` 는 `$2a$10$...` (Go `bcrypt.GenerateFromPassword(pw, 10)` 과
+  같은 형식), 72 바이트를 넘으면 `Error::PasswordTooLong` (Go 도 에러다. 72 바이트는 된다. bcrypt crate 의 `non_truncating_*` 는
+  72 바이트도 거부해서 쓰지 않는다). `generate_passwd_blocking(String)` 은 `spawn_blocking` 버전. `verify_passwd(pw, hash) -> bool` 은
+  `$2a$` / `$2b$` / `$2y$` 를 받고 Go `CompareHashAndPassword` 와 같이 72 바이트 뒤는 보지 않는다. Go 가 만든 해시로 확인했다.
+- 시간 (`clock`): `now()` 는 createddate 값 `yyyy-MM-dd HH:mm:ss`, Go `createdNow` 와 같은 `timezone` 규칙: 비어 있거나 `Asia/Seoul` 은
+  UTC+9 (`chrono::FixedOffset`), `local` 은 서버 지역 시간, `UTC` 는 UTC, 그 밖의 IANA 이름은 `chrono-tz` 로 찾고 실행 중에
+  찾지 못하면 UTC+9 (Go `time.LoadLocation` 실패와 같다). IANA 이름 모양이 아니면 생성할 때 경고하고 UTC+9.
+  `local_now(fmt)` 는 Go 가 NOT NULL 날짜의 빈 값을 채우는 `time.Now().Format` 과 같다. `DATETIME_FORMAT` / `DATE_FORMAT` / `TIME_FORMAT`.
+- 행 읽기 (`row`): 날짜는 `DATE_FORMAT(...)` 문자열로 읽는다. `date(Option<String>) -> String` 은 NULL 과 자리표시 값
+  (`0000-00-00 00:00:00`, `1000-01-01 00:00:00`, `9999-01-01 00:00:00`, `0000-00-00`, `1000-01-01`)을 `""` 로, `date_opt` 는 `None` 으로.
+  DECIMAL 은 `CAST(... AS CHAR)` 로 읽어 `decimal` / `decimal_opt`. tinyint 와 `(bit+0)` 은 sqlx `bool` 로 바로 읽는다 (0 이 아니면 true).
+- serde (`serde_ext`): `bool_lenient` / `opt_bool_lenient` / `double_bool_lenient` (true/false, 숫자 0/그 밖, `"true"/"false"/"1"/"0"`),
+  `parse_bool` (쿼리 파라미터), `bytes_b64` / `opt_bytes_b64` / `double_bytes_b64` (Go `[]byte` JSON 과 같은 표준 base64, null 은 빈 값),
+  `double_option` (부분 수정: 없음 → `None`, null → `Some(None)`). `#[serde(default, with = "crate::support::serde_ext::...")]`.
+- 에러 / 로그 (`error`): `Error::{Db, Password, PasswordTooLong, Message}` (`From<sqlx::Error>`), `IntoResponse` 는 로그 + HTTP 200
+  `{"code":"error"}`. `log_sql(sql, params)` 는 target `sql` 의 debug 로그 (`RUST_LOG=info,sql=debug` 일 때 찍힌다. Go `config.Log.Database`).

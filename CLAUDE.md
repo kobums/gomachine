@@ -41,7 +41,7 @@ buildtool-model [ignored] [languages] [package_name]
 
 - **Go** (under `goModelFilePath`): `models/{name}.go`, `models/{name}/{name}.go` (enum constants), `controllers/rest/{name}.go`, `router/routers/{name}.go`
 - **Kotlin/Spring** (under `kotlinModelFilePath`, which must be the directory of `kotlinPackage`, default package `com.gowoobro.gymspring`): `entity/`, `repository/`, `service/`, `controller/`, `enums/{name}/Enums.kt`, `support/DateParams.kt` (always regenerated), `config/SessionProvider.kt` (auth=jwt, created once, never overwritten)
-- **Rust** (under `rustModelFilePath` = crate root, files go in `src/`; modules use `crate::` paths): not implemented yet (`ProcessRust` only warns)
+- **Rust** (under `rustModelFilePath` = crate root, files go in `src/`; modules use `crate::` paths): runtime support module only so far. `rustcodegen.Prepare` (once per run, before tables) renders `views/rust/support/*.jet` to `src/support/*.rs` (regenerated, written only when content changed via `util.WriteIfChanged`; `support/auth.rs` JWT→Session is user-owned, `util.WriteIfMissing`), `src/main.rs` if neither main.rs nor lib.rs exists (user-owned), and warns about missing Cargo.toml deps; `rustcodegen.Finish` (after all tables) rewrites `src/models/mod.rs`, `src/handlers/mod.rs`, `src/routes.rs`. Per-table models/handlers are not implemented yet (`ProcessRust` only warns). The support files carry `#[cfg(test)]` Rust tests
 - **Dart** (under `dartModelFilePath`): `{table}.dart`
 - **React / Vue** (under `reactModelFilePath` / `vueModelFilePath`): `src/models/{name}.ts`, `src/models/contract.ts`, `src/types/{name}.ts`, Vue also `src/composables/use{Model}.ts`
 - Non-Go languages without an output path are skipped with a warning

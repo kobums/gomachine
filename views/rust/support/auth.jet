@@ -1,0 +1,87 @@
+// buildtool 이 한 번만 만드는 사용자 파일이다 (있으면 덮어쓰지 않는다).
+// 요청에서 로그인 세션을 꺼낸다. Go 백엔드와 같은 JWT 를 쓰려면 **이 파일만** Go 의 토큰 형식(서명 방식, 비밀 키, claim 이름,
+// 헤더 / 쿠키 위치)에 맞게 고친다. 기본값: Authorization: Bearer <token>, HS256, 비밀 키는 환경변수 JWT_SECRET,
+// claim {"id": 1, "level": 9, "exp": ...} (exp 필수, level 은 없어도 된다).
+
+use std::sync::OnceLock;
+
+use axum::http::header::AUTHORIZATION;
+use axum::http::request::Parts;
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
+use serde::Deserialize;
+
+use super::session::Session;
+
+/// 토큰 claim. Go 토큰의 claim 이름이 다르면 #[serde(rename = "...")] 로 맞춘다.
+#[derive(Debug, Deserialize)]
+pub struct Claims {
+    pub id: i64,
+    #[serde(default)]
+    pub level: Option<i64>,
+}
+
+// JWT_SECRET 이 없으면 모든 요청이 비로그인이다 (경고는 한 번만 찍는다).
+fn decoding_key() -> Option<&'static DecodingKey> {
+    static KEY: OnceLock<Option<DecodingKey>> = OnceLock::new();
+    KEY.get_or_init(|| match std::env::var("JWT_SECRET") {
+        Ok(secret) if !secret.is_empty() => Some(DecodingKey::from_secret(secret.as_bytes())),
+        _ => {
+            tracing::warn!("JWT_SECRET is not set: every request is treated as logged out");
+            None
+        }
+    })
+    .as_ref()
+}
+
+/// Authorization: Bearer <token> 의 토큰.
+fn bearer(parts: &Parts) -> Option<&str> {
+    let value = parts.headers.get(AUTHORIZATION)?.to_str().ok()?;
+    let (scheme, token) = value.trim().split_once(' ')?;
+    scheme.eq_ignore_ascii_case("bearer").then(|| token.trim()).filter(|t| !t.is_empty())
+}
+
+/// 토큰을 검증하고 세션으로 바꾼다. 잘못된 토큰이면 None.
+pub fn session_from_token(token: &str, key: &DecodingKey) -> Option<Session> {
+    let data = decode::<Claims>(token, key, &Validation::new(Algorithm::HS256)).ok()?;
+    Some(Session { id: data.claims.id, level: data.claims.level, ..Default::default() })
+}
+
+/// 요청의 세션 (Option<Session> 추출기가 부른다). 토큰이 없거나 잘못되면 None (Go 의 nil Session).
+/// DB 에서 사용자를 다시 읽는 등 비동기 작업이 필요하면 여기서 한다.
+pub async fn session_from_parts(parts: &Parts) -> Option<Session> {
+    session_from_token(bearer(parts)?, decoding_key()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jsonwebtoken::{EncodingKey, Header, encode};
+    use serde_json::json;
+
+    fn token(claims: serde_json::Value, secret: &[u8]) -> String {
+        encode(&Header::new(Algorithm::HS256), &claims, &EncodingKey::from_secret(secret)).unwrap()
+    }
+
+    #[test]
+    fn tokens() {
+        let key = DecodingKey::from_secret(b"secret");
+        let exp = 4_102_444_800i64; // 2100-01-01
+        let s = session_from_token(&token(json!({"id": 7, "level": 9, "exp": exp}), b"secret"), &key).unwrap();
+        assert_eq!((s.id, s.level), (7, Some(9)));
+        let s = session_from_token(&token(json!({"id": 8, "exp": exp}), b"secret"), &key).unwrap();
+        assert_eq!((s.id, s.level), (8, None));
+        assert!(session_from_token(&token(json!({"id": 7, "exp": exp}), b"other"), &key).is_none());
+        assert!(session_from_token(&token(json!({"id": 7, "exp": 1}), b"secret"), &key).is_none());
+        assert!(session_from_token(&token(json!({"id": 7}), b"secret"), &key).is_none());
+        assert!(session_from_token("garbage", &key).is_none());
+    }
+
+    #[test]
+    fn bearer_header() {
+        let req = axum::http::Request::builder().header("authorization", "bearer abc").body(()).unwrap();
+        let (parts, _) = req.into_parts();
+        assert_eq!(bearer(&parts), Some("abc"));
+        let req = axum::http::Request::builder().header("authorization", "Basic abc").body(()).unwrap();
+        assert_eq!(bearer(&req.into_parts().0), None);
+    }
+}

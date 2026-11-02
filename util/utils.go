@@ -6,6 +6,7 @@ import (
 	"gomachine/config"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode"
@@ -168,6 +169,41 @@ func CopyFile(src, dst string) {
 
 func WriteFile(filename string, content string) error {
 	return os.WriteFile(filename, []byte(content), 0644)
+}
+
+// WriteIfChanged 는 생성 파일을 쓴다 (디렉터리도 만든다). 내용이 같으면 쓰지 않고 false 를 돌려준다 (수정 시각 유지).
+func WriteIfChanged(filename string, content string) (bool, error) {
+	if old, err := os.ReadFile(filename); err == nil && string(old) == content {
+		return false, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(filename), 0755); err != nil {
+		return false, err
+	}
+	return true, WriteFile(filename, content)
+}
+
+// WriteIfMissing 은 사용자 파일을 없을 때만 만든다. 이미 있으면 (내용과 상관없이) 건드리지 않고 false 를 돌려준다.
+func WriteIfMissing(filename string, content string) (bool, error) {
+	if _, err := os.Lstat(filename); err == nil {
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(filename), 0755); err != nil {
+		return false, err
+	}
+	f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		if os.IsExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if _, err := f.WriteString(content); err != nil {
+		f.Close()
+		return false, err
+	}
+	return true, f.Close()
 }
 
 // tableNameAlias 는 이름이 겹치는 테이블(예: user_tb 와 user_vw)에 따로 붙인 기본 이름이다.

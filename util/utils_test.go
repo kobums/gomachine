@@ -2,6 +2,7 @@ package util
 
 import (
 	"gomachine/config"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -677,5 +678,33 @@ func TestRustTypeNames(t *testing.T) {
 		if got := RustModule(in); got != want {
 			t.Errorf("RustModule(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestWriteIfChangedAndMissing(t *testing.T) {
+	dir := t.TempDir()
+	gen := dir + "/a/gen.rs"
+	if w, err := WriteIfChanged(gen, "x"); !w || err != nil {
+		t.Fatalf("first WriteIfChanged = %v, %v", w, err)
+	}
+	if w, err := WriteIfChanged(gen, "x"); w || err != nil {
+		t.Errorf("same content WriteIfChanged = %v, %v, want false", w, err)
+	}
+	if w, _ := WriteIfChanged(gen, "y"); !w {
+		t.Errorf("changed content not written")
+	}
+
+	user := dir + "/b/user.rs"
+	if w, err := WriteIfMissing(user, "default"); !w || err != nil {
+		t.Fatalf("first WriteIfMissing = %v, %v", w, err)
+	}
+	if err := WriteFile(user, "mine"); err != nil {
+		t.Fatal(err)
+	}
+	if w, err := WriteIfMissing(user, "default"); w || err != nil {
+		t.Errorf("WriteIfMissing on existing file = %v, %v", w, err)
+	}
+	if b, _ := os.ReadFile(user); string(b) != "mine" {
+		t.Errorf("user file overwritten: %q", b)
 	}
 }
