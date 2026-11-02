@@ -41,7 +41,7 @@ type KotlinJoin struct {
 	ModelName       string
 	ParentModelName string // The main model name
 	Columns         []KotlinColumn
-	Index           int    // Index in the joins array
+	Index           int // Index in the joins array
 }
 
 type EntityGraphPath struct {
@@ -51,15 +51,15 @@ type EntityGraphPath struct {
 }
 
 type KotlinTemplateData struct {
-	PackageName     string
-	TableName       string
-	ModelName       string
-	Columns         []KotlinColumn
-	HasDateTime     bool
-	HasDecimal      bool
-	Enums           []KotlinEnumData
-	Joins           []KotlinJoin
-	UniqueJoinNames []string // Unique join model names for imports
+	PackageName      string
+	TableName        string
+	ModelName        string
+	Columns          []KotlinColumn
+	HasDateTime      bool
+	HasDecimal       bool
+	Enums            []KotlinEnumData
+	Joins            []KotlinJoin
+	UniqueJoinNames  []string          // Unique join model names for imports
 	EntityGraphPaths []EntityGraphPath // Nested entity graph paths for @EntityGraph with metadata
 }
 
@@ -126,7 +126,7 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 
 	// Build global joins map for recursive entity graph paths
 	globalJoinsMap := buildGlobalJoinsMap(cnf)
-	
+
 	// Determine target path
 	var targetPath string
 	if cnf.KotlinModelFilePath != "" {

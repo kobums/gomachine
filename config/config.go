@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -44,21 +45,25 @@ type Gpa struct {
 }
 
 type ModelConfig struct {
-	Buildtool string `json:"buildtool"`
-	Store      string `json:"store"`
-	Server    string `json:"server"`
-	Database  string `json:"database"`
-	User      string `json:"user"`
-	Password  string `json:"password"`
-	Auth      string `json:"auth"`
-	AdminLevel string `json:"adminLevel"`
-	Language  string `json:"language"`
-	GoModelFilePath string `json:"goModelFilePath"`
-	DartModelFilePath string `json:"dartModelFilePath"`
+	Buildtool           string `json:"buildtool"`
+	Store               string `json:"store"`
+	Server              string `json:"server"`
+	Database            string `json:"database"`
+	User                string `json:"user"`
+	Password            string `json:"password"`
+	Auth                string `json:"auth"`
+	AdminLevel          string `json:"adminLevel"`
+	Language            string `json:"language"`
+	GoModelFilePath     string `json:"goModelFilePath"`
+	DartModelFilePath   string `json:"dartModelFilePath"`
 	KotlinModelFilePath string `json:"kotlinModelFilePath"`
-	ReactModelFilePath string `json:"reactModelFilePath"`
-	ModelJsonPath     string `json:"modelJsonPath"`
-	Gpa       []Gpa  `json:"table"`
+	ReactModelFilePath  string `json:"reactModelFilePath"`
+	VueModelFilePath    string `json:"vueModelFilePath"`
+	ModelJsonPath       string `json:"modelJsonPath"`
+	// 생성할 언어별 on/off. 예: {"go": true, "react": true, "spring": false}. "all": true 면 전부 생성.
+	// 비어 있으면 예전 방식대로 language 필드를 쓴다.
+	Languages map[string]bool `json:"languages"`
+	Gpa       []Gpa           `json:"table"`
 }
 
 type Pubspec struct {
@@ -78,7 +83,9 @@ func Init(dir string) ModelConfig {
 	defer file.Close()
 	data, _ := ioutil.ReadAll(file)
 
-	json.Unmarshal(data, &modelConfig)
+	if err := json.Unmarshal(data, &modelConfig); err != nil {
+		log.Println("Error parsing model.json:", err)
+	}
 
 	// DB 접속 정보는 model.json 에 커밋하지 않고 환경변수로 주입할 수 있다 (설정 시 model.json 값보다 우선).
 	if v := os.Getenv("DB_HOST"); v != "" {
@@ -102,7 +109,7 @@ func GetGoModelFilePath(dir string) string {
 		return ""
 	}
 	defer file.Close()
-	
+
 	data, err := ioutil.ReadAll(file)
 	if err != nil {
 		log.Println("Error reading model.json:", err)
@@ -112,7 +119,7 @@ func GetGoModelFilePath(dir string) string {
 	var config struct {
 		GoModelFilePath string `json:"goModelFilePath"`
 	}
-	
+
 	if err := json.Unmarshal(data, &config); err != nil {
 		log.Println("Error parsing model.json:", err)
 		return ""
@@ -131,4 +138,89 @@ func GetPubspec() string {
 	yaml.Unmarshal(data, &pubspec)
 
 	return pubspec.Name
+}
+
+// SupportedLanguages 는 생성 순서이기도 하다.
+var SupportedLanguages = []string{"go", "kotlin", "dart", "react", "vue"}
+
+var languageAliases = map[string]string{
+	"spring":  "kotlin",
+	"flutter": "dart",
+}
+
+// NormalizeLanguage 는 별칭(spring, flutter)을 실제 생성기 이름으로 바꾼다. 지원하지 않으면 "" 를 반환한다.
+func NormalizeLanguage(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if alias, ok := languageAliases[name]; ok {
+		name = alias
+	}
+	for _, lang := range SupportedLanguages {
+		if lang == name {
+			return name
+		}
+	}
+	return ""
+}
+
+// ResolveLanguages 는 언어 이름 목록("all" 포함 가능)을 중복 없이 SupportedLanguages 순서로 정리한다.
+func ResolveLanguages(names []string) []string {
+	enabled := make(map[string]bool)
+	for _, name := range names {
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name == "" {
+			continue
+		}
+		if name == "all" {
+			return append([]string(nil), SupportedLanguages...)
+		}
+		lang := NormalizeLanguage(name)
+		if lang == "" {
+			log.Printf("WARNING: unsupported language %q is skipped (supported: go, kotlin/spring, dart/flutter, react, vue)", name)
+			continue
+		}
+		enabled[lang] = true
+	}
+
+	ret := make([]string, 0)
+	for _, lang := range SupportedLanguages {
+		if enabled[lang] {
+			ret = append(ret, lang)
+		}
+	}
+	return ret
+}
+
+// EnabledLanguages 는 model.json 기준으로 생성할 언어 목록을 돌려준다.
+// languages 맵 > language 문자열(쉼표 구분 가능) > 기본값 go 순서로 결정한다.
+func (c ModelConfig) EnabledLanguages() []string {
+	if len(c.Languages) > 0 {
+		names := make([]string, 0)
+		for name, on := range c.Languages {
+			if on {
+				names = append(names, name)
+			}
+		}
+		return ResolveLanguages(names)
+	}
+	if c.Language != "" {
+		return ResolveLanguages(strings.Split(c.Language, ","))
+	}
+	return []string{"go"}
+}
+
+// OutputPath 는 언어별 생성 경로 설정값을 돌려준다.
+func (c ModelConfig) OutputPath(lang string) string {
+	switch lang {
+	case "go":
+		return c.GoModelFilePath
+	case "kotlin":
+		return c.KotlinModelFilePath
+	case "dart":
+		return c.DartModelFilePath
+	case "react":
+		return c.ReactModelFilePath
+	case "vue":
+		return c.VueModelFilePath
+	}
+	return ""
 }

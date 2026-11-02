@@ -4,8 +4,12 @@ import (
 	"database/sql"
 	"fmt"
 	"gomachine/config"
+	dartcodegen "gomachine/dart"
 	gocodegen "gomachine/go"
+	kotlincodegen "gomachine/kotlin"
+	reactcodegen "gomachine/react"
 	"gomachine/util"
+	vuecodegen "gomachine/vue"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,7 +37,7 @@ func GetConnection(config config.ModelConfig) *sql.DB {
 
 func main() {
 	log.Println("run buildtool model")
-	
+
 	// 현재 작업 디렉토리 가져오기 (config 파일이 있는 위치)
 	configDir, err := os.Getwd()
 	if err != nil {
@@ -44,7 +48,7 @@ func main() {
 	// config/model.json 로드 ("pointer" config to find the real model.json location)
 	configPath := filepath.Join(configDir, "config")
 	pointerConfig := config.Init(configPath)
-	
+
 	var modelConfig config.ModelConfig
 	modelConfigDir := configDir
 
@@ -54,12 +58,28 @@ func main() {
 	} else {
 		modelConfig = pointerConfig
 	}
-	
-	// os.Args로 언어가 지정된 경우 오버라이드
+
+	// 생성할 언어: model.json 의 languages / language, os.Args[2] 가 있으면 그것으로 오버라이드 ("go,react", "all" 가능)
+	languages := modelConfig.EnabledLanguages()
 	if len(os.Args) > 2 && os.Args[2] != "" {
-		modelConfig.Language = os.Args[2]
+		languages = config.ResolveLanguages(strings.Split(os.Args[2], ","))
 	}
-	
+
+	// go 외 언어는 출력 경로가 없으면 엉뚱한 기본 경로에 쓰지 않도록 건너뛴다.
+	enabled := make([]string, 0)
+	for _, lang := range languages {
+		if lang != "go" && modelConfig.OutputPath(lang) == "" {
+			log.Printf("WARNING: %s is enabled but %sModelFilePath is not set in model.json, skipped", lang, lang)
+			continue
+		}
+		enabled = append(enabled, lang)
+	}
+	if len(enabled) == 0 {
+		log.Println("No language to generate")
+		return
+	}
+	log.Printf("Generate languages: %v", enabled)
+
 	// packageName은 Database명 사용 (또는 os.Args[3]이 있으면 사용)
 	packageName := modelConfig.Database
 	if len(os.Args) > 3 && os.Args[3] != "" {
@@ -67,7 +87,7 @@ func main() {
 	}
 
 	gpas := modelConfig.Gpa
-	
+
 	db := GetConnection(modelConfig)
 	if db == nil {
 		log.Println("Failed to get database connection")
@@ -82,6 +102,7 @@ func main() {
 		log.Println(err)
 		return
 	}
+	defer rows.Close()
 
 	tables := make([]string, 0)
 	for rows.Next() {
@@ -102,12 +123,22 @@ func main() {
 			}
 		}
 
-		readColumn(packageName, name, db, gpa, modelConfig.Buildtool, modelConfig.Auth, modelConfig)
+		readColumn(packageName, name, db, gpa, modelConfig.Buildtool, modelConfig.Auth, modelConfig, enabled)
 		tables = append(tables, tableName)
 	}
 }
 
-func readColumn(packageName string, tableName string, db *sql.DB, gpa *config.Gpa, version string, auth string, cnf config.ModelConfig) {
+type generator func(packageName string, tableName string, prefix string, items []util.Column, db *sql.DB, gpa *config.Gpa, version string, auth string, cnf config.ModelConfig)
+
+var generators = map[string]generator{
+	"go":     gocodegen.ProcessGo,
+	"kotlin": kotlincodegen.ProcessKotlin,
+	"dart":   dartcodegen.ProcessDart,
+	"react":  reactcodegen.ProcessReact,
+	"vue":    vuecodegen.ProcessVue,
+}
+
+func readColumn(packageName string, tableName string, db *sql.DB, gpa *config.Gpa, version string, auth string, cnf config.ModelConfig, languages []string) {
 	query := "select column_name as column_name, data_type as data_type from information_schema.columns where table_schema = '" + cnf.Database + "' and table_name = '" + tableName + "'"
 	rows, err := db.Query(query)
 
@@ -138,65 +169,11 @@ func readColumn(packageName string, tableName string, db *sql.DB, gpa *config.Gp
 		prefix = util.GetPrefix(name)
 	}
 
-	// // Process Dart
-	// {
-	// 	localCnf := cnf
-	// 	localCnf.Language = "dart"
-	// 	dartColumns := make([]util.Column, 0)
-	// 	for _, raw := range rawCols {
-	// 		column := util.Column{
-	// 			Name:         strings.Title(util.GetName(raw.Name)),
-	// 			Column:       raw.Name,
-	// 			Type:         util.GetType(util.GetTableName(tableName), util.GetName(raw.Name), raw.DataType, gpa, localCnf),
-	// 			OriginalType: raw.DataType,
-	// 			Prefix:       util.GetPrefix(raw.Name),
-	// 		}
-	// 		dartColumns = append(dartColumns, column)
-	// 	}
-	// 	dartcodegen.ProcessDart(packageName, tableName, prefix, dartColumns, db, gpa, version, auth, localCnf)
-	// }
-
-	// // Process Kotlin
-	// {
-	// 	localCnf := cnf
-	// 	localCnf.Language = "kotlin"
-	// 	kotlinColumns := make([]util.Column, 0)
-	// 	for _, raw := range rawCols {
-	// 		column := util.Column{
-	// 			Name:         strings.Title(util.GetName(raw.Name)),
-	// 			Column:       raw.Name,
-	// 			Type:         util.GetType(util.GetTableName(tableName), util.GetName(raw.Name), raw.DataType, gpa, localCnf),
-	// 			OriginalType: raw.DataType,
-	// 			Prefix:       util.GetPrefix(raw.Name),
-	// 		}
-	// 		kotlinColumns = append(kotlinColumns, column)
-	// 	}
-	// 	kotlincodegen.ProcessKotlin(packageName, tableName, prefix, kotlinColumns, db, gpa, version, auth, localCnf)
-	// }
-
-	// // Process React
-	// {
-	// 	localCnf := cnf
-	// 	localCnf.Language = "react"
-	// 	reactColumns := make([]util.Column, 0)
-	// 	for _, raw := range rawCols {
-	// 		column := util.Column{
-	// 			Name:         strings.Title(util.GetName(raw.Name)),
-	// 			Column:       raw.Name,
-	// 			Type:         util.GetType(util.GetTableName(tableName), util.GetName(raw.Name), raw.DataType, gpa, localCnf),
-	// 			OriginalType: raw.DataType,
-	// 			Prefix:       util.GetPrefix(raw.Name),
-	// 		}
-	// 		reactColumns = append(reactColumns, column)
-	// 	}
-	// 	reactcodegen.ProcessReact(packageName, tableName, prefix, reactColumns, db, gpa, version, auth, localCnf)
-	// }
-
-	// Process Go
-	{
+	// 언어마다 타입 매핑이 달라서 컬럼 목록을 따로 만든다.
+	for _, lang := range languages {
 		localCnf := cnf
-		localCnf.Language = "go"
-		goColumns := make([]util.Column, 0)
+		localCnf.Language = lang
+		columns := make([]util.Column, 0)
 		for _, raw := range rawCols {
 			column := util.Column{
 				Name:         strings.Title(util.GetName(raw.Name)),
@@ -205,8 +182,8 @@ func readColumn(packageName string, tableName string, db *sql.DB, gpa *config.Gp
 				OriginalType: raw.DataType,
 				Prefix:       util.GetPrefix(raw.Name),
 			}
-			goColumns = append(goColumns, column)
+			columns = append(columns, column)
 		}
-		gocodegen.ProcessGo(packageName, tableName, prefix, goColumns, db, gpa, version, auth, localCnf)
-}
+		generators[lang](packageName, tableName, prefix, columns, db, gpa, version, auth, localCnf)
+	}
 }

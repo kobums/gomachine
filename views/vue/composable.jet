@@ -1,0 +1,74 @@
+// Auto-generated Vue 3 composable for {{.ModelName}}
+// Generated from table: {{.TableName}}
+import { ref } from 'vue';
+import type { Ref } from 'vue';
+import {{.ModelName}}Model from '../models/{{.TableName | lower}}';
+import type { {{.ModelName}}, {{.ModelName}}SearchParams } from '../types/{{.TableName | lower}}';
+
+export function use{{.ModelName}}() {
+  const items: Ref<{{.ModelName}}[]> = ref([]);
+  const item: Ref<{{.ModelName}} | null> = ref(null);
+  const total = ref(0);
+  const loading = ref(false);
+  const error = ref<unknown>(null);
+
+  async function run<T>(fn: () => Promise<T>): Promise<T | undefined> {
+    loading.value = true;
+    error.value = null;
+    try {
+      return await fn();
+    } catch (e) {
+      error.value = e;
+      return undefined;
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  async function fetchPage(params: {{.ModelName}}SearchParams = {}) {
+    const res = await run(() => {{.ModelName}}Model.findpage(params));
+    if (res) {
+      items.value = res.content || [];
+      total.value = res.totalElements || 0;
+    }
+  }
+
+  async function fetchAll(params: {{.ModelName}}SearchParams = {}) {
+    const res = await run(() => {{.ModelName}}Model.findall(params));
+    if (res) {
+      items.value = res;
+      total.value = res.length;
+    }
+  }
+
+  async function fetchOne(id: number) {
+    const res = await run(() => {{.ModelName}}Model.get(id));
+    item.value = res ? res.item : null;
+  }
+
+  async function create(data: Partial<{{.ModelName}}>) {
+    return run(() => {{.ModelName}}Model.insert(data));
+  }
+
+  async function update(id: number, data: Partial<{{.ModelName}}>) {
+    return run(() => {{.ModelName}}Model.update(id, data));
+  }
+
+  async function remove(id: number) {
+    return run(() => {{.ModelName}}Model.remove(id));
+  }
+
+  return {
+    items,
+    item,
+    total,
+    loading,
+    error,
+    fetchPage,
+    fetchAll,
+    fetchOne,
+    create,
+    update,
+    remove,
+  };
+}

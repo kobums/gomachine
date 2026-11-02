@@ -13,7 +13,7 @@ This is a Go-based code generation tool called "gomachine" that generates models
 - `make run` - Runs the model generator directly
 - `make model` - Builds the model generator binary
 - `make test` - Runs tests using `go test -v ./...`
-- `make clean` - Cleans build artifacts from `~/bin/*`
+- `make clean` - Removes local `bin/` and the files `make install` placed in `~/bin` (`buildtool-model*`, `buildtool/`)
 
 ### Running the Tool
 The main executable takes these arguments:
@@ -21,7 +21,7 @@ The main executable takes these arguments:
 buildtool-model <target_path> [language] [package_name]
 ```
 - `target_path`: Root directory of the target project
-- `language`: "go" (default), "dart"/"flutter", or "kotlin"/"spring"
+- `language`: overrides model.json's language selection. One or comma-separated: "go", "kotlin"/"spring", "dart"/"flutter", "react", "vue", or "all"
 - `package_name`: Optional package name (auto-detected from go.mod if not provided)
 
 ## Architecture
@@ -37,6 +37,8 @@ buildtool-model <target_path> [language] [package_name]
    - `views/go/`: Go templates (model.jet, rest.jet, const.jet)
    - `views/dart/`: Dart/Flutter templates (model.jet, params.jet, provider.jet, repository.jet)
    - `views/kotlin/`: Kotlin/Spring Boot templates (entity.jet, repository.jet, service.jet, controller.jet)
+   - `views/react/`: React TypeScript templates (model.jet, type.jet)
+   - `views/vue/`: Vue 3 + TypeScript templates (type.jet, model.jet, composable.jet). Template data comes from `react.BuildTemplateData`
 
 3. **Code Generation** (`main.go`, `go/`, `dart/`, `kotlin/`)
    - Connects to MySQL database via `information_schema`
@@ -73,7 +75,8 @@ buildtool-model <target_path> [language] [package_name]
 
 The `config.json` supports:
 - Database connection settings
-- Language selection
+- Language selection: `languages` map of on/off switches (`{"go": true, "react": true, "spring": false}`, `"all": true` enables every generator). Falls back to the legacy `language` string, then to `go`. Resolution lives in `config.EnabledLanguages()` / `config.ResolveLanguages()`
+- Per-language output paths: `goModelFilePath`, `kotlinModelFilePath`, `dartModelFilePath`, `reactModelFilePath`, `vueModelFilePath`. Non-Go languages without a path are skipped with a warning
 - Custom method generation via `table` array with GPA (Generation Parameter Array) objects
 - Join configurations for related tables
 - Session parameter mappings

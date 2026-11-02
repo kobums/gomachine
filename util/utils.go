@@ -263,7 +263,9 @@ func TablePrefix(str string, packageName string, db *sql.DB) string {
 
 	if err != nil {
 		log.Println(err)
+		return ""
 	}
+	defer rows.Close()
 
 	if rows.Next() {
 		var name string
