@@ -67,7 +67,9 @@ type ModelConfig struct {
 	KotlinPackage      string `json:"kotlinPackage"`
 	ReactModelFilePath string `json:"reactModelFilePath"`
 	VueModelFilePath   string `json:"vueModelFilePath"`
-	ModelJsonPath      string `json:"modelJsonPath"`
+	// Rust(axum + sqlx) crate 루트 디렉터리 (Cargo.toml 이 있는 곳). 생성 파일은 그 아래 src/ 에 둔다.
+	RustModelFilePath string `json:"rustModelFilePath"`
+	ModelJsonPath     string `json:"modelJsonPath"`
 	// 생성할 언어별 on/off. 예: {"go": true, "react": true, "spring": false}. "all": true 면 전부 생성.
 	// 비어 있으면 예전 방식대로 language 필드를 쓴다.
 	Languages map[string]bool `json:"languages"`
@@ -225,7 +227,7 @@ func GetPubspec() string {
 }
 
 // SupportedLanguages 는 생성 순서이기도 하다.
-var SupportedLanguages = []string{"go", "kotlin", "dart", "react", "vue"}
+var SupportedLanguages = []string{"go", "kotlin", "dart", "react", "vue", "rust"}
 
 var languageAliases = map[string]string{
 	"spring":  "kotlin",
@@ -259,7 +261,7 @@ func ResolveLanguages(names []string) []string {
 		}
 		lang := NormalizeLanguage(name)
 		if lang == "" {
-			log.Printf("WARNING: unsupported language %q is skipped (supported: go, kotlin/spring, dart/flutter, react, vue)", name)
+			log.Printf("WARNING: unsupported language %q is skipped (supported: go, kotlin/spring, dart/flutter, react, vue, rust)", name)
 			continue
 		}
 		enabled[lang] = true
@@ -316,6 +318,8 @@ func (c ModelConfig) OutputPath(lang string) string {
 		return c.ReactModelFilePath
 	case "vue":
 		return c.VueModelFilePath
+	case "rust":
+		return c.RustModelFilePath
 	}
 	return ""
 }

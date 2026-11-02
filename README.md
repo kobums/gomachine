@@ -2,7 +2,7 @@
 
 이 프로그램은 Go를 이용하여 귀찮고 반복되는 것들을 안하게 하기 위함이다.
 
-go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생성할 수 있다.
+go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생성할 수 있다. rust(axum + sqlx) 백엔드는 작업 중이다 ([Rust](#rust-axum--sqlx)).
 
 ## 실행
 
@@ -21,10 +21,11 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
 "kotlinModelFilePath": "../proj/proj_spring/src/main/kotlin/com/example/proj",
 "kotlinPackage": "com.example.proj",
 "reactModelFilePath": "../proj/proj_front",
-"vueModelFilePath": "../proj/proj_vue"
+"vueModelFilePath": "../proj/proj_vue",
+"rustModelFilePath": "../proj/proj_rust"
 ```
 
-- 지원 언어: `go`, `spring`(=`kotlin`), `flutter`(=`dart`), `react`, `vue`
+- 지원 언어: `go`, `spring`(=`kotlin`), `flutter`(=`dart`), `react`, `vue`, `rust`
 - go 외 언어는 `*ModelFilePath` 가 비어 있으면 경고만 찍고 건너뛴다.
 - `languages` 가 없으면 예전 `language` 문자열을 쓰고, 그것도 없으면 go 만 생성한다.
 - 실행 인자로 덮어쓸 수 있다: `buildtool-model . go,react` 또는 `buildtool-model . all`
@@ -35,7 +36,7 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
 - JSON 문법 오류나 타입 오류(`"session": {...}` 처럼 배열 자리에 객체 등)가 있으면 에러를 찍고 **아무것도 생성하지 않고** 종료한다 (exit 1).
   예전에는 반쯤 읽은 설정으로 계속해서 `session` / `protect` 가 조용히 빠질 수 있었다.
 - 모르는 key(`"sesion"` 같은 오타 포함)는 위치와 함께 경고만 찍는다 (`unknown key table[0].sesion (ignored)`). 생성은 계속한다.
-- `auth: "jwt"` 에서 `session` 컬럼이 없거나 쓸 수 없는 타입이면(Go 는 정수 컬럼, Spring 만 생성하면 문자열 컬럼도 된다)
+- `auth: "jwt"` 에서 `session` 컬럼이 없거나 쓸 수 없는 타입이면(Go / Rust 는 정수 컬럼, Spring 만 생성하면 문자열 컬럼도 된다)
   에러를 찍고 아무것도 생성하지 않는다 (소유권 검사 없는 API 가 만들어지므로). jwt 가 아니면 경고만 찍는다.
 
 ## 이름 규칙
@@ -348,7 +349,8 @@ React/Vue(그리고 Dart)가 두 백엔드 중 어느 것에도 붙을 수 있�
   - 밑줄 하나짜리 컬럼은 예전 Go 와 같다. camelCase 컬럼(`userId`)도 예전 Go 처럼 `userid` 다 (예전 TypeScript 는 `userId` 였다).
   - 여러 단어 컬럼의 Go json 태그가 `createdat` → `createdAt` 으로 바뀌었다 (이번 브랜치에서 처음 생긴 이름이라 기존 클라이언트 없음).
 - 목록/개수 필터 파라미터 = JSON key, 날짜 컬럼(date/datetime/timestamp)은 `start{key 소문자}` / `end{key 소문자}`.
-  `id`, `primary` 컬럼, 비밀번호, blob 컬럼은 필터/검색이 없다 (id 도 primary 도 없어 대신 키로 쓰는 첫 컬럼은 거를 수 있다. 세 언어가 같다).
+  `id`, `primary` 컬럼, 비밀번호, blob 컬럼은 필터/검색이 없다 (id 도 primary 도 없어 대신 키로 쓰는 첫 컬럼은 거를 수 있다).
+  모든 백엔드(Go, Spring, Rust)와 TypeScript 가 같다. **바뀐 점**: 예전 Go 는 `primary` 컬럼도 목록 필터로 받았다 (검색 경로는 없었다).
 
 ### 경로 (prefix 는 대상 프로젝트 설정, 예: `/api`)
 
@@ -407,3 +409,17 @@ React/Vue(그리고 Dart)가 두 백엔드 중 어느 것에도 붙을 수 있�
   목록 필터는 두 백엔드 모두 `true/false/1/0` 을 받는다. `json` 은 둘 다 문자열.
 - 문자열 필터: Go 는 `name`/`title`/`content` 는 `=`(또는 `compare` 설정), 나머지는 `like`(와일드카드는 보낸 값 그대로), Spring 은 모두 `=`.
 
+## Rust (axum + sqlx)
+
+작업 중이다. 지금은 설정과 이름 / 타입 규칙만 있고 `rust` 를 켜면 테이블마다 "not implemented yet" 경고만 찍는다.
+
+- `rustModelFilePath`: crate 루트 (`Cargo.toml` 이 있는 디렉터리). 생성 파일은 그 아래 `src/` 에 둔다. 모듈은 `crate::` 경로로 참조한다.
+- Go 와 같은 HTTP 계약(HTTP 200 + `code`, 파라미터 해석 실패만 400)이고, 같은 DB / 계정(bcrypt `$2a$` cost 10, 같은 JWT)을 쓴다.
+- `session` 컬럼은 Go 와 같이 정수 컬럼만 된다.
+- 타입: `int`/`smallint`/`mediumint`/`year` → `i32`, `bigint` → `i64` (`column_type` 이 unsigned 면 `u32` / `u64`),
+  `tinyint`/`bit` → `bool`, `float`/`double`/`decimal` → `f64`, 문자열 / 날짜 → `String`, blob / binary → `Vec<u8>`.
+  enum(`map`) 컬럼은 newtype `pub struct Status(pub i32)` 이다 (코드는 다른 언어와 같다).
+- 이름: 필드는 JSON key 의 snake_case (`createdAt` → `created_at`), Rust 예약어는 뒤에 `_` (`type_`, `self_`).
+  struct / enum 이 생성 코드가 쓰는 타입(`Result`, `Option`, `Path`, `Json`, `Value`, `Error`, `Session` ...)과 같으면
+  `Model` / `Enum` 접미사 (`result_tb` → `ResultModel`, enum `type` → `TypeEnum`). 모듈 / 파일은 Go 파일 이름과 같은 소문자이고
+  예약어나 `mod`, `support`, `handlers`, `models`, `routes`, `custom` 이면 뒤에 `_` 다.

@@ -8,6 +8,7 @@ import (
 	gocodegen "gomachine/go"
 	kotlincodegen "gomachine/kotlin"
 	reactcodegen "gomachine/react"
+	rustcodegen "gomachine/rust"
 	"gomachine/util"
 	vuecodegen "gomachine/vue"
 	"os"
@@ -139,12 +140,12 @@ func main() {
 	}
 }
 
-// checkSessions 는 session 설정 컬럼이 있고 정수(Spring 만 생성하면 문자열도) 컬럼인지 확인한다.
+// checkSessions 는 session 설정 컬럼이 있고 정수(Spring 만 생성하면 문자열도) 컬럼인지 확인한다. Rust 는 Go 와 같이 정수만 된다.
 // auth=jwt 면 문제를 에러로 돌려주고, 아니면 경고만 찍는다 (session 은 jwt 일 때만 쓴다).
 func checkSessions(db *sql.DB, cnf config.ModelConfig, names []string, tableGpa map[string]*config.Gpa, languages []string) []string {
 	allowString := true
 	for _, lang := range languages {
-		if lang == "go" {
+		if lang == "go" || lang == "rust" {
 			allowString = false
 		}
 	}
@@ -186,6 +187,7 @@ var generators = map[string]generator{
 	"dart":   dartcodegen.ProcessDart,
 	"react":  reactcodegen.ProcessReact,
 	"vue":    vuecodegen.ProcessVue,
+	"rust":   rustcodegen.ProcessRust,
 }
 
 func readColumn(packageName string, tableName string, db *sql.DB, gpa *config.Gpa, version string, auth string, cnf config.ModelConfig, languages []string) {

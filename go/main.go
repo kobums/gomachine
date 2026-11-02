@@ -452,7 +452,7 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 	// 목록 필터 중 숫자/enum/bool 파라미터를 strconv 로 해석하는지 (rest 가 strconv 를 import 해야 한다)
 	filterParse := false
 	for _, item := range items {
-		if item.Name != "Id" && !util.IsPasswordColumn(item.Name) && item.Type != "[]byte" && !util.IsRangeFilter(item.OriginalType) && item.Type != "string" {
+		if isSearchColumn(item) && !util.IsRangeFilter(item.OriginalType) && item.Type != "string" {
 			filterParse = true
 		}
 	}
@@ -729,7 +729,7 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 }
 
 // isSearchColumn 은 목록 필터 / GET /{table}/search/{field} 로 찾을 수 있는 컬럼인지 확인한다.
-// Spring 의 IsSearchable 과 같다: id, 비밀번호, []byte 컬럼은 뺀다.
+// Spring 의 IsSearchable 과 같다: id, primary, 비밀번호, []byte 컬럼은 뺀다 (rest.jet Parse{Model}Filters 도 같은 조건).
 func isSearchColumn(item util.Column) bool {
 	return item.Name != "Id" && !util.IsPasswordColumn(item.Name) && item.Type != "[]byte" && !item.Primary
 }

@@ -86,11 +86,11 @@ func (c *{{name}}Controller) isAdmin() bool {
 
 // Parse{{name}}Filters 는 목록/개수의 조건이다. get 은 쿼리 파라미터를 읽는 함수다 (컨트롤러 Get, 라우터 fiber Query).
 // 파라미터 이름은 컬럼의 API 이름(JSON key)이고, 날짜 컬럼은 start/end 범위다.
-// 숫자/enum/bool 파라미터를 해석하지 못하면 두 번째 값으로 그 파라미터 이름을 돌려준다 (400). bool 은 1/0/true/false 를 받고, 보냈을 때만 거른다.
+// 숫자/enum/bool 파라미터를 해석하지 못하면 두 번째 값으로 그 파라미터 이름을 돌려준다 (400). bool 은 1/0/true/false 를 받고, 보냈을 때만 거른다.{* id, primary, 비밀번호, []byte 컬럼은 필터가 없다 (go/main.go isSearchColumn, Spring / TypeScript 와 같다) *}
 func Parse{{name}}Filters(get func(string) string) ([]interface{}, string) {
     var args []interface{}
     
-    {{range items}}{{if .Name != "Id" && .Name != "Passwd" && .Name != "Password" && .Type != "[]byte"}}{{if isRange(.)}}_start{{.Name|lower}} := get("{{startParam(.)}}")
+    {{range items}}{{if .Name != "Id" && !.Primary && .Name != "Passwd" && .Name != "Password" && .Type != "[]byte"}}{{if isRange(.)}}_start{{.Name|lower}} := get("{{startParam(.)}}")
     _end{{.Name|lower}} := get("{{endParam(.)}}")
     if _start{{.Name|lower}} != "" && _end{{.Name|lower}} != "" {        
         var v [2]string

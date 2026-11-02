@@ -106,6 +106,7 @@ func TestEnumCodesAgree(t *testing.T) {
 			}
 		}
 
+		// 새 백엔드(Rust 등)는 생성 코드에서 같은 방법으로 코드를 읽어 여기에 더한다.
 		for name, got := range map[string]map[string]int{"go": goCodes, "kotlin": ktCodes, "ts": tsCodes} {
 			if len(got) != len(codes) {
 				t.Errorf("%s %s codes = %v, want %v", name, typeName, got, codes)
@@ -116,6 +117,14 @@ func TestEnumCodesAgree(t *testing.T) {
 					t.Errorf("%s %s %q = %d, want %d", name, typeName, label, got[label], code)
 				}
 			}
+		}
+	}
+
+	// Rust 는 enum 컬럼을 newtype(util.RustEnumType) 으로 쓴다. 코드는 다른 언어와 같은 util.EnumCode 다.
+	for _, c := range columns("rust") {
+		want := map[string]string{"e_id": "i64", "e_status": "Status", "e_kind": "Kind"}[c.Column]
+		if c.Type != want {
+			t.Errorf("rust %s type = %q, want %q", c.Column, c.Type, want)
 		}
 	}
 
