@@ -84,6 +84,95 @@ func (c *{{name}}Controller) isAdmin() bool {
 }
 {{end}}
 
+// filters 는 목록/개수의 조건이다. 파라미터 이름은 컬럼의 API 이름(JSON key)이고, 날짜 컬럼은 start/end 범위다.
+// 세션이 있으면 현재 사용자 소유 행만 고른다.
+func (c *{{name}}Controller) filters() []interface{} {
+    var args []interface{}
+    
+    {{range items}}{{if .Name != "Id" && .Name != "Passwd" && .Name != "Password" && .Type != "[]byte"}}{{if isRange(.)}}_start{{.Name|lower}} := c.Get("{{startParam(.)}}")
+    _end{{.Name|lower}} := c.Get("{{endParam(.)}}")
+    if _start{{.Name|lower}} != "" && _end{{.Name|lower}} != "" {        
+        var v [2]string
+        v[0] = _start{{.Name|lower}}
+        v[1] = _end{{.Name|lower}}  
+        args = append(args, models.Where{Column:"{{.Key}}", Value:v, Compare:"between"})    
+    } else if  _start{{.Name|lower}} != "" {          
+        args = append(args, models.Where{Column:"{{.Key}}", Value:_start{{.Name|lower}}, Compare:">="})
+    } else if  _end{{.Name|lower}} != "" {          
+        args = append(args, models.Where{Column:"{{.Key}}", Value:_end{{.Name|lower}}, Compare:"<="})            
+    }
+    {{else if .Type == "string"}}_{{.Name|lower}} := c.Get("{{jsonKey(.)}}")
+    if _{{.Name|lower}} != "" {
+        {{if .Name == "Name" || .Name == "Title" || .Name == "Content"}}args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})
+        {{else}}args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"like"}){{end}}
+    }
+    {{else if .Type == "int"}}_{{.Name|lower}} := c.Geti("{{jsonKey(.)}}")
+    if _{{.Name|lower}} != 0 {
+        args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
+    }
+    {{else if .Type == "int64"}}_{{.Name|lower}} := c.Geti64("{{jsonKey(.)}}")
+    if _{{.Name|lower}} != 0 {
+        args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
+    }
+    {{else if .Type == "float64"}}_{{.Name|lower}} := c.Getf("{{jsonKey(.)}}")
+    if _{{.Name|lower}} != 0.0 {
+        args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
+    }        
+    {{else if enumZero(.Name)}}// 코드 0 도 실제 값이라 보낸 경우에만 조건을 붙인다.
+    if _{{.Name|lower}} := c.Get("{{jsonKey(.)}}"); _{{.Name|lower}} != "" {
+        if v, err := strconv.Atoi(_{{.Name|lower}}); err == nil {
+            args = append(args, models.Where{Column:"{{.Key}}", Value:v, Compare:"{{compareColumn(.Name, compares)}}"})
+        }
+    }
+    {{else}}_{{.Name|lower}} := c.Geti("{{jsonKey(.)}}")
+    if _{{.Name|lower}} != 0 {
+        args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
+    }
+    {{end}}{{end}}{{end}}
+
+    {{if auth == "jwt" && len(sessions) > 0}}
+    {{range sessions}}
+    args = append(args, models.Where{Column:"{{.Column}}", Value:c.Session.{{.Key|title}}, Compare:"="})    
+    {{end}}
+    {{end}}
+    return args
+}
+
+// Search 는 GET /{table}/search/{field} 다. column(라우터가 넣는 이 테이블 컬럼)이 value 와 같은 행 목록을 items 로 돌려준다.
+// 세션이 있으면 현재 사용자 소유 행만 고른다. 비밀번호/[]byte 컬럼은 라우터가 경로를 만들지 않는다.
+func (c *{{name}}Controller) Search(column string, value interface{}) {
+    {{if auth == "jwt"}}
+    if c.Session == nil {
+        c.Result["code"] = "auth error"
+        return
+    }
+    {{range sessions}}
+    if c.Session.{{.Key|title}} == 0 {
+        c.Result["code"] = "auth error"
+        return
+    }
+    {{end}}
+    {{end}}
+
+	conn := c.NewConnection()
+
+	manager := models.New{{name}}Manager(conn)
+
+    args := []interface{}{models.Where{Column: column, Value: value, Compare: "="}}
+    {{if auth == "jwt" && len(sessions) > 0}}
+    {{range sessions}}
+    args = append(args, models.Where{Column:"{{.Column}}", Value:c.Session.{{.Key|title}}, Compare:"="})
+    {{end}}
+    {{end}}
+
+    items := manager.Find(args)
+    if len(items) == 0 && manager.LastError != nil {
+        c.Result["code"] = "error"
+        return
+    }
+    c.Set("items", items)
+}
+
 func (c *{{name}}Controller) Index(page int, pagesize int) {
     {{if auth == "jwt"}}
     if c.Session == nil {
@@ -102,55 +191,8 @@ func (c *{{name}}Controller) Index(page int, pagesize int) {
 
 	manager := models.New{{name}}Manager(conn)
 
-    var args []interface{}
-    
-    {{range items}}{{if .Name != "Id" && .Name != "Passwd" && .Name != "Password" && .Type != "[]byte"}}{{if .OriginalType == "datetime" || .OriginalType == "date" || .OriginalType == "timestamp"}}_start{{.Name|lower}} := c.Get("start{{.Name|lower}}")
-    _end{{.Name|lower}} := c.Get("end{{.Name|lower}}")
-    if _start{{.Name|lower}} != "" && _end{{.Name|lower}} != "" {        
-        var v [2]string
-        v[0] = _start{{.Name|lower}}
-        v[1] = _end{{.Name|lower}}  
-        args = append(args, models.Where{Column:"{{.Key}}", Value:v, Compare:"between"})    
-    } else if  _start{{.Name|lower}} != "" {          
-        args = append(args, models.Where{Column:"{{.Key}}", Value:_start{{.Name|lower}}, Compare:">="})
-    } else if  _end{{.Name|lower}} != "" {          
-        args = append(args, models.Where{Column:"{{.Key}}", Value:_end{{.Name|lower}}, Compare:"<="})            
-    }
-    {{else if .Type == "string"}}_{{.Name|lower}} := c.Get("{{.Name|lower}}")
-    if _{{.Name|lower}} != "" {
-        {{if .Name == "Name" || .Name == "Title" || .Name == "Content"}}args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})
-        {{else}}args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"like"}){{end}}
-    }
-    {{else if .Type == "int"}}_{{.Name|lower}} := c.Geti("{{.Name|lower}}")
-    if _{{.Name|lower}} != 0 {
-        args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
-    }
-    {{else if .Type == "int64"}}_{{.Name|lower}} := c.Geti64("{{.Name|lower}}")
-    if _{{.Name|lower}} != 0 {
-        args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
-    }
-    {{else if .Type == "float64"}}_{{.Name|lower}} := c.Getf("{{.Name|lower}}")
-    if _{{.Name|lower}} != 0.0 {
-        args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
-    }        
-    {{else if enumZero(.Name)}}// 코드 0 도 실제 값이라 보낸 경우에만 조건을 붙인다.
-    if _{{.Name|lower}} := c.Get("{{.Name|lower}}"); _{{.Name|lower}} != "" {
-        if v, err := strconv.Atoi(_{{.Name|lower}}); err == nil {
-            args = append(args, models.Where{Column:"{{.Key}}", Value:v, Compare:"{{compareColumn(.Name, compares)}}"})
-        }
-    }
-    {{else}}_{{.Name|lower}} := c.Geti("{{.Name|lower}}")
-    if _{{.Name|lower}} != 0 {
-        args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
-    }
-    {{end}}{{end}}{{end}}
+    args := c.filters()
 
-    {{if auth == "jwt" && len(sessions) > 0}}
-    {{range sessions}}
-    args = append(args, models.Where{Column:"{{.Column}}", Value:c.Session.{{.Key|title}}, Compare:"="})    
-    {{end}}
-    {{end}}
-    
     // 개수는 페이지/정렬 없이 같은 조건으로 센다.
     countArgs := args
 
@@ -199,58 +241,12 @@ func (c *{{name}}Controller) Count() {
 
 	manager := models.New{{name}}Manager(conn)
 
-    var args []interface{}
-    
-    {{range items}}{{if .Name != "Id" && .Name != "Passwd" && .Name != "Password" && .Type != "[]byte"}}{{if .OriginalType == "datetime" || .OriginalType == "date" || .OriginalType == "timestamp"}}_start{{.Name|lower}} := c.Get("start{{.Name|lower}}")
-    _end{{.Name|lower}} := c.Get("end{{.Name|lower}}")
-    if _start{{.Name|lower}} != "" && _end{{.Name|lower}} != "" {        
-        var v [2]string
-        v[0] = _start{{.Name|lower}}
-        v[1] = _end{{.Name|lower}}  
-        args = append(args, models.Where{Column:"{{.Key}}", Value:v, Compare:"between"})    
-    } else if  _start{{.Name|lower}} != "" {          
-        args = append(args, models.Where{Column:"{{.Key}}", Value:_start{{.Name|lower}}, Compare:">="})
-    } else if  _end{{.Name|lower}} != "" {          
-        args = append(args, models.Where{Column:"{{.Key}}", Value:_end{{.Name|lower}}, Compare:"<="})            
-    }
-    {{else if .Type == "string"}}_{{.Name|lower}} := c.Get("{{.Name|lower}}")
-    if _{{.Name|lower}} != "" {
-        {{if .Name == "Name" || .Name == "Title" || .Name == "Content"}}args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})
-        {{else}}args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"like"}){{end}}
-        
-    }
-    {{else if .Type == "int"}}_{{.Name|lower}} := c.Geti("{{.Name|lower}}")
-    if _{{.Name|lower}} != 0 {
-        args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
-    }
-    {{else if .Type == "int64"}}_{{.Name|lower}} := c.Geti64("{{.Name|lower}}")
-    if _{{.Name|lower}} != 0 {
-        args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
-    }
-    {{else if .Type == "float64"}}_{{.Name|lower}} := c.Getf("{{.Name|lower}}")
-    if _{{.Name|lower}} != 0.0 {
-        args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
-    }        
-    {{else if enumZero(.Name)}}// 코드 0 도 실제 값이라 보낸 경우에만 조건을 붙인다.
-    if _{{.Name|lower}} := c.Get("{{.Name|lower}}"); _{{.Name|lower}} != "" {
-        if v, err := strconv.Atoi(_{{.Name|lower}}); err == nil {
-            args = append(args, models.Where{Column:"{{.Key}}", Value:v, Compare:"{{compareColumn(.Name, compares)}}"})
-        }
-    }
-    {{else}}_{{.Name|lower}} := c.Geti("{{.Name|lower}}")
-    if _{{.Name|lower}} != 0 {
-        args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
-    }
-    {{end}}{{end}}{{end}}
-    
-    {{if auth == "jwt" && len(sessions) > 0}}
-    {{range sessions}}
-    args = append(args, models.Where{Column:"{{.Column}}", Value:c.Session.{{.Key|title}}, Compare:"="})    
-    {{end}}
-    {{end}}
-    
+    args := c.filters()
+
     total := manager.Count(args)
 	c.Set("total", total)
+    // GET /{table}/count 는 Spring 과 같은 count 도 돌려준다 (total 은 예전 클라이언트용).
+	c.Set("count", total)
 }
 
 {{if !isView}}func (c *{{name}}Controller) Insert(item *models.{{inputName}}) {

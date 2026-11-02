@@ -38,7 +38,8 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
   - `model.json` 의 `table[].name` 은 `user_role`, `userrole`, `UserRole` 어느 것으로 써도 된다.
 - view(`_vw`)는 읽기 전용이다. Go 는 Insert/Update/Delete 계열 모델 메서드·핸들러·경로를, Spring 은 POST/PUT/PATCH/DELETE 와
   서비스 쓰기 메서드를 만들지 않는다. view 에 설정한 `UpdateXByY` / `DeleteByX` 는 경고를 찍고 건너뛴다.
-- 컬럼: 첫 `_` 앞(접두사)만 뗀다. `p_created_at` → SQL `created_at`, Go 필드 `CreatedAt`, Kotlin/TypeScript 프로퍼티 `createdAt`.
+- 컬럼: 첫 `_` 앞(접두사)만 뗀다. `p_created_at` → SQL `created_at`, Go 필드 `CreatedAt`, JSON key(Go json 태그, Kotlin/TypeScript/Dart) `createdAt`.
+  자세한 규칙은 아래 [HTTP 계약](#http-계약-go--spring--react--vue--dart).
   밑줄이 하나인 컬럼은 예전과 같은 이름이다 (`u_createddate` → `Createddate` / `createddate`).
 - 컬럼 이름이 예약어면 Go 매개변수는 뒤에 `_` 를 붙이고 (`type_`), Kotlin 은 backtick 으로 감싼다 (`` `class` ``).
 - Go 상수 패키지(`models/{table}`) 이름이 생성 코드의 import(`log`, `config`, `time` ...)나 지역 변수와 겹치면
@@ -121,14 +122,15 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
 - Get/Find/Count 는 값이 0 / "" 인 매개변수의 조건을 빼지만, bool 과 in(슬라이스) 조건은 항상 붙인다.
 - 경로: `GET /{table}/{get|find|count}/{by 뒤 이름}/:{값}` (컬럼이 여러 개면 `/:{컬럼}/:{컬럼}`, in 은 쉼표로 구분),
   `PUT /{table}/{바꿀 컬럼}/{조건 컬럼}` (JSON 본문). 값을 해석하지 못하면 400 을 돌려준다 (예전에는 0 으로 바꿔 조건이 빠졌다).
-  `PUT` 본문에 필요한 key 가 없어도 400 이다 (예전에는 0 값으로 덮어썼다). `DeleteBy` 는 예전처럼 경로를 만들지 않는다.
+  `PUT` 본문에 필요한 key 가 없어도 400 이다 (예전에는 0 값으로 덮어썼다). 본문 key 는 JSON key 다 (`postTitle`).
+  `DeleteBy` 는 `DELETE /{table}/delete/{by 뒤 이름}/:{값}` 경로가 생겼다 (소유권 검사는 위와 같다).
 
 ## Go REST 동작
 
-- `PUT /{table}` 은 부분 수정이다. 기존 행을 읽고 **본문에 있는 JSON key 만** 덮어쓴다 (key 이름은 모델 json 태그, 예: `createdat`).
+- `PUT /{table}` 은 부분 수정이다. 기존 행을 읽고 **본문에 있는 JSON key 만** 덮어쓴다 (key 이름은 모델 json 태그, 예: `createdAt`. Go 의 json 은 대소문자를 가리지 않아 `createdat` 도 된다).
   빠진 필드는 DB 값을 유지한다. 그 뒤 id / 세션 컬럼 / `createddate` / 보호 컬럼 / 비밀번호 규칙을 다시 적용한다.
   컨트롤러 시그니처가 `Update(item, body []byte)` 로 바뀌었다 (body 가 비어 있으면 item 전체로 바꾼다).
-- 목록 `orderby` 는 이 테이블 컬럼만 받는다. API 이름(`createdat`), 접두사 뺀 이름(`created_at`), 전체 이름(`p_created_at`)
+- 목록 `orderby` 는 이 테이블 컬럼만 받는다. API 이름(`createdAt`, 대소문자 무시), 접두사 뺀 이름(`created_at`), 전체 이름(`p_created_at`)
   + `asc`/`desc` 를 쉼표로 이어 쓴다. 모르는 항목은 버린다. 모델 `Find/Sum` 에 넘기는 정렬도 알려진 컬럼 이름만 SQL 컬럼으로
   바꾸고 나머지(`rand()`, 조인 컬럼 등)는 그대로 둔다 (`p.ParseOrder`, `p.FixOrder`).
 - 목록은 `page`/`pagesize` 를 보내면 몇 번째 페이지든 `total` 을 같이 돌려준다 (예전에는 1 페이지만).
@@ -159,7 +161,8 @@ Spring 은 기본 키를 `gpa.primary` > `id` 컬럼 > 첫 컬럼 순서로 정�
 - `src/composables/use{Model}.ts` — `items`, `item`, `total`, `loading`, `error` ref 와 `fetchPage/fetchAll/fetchOne/create/update/remove`
 
 대상 프로젝트에는 axios 같은 시그니처의 `src/services/api.ts` (`get`, `post`, `put`, `patch`, `del`) 가 있어야 한다.
-API 경로는 react 와 같이 spring 백엔드(`/{table}/{id}`, `/{table}/search/{field}`)에 맞춰져 있다.
+API 경로와 응답 처리는 [HTTP 계약](#http-계약-go--spring--react--vue--dart)을 따르므로 Go 와 Spring 어느 백엔드에도 쓸 수 있다.
+공통 정규화 코드 `src/models/contract.ts` 를 같이 생성한다 (테이블마다 덮어쓴다).
 
 ## 생성된 Go 모델이 기대하는 models/db.go
 
@@ -216,14 +219,85 @@ API 경로는 react 와 같이 spring 백엔드(`/{table}/{id}`, `/{table}/searc
 
 - 리포지토리는 `JpaSpecificationExecutor` 를 상속한다. `GET /api/{table}` 은 필터(같음, 날짜 `start`/`end` 범위, enum 코드)와
   소유권을 Specification 으로, 페이지와 정렬을 `PageRequest` 로 DB 에서 처리한다 (예전에는 전체 행을 읽어 메모리에서 걸렀다).
-  - `page` 는 0 이상, `pagesize` 는 1..10000 으로 맞춘다.
+  - `page` 는 Go 와 같이 1 부터다 (0 이하는 1. 예전에는 0 부터), `pagesize` 는 1..10000 으로 맞춘다. 응답에 `pagesize`(= `size`)도 있다.
   - 정렬: `sort` (또는 `orderby`) = `createddate desc, name` 또는 `createddate,desc`. 모르는 이름이면 400. 기본은 기본 키 내림차순.
 - `GET /api/{table}/count` 는 목록과 같은 필터 파라미터를 받는다.
 - `PUT` 은 `PATCH` 와 같이 보낸(null 이 아닌) 필드만 바꾼다. `createddate` 와 보호 컬럼은 바꾸지 않는다.
   NULL 허용 컬럼을 null 로 지우는 요청은 할 수 없다 (null = 기존 값 유지).
 - `DELETE /api/{table}/{id}` 는 없는 행이면 404.
+- `DELETE /api/{table}/batch` 본문은 `[{"id": 1}, ...]` 이다 (Go 와 같다. 예전에는 엔티티 배열). 없는 행은 건너뛴다.
 - 생성 실패는 로그를 남기고 본문에 에러를 돌려준다 (제약 조건 위반 409 `{"error": "constraint violation"}`, 그 밖 400).
 - 응답의 조인 객체는 한 단계만 채운다 (조인의 조인은 `null`). `@EntityGraph` 도 직접 조인만 가져온다.
   생성/수정 후에는 조인까지 다시 읽어 응답한다 (조인이 있는 서비스는 `EntityManager` 를 주입받는다).
 - 대상 프로젝트 요구사항: Spring Boot 기본 의존성(jackson-annotations, jackson-module-kotlin, jackson-datatype-jsr310, slf4j)과
   Spring Data JPA 3.x.
+
+## HTTP 계약 (Go / Spring / React / Vue / Dart)
+
+React/Vue(그리고 Dart)가 두 백엔드 중 어느 것에도 붙을 수 있게 맞춘 규칙이다. Go 는 기존 경로/필드를 바꾸지 않고 **추가만** 했다.
+
+### 이름
+
+- JSON key = 접두사 뺀 컬럼 이름의 lowerCamel (`util.JSONKey`). Go json 태그, Kotlin 프로퍼티, TypeScript 필드, Dart json key 가 모두 같다.
+
+  | 컬럼 | JSON key | 검색 경로 | 날짜 범위 파라미터 |
+  |---|---|---|---|
+  | `u_createddate` | `createddate` | `/search/createddate` | `startcreateddate` / `endcreateddate` |
+  | `p_created_at` | `createdAt` | `/search/createdat` | `startcreatedat` / `endcreatedat` |
+  | `a_userId` | `userid` | `/search/userid` | - |
+
+  - 밑줄 하나짜리 컬럼은 예전 Go 와 같다. camelCase 컬럼(`userId`)도 예전 Go 처럼 `userid` 다 (예전 TypeScript 는 `userId` 였다).
+  - 여러 단어 컬럼의 Go json 태그가 `createdat` → `createdAt` 으로 바뀌었다 (이번 브랜치에서 처음 생긴 이름이라 기존 클라이언트 없음).
+- 목록/개수 필터 파라미터 = JSON key, 날짜 컬럼(date/datetime/timestamp)은 `start{key 소문자}` / `end{key 소문자}`.
+  기본 키, 비밀번호, blob 컬럼은 필터/검색이 없다.
+
+### 경로 (prefix 는 대상 프로젝트 설정, 예: `/api`)
+
+| 요청 | Go | Spring | 비고 |
+|---|---|---|---|
+| `GET /{t}?page&pagesize&{필터}&orderby` | O | O | page 는 1 부터. Go 는 page 가 없으면(0) 전체 행 |
+| `GET /{t}/count?{필터}` | O (추가) | O | Go 는 예전 `POST /{t}/count` 도 유지 |
+| `GET /{t}/:id` | O | O | |
+| `GET /{t}/search/{field}?{key}=값` | O (추가, 모든 검색 컬럼) | O | 같은 값(=) 목록. Go 는 세션 조건을 붙인다 |
+| `POST /{t}` | O | O | view 없음 |
+| `POST /{t}/batch` | O | O | |
+| `PUT /{t}/:id`, `PATCH /{t}/:id` | O (추가) | O | 보낸 필드만 수정. 경로 id 가 본문 id 보다 우선 |
+| `DELETE /{t}/:id` | O (추가) | O | |
+| `DELETE /{t}/batch` 본문 `[{"id":1}]` | O | O (본문 모양 변경) | |
+| `PUT /{t}`, `DELETE /{t}` (본문) | O (예전 경로) | X | |
+| `GET /{t}/{get,find,count}/...`, `PUT /{t}/{x}/{y}` | O (예전 경로) | X | 커스텀 메서드 |
+| `DELETE /{t}/delete/{by}/:{값}` | O (추가) | X | 커스텀 `DeleteBy` |
+
+- Go 는 정적 경로(`/count`, `/batch`, `/search/x`)를 `/:id` 보다 먼저 등록한다 (fiber 는 등록 순서로 찾는다).
+- 새 Go 경로는 기존 핸들러(Read/Update/Delete/Count/커스텀 메서드)와 새 `Search` 를 부르므로 세션/소유권/보호 컬럼/비밀번호 규칙이 같다.
+- view(`_vw`)는 읽기 경로만 있다.
+- 대상 프로젝트의 fiber Router 에 `Patch` 가 필요하다 (fiber v2 기본).
+
+### 응답
+
+| | Go | Spring |
+|---|---|---|
+| 목록 | `{items, total?, code}` (total 은 page 를 보냈을 때) | `{content, page, size, pagesize, totalElements, totalPages, first, last, empty}` |
+| 개수 | `{total, count, code}` | `{count}` |
+| 단건 | `{item, code}` (없으면 `item: null`) | 엔티티 (없으면 404) |
+| 검색 | `{items, code}` | 배열 |
+| 생성 | `{id, code}` | 엔티티 (batch 는 배열) |
+| 수정 / 삭제 | `{code}` | 엔티티 / `{success}` |
+| 에러 | HTTP 200 + `code: "error" \| "auth error"`, 잘못된 요청은 400 + `code: "bad request"` | HTTP 상태 코드 (400/401/403/404/409) |
+
+- TypeScript(`src/models/contract.ts`)가 둘 다 읽는다: 목록 `content ?? items`, 전체 개수 `totalElements ?? total`,
+  개수 `count ?? total`, 단건은 `item` key 가 있으면 그 값. 엔티티에 `item`/`code` 필드가 있으면 기본 키가 있는 응답을 엔티티로 본다.
+  모델 메서드는 `find/findall → T[]`, `findpage → Page<T> {items, total}`, `get → T | null`, `count → number`,
+  `insert/update/patch → Partial<T>` (Go 는 id 만 준다), `remove/removeBatch → void` 를 돌려준다.
+- Go 의 `code` 에러(`error`, `auth error`, `bad request`)는 `ApiError` 로 던진다. Spring 에러는 api 래퍼(axios 등)가 던진다.
+  Vue composable 은 둘 다 `error` 에 담는다.
+- Dart 는 목록 `content ?? items`, 개수 `count ?? total`, 단건 `item` 래퍼를 읽고, 수정/삭제를 `/{t}/{id}` 로 부른다 (id 컬럼이 있을 때).
+
+### 값
+
+- enum 은 코드(숫자, data 위치)로 주고받는다. TypeScript 필드 타입은 코드 union (`0 | 1 | 2`). 필터와 `/search` 도 코드.
+- 날짜는 `yyyy-MM-dd HH:mm:ss` (date 는 `yyyy-MM-dd`). Spring 은 요청에서 ISO 형식도 받는다.
+- 두 백엔드가 다른 타입: `tinyint` 는 Go `bool`, Spring `Int` 라 TypeScript 는 `boolean | number`.
+  `bit` 는 Go `[]byte`(base64 문자열), Spring `Boolean` 이라 `boolean | string`. `json` 은 둘 다 문자열.
+- 문자열 필터: Go 는 `name`/`title`/`content` 는 `=`(또는 `compare` 설정), 나머지는 `like`(와일드카드는 보낸 값 그대로), Spring 은 모두 `=`.
+

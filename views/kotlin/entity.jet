@@ -49,6 +49,11 @@ data class {{.ModelName}}PatchRequest(
 {{end}}    val {{.Field|raw}}: {{.KotlinType}}? = null,
 {{end}}{{end}})
 
+{{if not .IsView}}{{pk := .PK}}// DELETE /batch 본문 항목 (기본 키 하나, 예: {"id": 1})
+data class {{.ModelName}}IdRequest(
+    val {{pk.Field|raw}}: {{pk.KotlinType}},
+)
+{{end}}
 {{if len(.Enums) > 0 || len(.Joins) > 0}}data class {{.ModelName}}ExtraInfo(
 {{range .Enums}}    val {{.ExtraField|raw}}: String = "",
 {{end}}

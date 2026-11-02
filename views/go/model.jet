@@ -18,14 +18,14 @@ import (
 
 type {{name}} struct {
     {{range items}}        
-    {{.Name}}                {{if .Name == "Id"}}int64{{else}}{{.Type}}{{end}} `json:{{if .Name == passwordColumn}}"-"{{else}}"{{.Name|lower}}"{{end}}` {{end}}
+    {{.Name}}                {{if .Name == "Id"}}int64{{else}}{{.Type}}{{end}} `json:{{if .Name == passwordColumn}}"-"{{else}}"{{jsonKey(.)}}"{{end}}` {{end}}
     
     Extra                    map[string]interface{} `json:"extra"`
 }
 {{if inputName != name}}// {{name}}Update 는 REST 입력용 구조체다. 비밀번호를 입력받을 수 있고, 출력용 {{name}} 은 비밀번호를 json 에서 숨긴다.
 type {{name}}Update struct {
     {{range items}}        
-    {{.Name}}                {{if .Name == "Id"}}int64{{else}}{{.Type}}{{end}} `json:"{{.Name|lower}}"` {{end}}
+    {{.Name}}                {{if .Name == "Id"}}int64{{else}}{{.Type}}{{end}} `json:"{{jsonKey(.)}}"` {{end}}
     
     Extra                    map[string]interface{} `json:"extra"`
 }

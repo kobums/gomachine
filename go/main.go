@@ -54,6 +54,12 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 		return util.CamelCase(str)
 	})
 
+	// 컬럼의 API 이름 (json 태그, 목록 필터 파라미터). 모든 언어가 util.JSONKey 를 쓴다.
+	views.AddGlobal("jsonKey", func(col util.Column) string { return util.JSONKey(col) })
+	views.AddGlobal("startParam", func(col util.Column) string { s, _ := util.RangeParams(col); return s })
+	views.AddGlobal("endParam", func(col util.Column) string { _, e := util.RangeParams(col); return e })
+	views.AddGlobal("isRange", func(col util.Column) bool { return util.IsRangeFilter(col.OriginalType) })
+
 	views.AddGlobal("joinVar", func(join config.GpaJoin) string {
 		if join.Alias != "" {
 			return strings.ToLower(join.Alias)
@@ -471,12 +477,14 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 		routes = append(routes, Route{Method: method, URL: url, FuncName: funcName, ControllerName: controllerName, ParamCode: code, ParamStr: params})
 	}
 
+	idCode := "\t\tid_, err := strconv.ParseInt(c.Params(\"id\"), 10, 64)\n\t\tif err != nil {\n\t\t\t" + badRequest + "\n\t\t}"
+
 	// GET /domain - Index
 	route("Get", "/"+domainName, "Index", "\t\tpage_, _ := strconv.Atoi(c.Query(\"page\"))\n\t\tpagesize_, _ := strconv.Atoi(c.Query(\"pagesize\"))", "page_, pagesize_")
 
 	// GET /domain/:id - Read
 	if hasId {
-		route("Get", "/"+domainName+"/:id", "Read", "\t\tid_, err := strconv.ParseInt(c.Params(\"id\"), 10, 64)\n\t\tif err != nil {\n\t\t\t"+badRequest+"\n\t\t}", "id_")
+		route("Get", "/"+domainName+"/:id", "Read", idCode, "id_")
 	}
 
 	// view 는 읽기 전용이라 쓰기 경로를 만들지 않는다.
@@ -487,14 +495,30 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 		route("Post", "/"+domainName+"/batch", "Insertbatch", batch, "items_")
 	}
 
-	// POST /domain/count - Count
+	// POST /domain/count - Count (예전 경로), GET /domain/count - Count (Spring 과 같은 경로)
 	route("Post", "/"+domainName+"/count", "Count", "", "")
+	route("Get", "/"+domainName+"/count", "Count", "", "")
+
+	// GET /domain/search/{field}?{field}=값 - 컬럼 하나가 같은 행 목록 (Spring 과 같은 경로)
+	for _, item := range items {
+		if !isSearchColumn(item) {
+			continue
+		}
+		key := util.JSONKey(item)
+		code := searchParamCode("value_", key, item.Type)
+		route("Get", "/"+domainName+"/search/"+util.SearchSegment(item), "Search", code, fmt.Sprintf("%q, value_", item.Key))
+	}
 
 	if !isView && hasId {
 		// 본문 원문도 넘겨서 보낸 필드만 기존 행에 덮어쓴다 (부분 수정).
 		route("Put", "/"+domainName, "Update", bodyParam(modelNameForUpdate, false), "item_, c.Body()")
+		// PUT/PATCH /domain/:id - 경로의 id 가 본문의 id 보다 우선한다.
+		byId := bodyParam(modelNameForUpdate, false) + "\n" + idCode + "\n\t\titem_.Id = id_"
+		route("Put", "/"+domainName+"/:id", "Update", byId, "item_, c.Body()")
+		route("Patch", "/"+domainName+"/:id", "Update", byId, "item_, c.Body()")
 		route("Delete", "/"+domainName, "Delete", bodyParam(modelName, false), "item_")
 		route("Delete", "/"+domainName+"/batch", "Deletebatch", bodyParam(modelName, true), "item_")
+		route("Delete", "/"+domainName+"/:id", "Delete", idCode+"\n\t\titem_ := &models."+modelName+"{Id: id_}", "item_")
 	}
 
 	// 커스텀 메서드 경로: 컨트롤러와 같은 해석 결과(funcs)로 매개변수를 만든다.
@@ -503,6 +527,9 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 			routes = append(routes, *r)
 		}
 	}
+
+	// 정적 경로(/count, /batch, /search/x)를 /:id 같은 경로 변수보다 먼저 등록한다 (fiber 는 등록 순서로 찾는다).
+	routes = staticFirst(routes)
 
 	code := ""
 	for _, r := range routes {
@@ -549,9 +576,39 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 	}
 }
 
+// isSearchColumn 은 목록 필터 / GET /{table}/search/{field} 로 찾을 수 있는 컬럼인지 확인한다.
+// Spring 의 IsSearchable 과 같다: id, 비밀번호, []byte 컬럼은 뺀다.
+func isSearchColumn(item util.Column) bool {
+	return item.Name != "Id" && !util.IsPasswordColumn(item.Name) && item.Type != "[]byte" && !item.Primary
+}
+
+// searchParamCode 는 검색 쿼리 파라미터 key 를 컬럼 타입으로 해석해 v 에 담는 코드다. 없거나 해석하지 못하면 400.
+// enum 은 코드(int)로 받는다.
+func searchParamCode(v string, key string, typeName string) string {
+	if strings.Contains(typeName, ".") {
+		typeName = "int"
+	}
+	src := fmt.Sprintf("c.Query(%q)", key)
+	return fmt.Sprintf("\t\tif %s == \"\" {\n\t\t\t%s\n\t\t}\n", src, badRequest) + strings.TrimSuffix(parseCode(v, src, typeName, "\t\t"), "\n")
+}
+
+// staticFirst 는 경로 변수(:x)가 없는 경로를 앞으로 옮긴다 (같은 그룹 안의 순서는 유지).
+func staticFirst(routes []Route) []Route {
+	ret := make([]Route, 0, len(routes))
+	for _, dynamic := range []bool{false, true} {
+		for _, r := range routes {
+			if strings.Contains(r.URL, ":") == dynamic {
+				ret = append(ret, r)
+			}
+		}
+	}
+	return ret
+}
+
 // routeFromFunc 는 커스텀 메서드 하나의 경로를 만든다.
 // Get/Find/Count: GET /{domain}/{get|find|count}/{by 뒤 이름}/:{매개변수}..., 값을 해석하지 못하면 400.
-// UpdateXByY: PUT /{domain}/{x}/{y}, JSON 본문에서 값을 꺼낸다. DeleteBy 는 경로를 만들지 않는다 (예전과 같음).
+// DeleteBy: DELETE /{domain}/delete/{by 뒤 이름}/:{매개변수}... (컨트롤러가 소유권을 검사한다).
+// UpdateXByY: PUT /{domain}/{x}/{y}, JSON 본문에서 값을 꺼낸다 (key 는 JSONKey).
 func routeFromFunc(fn util.Func, domainName string, controllerName string) *Route {
 	vars := make([]string, 0)
 	for _, w := range fn.Wheres {
@@ -559,7 +616,7 @@ func routeFromFunc(fn util.Func, domainName string, controllerName string) *Rout
 	}
 
 	switch fn.Kind {
-	case "Get", "Find", "Count":
+	case "Get", "Find", "Count", "Delete":
 		segment := strings.ToLower(fn.Name[len(fn.Kind)+2:])
 		url := fmt.Sprintf("/%s/%s/%s", domainName, strings.ToLower(fn.Kind), segment)
 		code := make([]string, 0)
@@ -572,7 +629,11 @@ func routeFromFunc(fn util.Func, domainName string, controllerName string) *Rout
 			url += "/:" + name
 			code = append(code, pathParamCode(vars[i], name, w.Type))
 		}
-		return &Route{Method: "Get", URL: url, FuncName: fn.Name, ControllerName: controllerName, ParamCode: strings.Join(code, "\n"), ParamStr: strings.Join(vars, ", ")}
+		method := "Get"
+		if fn.Kind == "Delete" {
+			method = "Delete"
+		}
+		return &Route{Method: method, URL: url, FuncName: fn.Name, ControllerName: controllerName, ParamCode: strings.Join(code, "\n"), ParamStr: strings.Join(vars, ", ")}
 	case "Update":
 		sets := make([]string, 0)
 		wheres := make([]string, 0)
@@ -583,7 +644,7 @@ func routeFromFunc(fn util.Func, domainName string, controllerName string) *Rout
 			} else {
 				wheres = append(wheres, strings.ToLower(w.Column))
 			}
-			code += bodyParamCode(vars[i], strings.ToLower(w.Column), w.Type)
+			code += bodyParamCode(vars[i], util.LowerCamel(w.Key), w.Type)
 		}
 		return &Route{Method: "Put", URL: fmt.Sprintf("/%s/%s/%s", domainName, strings.Join(sets, ""), strings.Join(wheres, "")), FuncName: fn.Name, ControllerName: controllerName, ParamCode: code, ParamStr: strings.Join(vars, ", ")}
 	}

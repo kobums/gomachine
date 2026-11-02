@@ -34,7 +34,7 @@ func Setup{{modelName}}Routes(group fiber.Router) {
 {{.ParamCode|raw}}
 		var controller {{.ControllerName}}
 		controller.Init(c)
-		controller.{{.FuncName}}({{.ParamStr}})
+		controller.{{.FuncName}}({{.ParamStr|raw}})
 		controller.Close()
 		return c.JSON(controller.Result)
 	})

@@ -61,6 +61,9 @@ func ProcessDart(packageName string, tableName string, prefix string, items []ut
 		return columns
 	})
 
+	// JSON key 는 모든 언어가 util.JSONKey 를 쓴다 (createddate, created_at → createdAt, userId → userid).
+	views.AddGlobal("jsonKey", func(col util.Column) string { return util.JSONKey(col) })
+
 	v := make(jet.VarMap)
 	v.Set("version", version)
 	v.Set("packageName", packageName)
@@ -82,6 +85,20 @@ func ProcessDart(packageName string, tableName string, prefix string, items []ut
 
 	v.Set("items", items)
 	v.Set("auth", auth)
+	// id 컬럼이 있으면 수정/삭제를 /{table}/{id} 로 부른다 (Go, Spring 모두 있는 경로).
+	hasId := false
+	// 엔티티에 item 필드가 있으면 Go 래퍼({item})와 헷갈리므로 id 가 있는 응답은 엔티티로 본다.
+	hasItemKey := false
+	for _, item := range items {
+		if item.Name == "Id" {
+			hasId = true
+		}
+		if util.JSONKey(item) == "item" {
+			hasItemKey = true
+		}
+	}
+	v.Set("hasId", hasId)
+	v.Set("hasItemKey", hasItemKey)
 	if gpa == nil {
 		v.Set("consts", make([]string, 0))
 		v.Set("methods", make([]string, 0))

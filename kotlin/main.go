@@ -35,6 +35,9 @@ type KotlinColumn struct {
 	Prop         string // 엔티티 프로퍼티의 JPA 속성 이름 (backtick 없음, 조인 컬럼은 {join}Id)
 	EntityField  string // 엔티티 프로퍼티 이름 (조인 컬럼은 {join}Id)
 	RespType     string // 응답 타입 (null 허용이면 ?)
+	SearchPath   string // GET /search/{SearchPath} (util.SearchSegment)
+	StartParam   string // 날짜 범위 필터 파라미터 (util.RangeParams)
+	EndParam     string
 }
 
 // KotlinSort 는 정렬 파라미터 이름(소문자)과 엔티티 프로퍼티의 매핑이다.
@@ -148,33 +151,15 @@ func buildEntityGraphPaths(joins []KotlinJoin) []EntityGraphPath {
 	return paths
 }
 
-// kotlinField 는 컬럼의 Kotlin 프로퍼티 이름이다. 밑줄 하나짜리 컬럼은 예전과 같이 전부 소문자 (createddate),
-// 밑줄이 더 있으면 camelCase (created_at → createdAt). 예약어는 backtick 으로 감싼다.
+// kotlinField 는 컬럼의 Kotlin 프로퍼티 이름이다. JSON key 와 요청 파라미터 이름이 되므로 util.JSONKey 를 쓴다
+// (createddate, created_at → createdAt, userId → userid). 예약어는 backtick 으로 감싼다.
 func kotlinField(col util.Column) string {
-	key := col.Key
-	if key == "" {
-		key = col.Name
-	}
-	return util.KotlinIdent(util.LowerCamel(key))
+	return util.KotlinIdent(util.JSONKey(col))
 }
 
 // findPrimaryKey 는 기본 키 컬럼 위치다. gpa.primary > 이름이 id 인 컬럼 > 첫 번째 컬럼 순서.
 func findPrimaryKey(columns []util.Column, gpa *config.Gpa) int {
-	if gpa != nil {
-		for _, p := range gpa.Primary {
-			for i, col := range columns {
-				if util.MatchColumn(col, p) {
-					return i
-				}
-			}
-		}
-	}
-	for i, col := range columns {
-		if col.Name == "Id" {
-			return i
-		}
-	}
-	return 0
+	return util.PrimaryKeyIndex(columns, gpa)
 }
 
 func defaultValue(kotlinType string) string {
@@ -314,6 +299,8 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 		if isNullable {
 			kotlinCol.RespType += "?"
 		}
+		kotlinCol.SearchPath = util.SearchSegment(col)
+		kotlinCol.StartParam, kotlinCol.EndParam = util.RangeParams(col)
 		if col.Type == "LocalDateTime" {
 			kotlinCol.DateFormat = "DATE_TIME"
 		} else if col.Type == "LocalDate" {

@@ -37,8 +37,8 @@ buildtool-model <target_path> [language] [package_name]
    - `views/go/`: Go templates (model.jet, rest.jet, const.jet, domain_router.jet)
    - `views/dart/`: Dart/Flutter templates (model.jet, params.jet, provider.jet, repository.jet)
    - `views/kotlin/`: Kotlin/Spring Boot templates (entity.jet, repository.jet, service.jet, controller.jet)
-   - `views/react/`: React TypeScript templates (model.jet, type.jet)
-   - `views/vue/`: Vue 3 + TypeScript templates (type.jet, model.jet, composable.jet). Template data comes from `react.BuildTemplateData`
+   - `views/react/`: React TypeScript templates (contract.jet, model.jet, type.jet)
+   - `views/vue/`: Vue 3 + TypeScript templates (contract.jet, type.jet, model.jet, composable.jet; contract/model/type are kept identical to the react ones). Template data comes from `react.BuildTemplateData`
 
 3. **Code Generation** (`main.go`, `go/`, `dart/`, `kotlin/`)
    - Connects to MySQL database via `information_schema`
@@ -104,9 +104,14 @@ Columns listed in `table[].map` become enum types (Go: `{table}.{Name}` in `mode
 ### Naming
 
 - Tables: `_tb` / `_vw` suffix is stripped (`user_role_tb` → model `UserRole`, files/packages/URLs `userrole`). `_vw` tables are read-only (no insert/update/delete code). If two tables produce the same name (e.g. `user_tb` and `user_vw`) the `_tb` keeps it and the other is renamed (`UserView`).
-- Columns: the prefix before the first `_` is dropped (`p_created_at` → key `created_at`, Go field `CreatedAt`, Kotlin property `createdAt`). Single-underscore columns keep the old names (`u_createddate` → `Createddate` / `createddate`).
+- Columns: the prefix before the first `_` is dropped (`p_created_at` → key `created_at`, Go field `CreatedAt`, JSON key `createdAt`). Single-underscore columns keep the old names (`u_createddate` → `Createddate` / `createddate`).
 - Columns that are Go/Kotlin keywords get safe identifiers (Go parameter `type_`, Kotlin `` `class` ``).
-- Custom methods (`table[].method`) are parsed by `util.ParseFuncs`; methods that don't match columns are skipped with a warning.
+- JSON keys / filter params / search paths come from `util.JSONKey`, `util.SearchSegment`, `util.RangeParams` and must be used by every generator (Go json tags, Kotlin properties, TS fields, Dart json keys). `json_keys_test.go` checks they agree.
+- Custom methods (`table[].method`) are parsed by `util.ParseFuncs` (also used by the TS search methods); methods that don't match columns are skipped with a warning.
+
+### HTTP contract
+
+React/Vue/Dart must work against both the Go and the Spring backend. README.md "HTTP 계약" documents the routes, response shapes and error handling. Rules: on the Go side only add routes/fields (existing Go clients depend on the old ones); register static routes before `/:id`; TS response normalization lives in the generated `src/models/contract.ts`.
 
 ## Dependencies
 

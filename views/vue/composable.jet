@@ -1,9 +1,12 @@
 // Auto-generated Vue 3 composable for {{.ModelName}}
 // Generated from table: {{.TableName}}
+// Go / Spring 어느 백엔드든 같게 동작한다 (models/contract.ts). 실패(HTTP 에러, Go 의 code 에러)는 error 에 담긴다.
 import { ref } from 'vue';
 import type { Ref } from 'vue';
 import {{.ModelName}}Model from '../models/{{.TableName | lower}}';
 import type { {{.ModelName}}, {{.ModelName}}SearchParams } from '../types/{{.TableName | lower}}';
+
+type Id = NonNullable<{{.ModelName}}['{{.PK.Key}}']>;
 
 export function use{{.ModelName}}() {
   const items: Ref<{{.ModelName}}[]> = ref([]);
@@ -28,8 +31,8 @@ export function use{{.ModelName}}() {
   async function fetchPage(params: {{.ModelName}}SearchParams = {}) {
     const res = await run(() => {{.ModelName}}Model.findpage(params));
     if (res) {
-      items.value = res.content || [];
-      total.value = res.totalElements || 0;
+      items.value = res.items;
+      total.value = res.total;
     }
   }
 
@@ -41,20 +44,20 @@ export function use{{.ModelName}}() {
     }
   }
 
-  async function fetchOne(id: number) {
+  async function fetchOne(id: Id) {
     const res = await run(() => {{.ModelName}}Model.get(id));
-    item.value = res ? res.item : null;
+    item.value = res ?? null;
   }
 
   async function create(data: Partial<{{.ModelName}}>) {
     return run(() => {{.ModelName}}Model.insert(data));
   }
 
-  async function update(id: number, data: Partial<{{.ModelName}}>) {
+  async function update(id: Id, data: Partial<{{.ModelName}}>) {
     return run(() => {{.ModelName}}Model.update(id, data));
   }
 
-  async function remove(id: number) {
+  async function remove(id: Id) {
     return run(() => {{.ModelName}}Model.remove(id));
   }
 

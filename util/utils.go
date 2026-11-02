@@ -307,6 +307,57 @@ func LowerCamel(str string) string {
 	return b.String()
 }
 
+// JSONKey 는 컬럼의 API 이름이다. JSON key, 목록 필터 / 검색 파라미터 이름으로 모든 백엔드(Go, Spring)와
+// 프론트엔드(TypeScript, Dart)가 같은 이름을 쓴다. 접두사 뺀 컬럼 이름을 LowerCamel 로 바꾼다.
+// createddate → createddate, created_at → createdAt, userId → userid (Go 의 예전 json 태그와 같다).
+func JSONKey(col Column) string {
+	key := col.Key
+	if key == "" {
+		key = col.Name
+	}
+	return LowerCamel(key)
+}
+
+// SearchSegment 는 GET /{table}/search/{segment} 의 경로 이름이다 (JSONKey 의 소문자).
+func SearchSegment(col Column) string {
+	return strings.ToLower(JSONKey(col))
+}
+
+// RangeParams 는 날짜 컬럼 목록 필터의 범위 파라미터 이름이다 (start/end + JSONKey 소문자).
+// createddate → startcreateddate / endcreateddate, created_at → startcreatedat / endcreatedat.
+func RangeParams(col Column) (string, string) {
+	lower := strings.ToLower(JSONKey(col))
+	return "start" + lower, "end" + lower
+}
+
+// PrimaryKeyIndex 는 기본 키 컬럼 위치다. gpa.primary > 이름이 id 인 컬럼 > 첫 번째 컬럼 순서 (Spring / TypeScript).
+func PrimaryKeyIndex(columns []Column, gpa *config.Gpa) int {
+	if gpa != nil {
+		for _, p := range gpa.Primary {
+			for i, col := range columns {
+				if MatchColumn(col, p) {
+					return i
+				}
+			}
+		}
+	}
+	for i, col := range columns {
+		if col.Name == "Id" {
+			return i
+		}
+	}
+	return 0
+}
+
+// IsRangeFilter 는 목록 필터에서 start/end 범위로 거르는 날짜 컬럼인지 확인한다 (date, datetime, timestamp).
+func IsRangeFilter(originalType string) bool {
+	switch strings.ToLower(originalType) {
+	case "date", "datetime", "timestamp":
+		return true
+	}
+	return false
+}
+
 // NewColumn 은 information_schema 의 컬럼 하나를 생성기용 Column 으로 바꾼다.
 func NewColumn(tableName string, rawName string, dataType string, gpa *config.Gpa, cnf config.ModelConfig) Column {
 	key := GetName(rawName)

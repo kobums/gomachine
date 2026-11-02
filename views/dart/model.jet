@@ -33,13 +33,13 @@ class {{name}} {
 
   factory {{name}}.fromJson(Map<String, dynamic> json) {
     return {{name}}(
-{{range items}}      {{.Name|lower}}: {{if .Type == "double"}}(json['{{.Name|lower}}'] as num{{if .Nullable}}?{{end}}){{if .Nullable}}?{{end}}.toDouble(){{else if .Type == "String" || .Type == "int" || .Type == "bool"}}json['{{.Name|lower}}'] as {{.Type}}{{if .Nullable}}?{{end}}{{else if isEnum(.Type, enums)}}{{if .Nullable}}json['{{.Name|lower}}'] == null ? null : {{end}}{{name}}{{.Type}}.fromCode(json['{{.Name|lower}}'] as int){{else}}{{.Type}}.fromJson(json['{{.Name|lower}}']){{end}},
+{{range items}}      {{.Name|lower}}: {{if .Type == "double"}}(json['{{jsonKey(.)}}'] as num{{if .Nullable}}?{{end}}){{if .Nullable}}?{{end}}.toDouble(){{else if .Type == "String" || .Type == "int" || .Type == "bool"}}json['{{jsonKey(.)}}'] as {{.Type}}{{if .Nullable}}?{{end}}{{else if isEnum(.Type, enums)}}{{if .Nullable}}json['{{jsonKey(.)}}'] == null ? null : {{end}}{{name}}{{.Type}}.fromCode(json['{{jsonKey(.)}}'] as int){{else}}{{.Type}}.fromJson(json['{{jsonKey(.)}}']){{end}},
 {{end}}      extra: json['extra'] == null ? <String, dynamic>{} : json['extra'] as Map<String, dynamic>,
     );
   }
 
   Map<String, dynamic> toJson() => {
-{{range items}}    '{{.Name|lower}}': {{if .Type == "double" || .Type == "String" || .Type == "int" || .Type == "bool"}}{{.Name|lower}}{{else if isEnum(.Type, enums)}}{{.Name|lower}}{{if .Nullable}}?{{end}}.code{{else}}{{.Name|lower}}{{if .Nullable}}?{{end}}.toJson(){{end}},
+{{range items}}    '{{jsonKey(.)}}': {{if .Type == "double" || .Type == "String" || .Type == "int" || .Type == "bool"}}{{.Name|lower}}{{else if isEnum(.Type, enums)}}{{.Name|lower}}{{if .Nullable}}?{{end}}.code{{else}}{{.Name|lower}}{{if .Nullable}}?{{end}}.toJson(){{end}},
 {{end}}  };
 
   {{name}} clone() {
@@ -47,11 +47,15 @@ class {{name}} {
   }
 }
 
+// Go 와 Spring 백엔드 응답을 모두 읽는다.
+// 목록: Spring {content, totalElements} / Go {items, total}, 개수: Spring {count} / Go {total, count},
+// 단건: Spring 엔티티 / Go {item}.
 class {{name}}Manager {
   static const baseUrl = '/api/{{name|lower}}';
 
+  // page 는 1 부터 (Go, Spring 같음).
   static Future<List<{{name}}>> find({
-    int page = 0,
+    int page = 1,
     int pagesize = 20,
     String? params,
   }) async {
@@ -59,29 +63,38 @@ class {{name}}Manager {
       'page': page,
       'pagesize': pagesize,
     }, params);
-    if (result == null || result['content'] == null) {
+    var list = result == null ? null : (result['content'] ?? result['items']);
+    if (list == null) {
       return List<{{name}}>.empty(growable: true);
     }
 
-    return result['content'].map<{{name}}>((json) => {{name}}.fromJson(json)).toList();
+    return list.map<{{name}}>((json) => {{name}}.fromJson(json)).toList();
   }
 
   static Future<int> count({String? params}) async {
     var result = await Http.get('$baseUrl/count', {}, params);
-    if (result == null || result['total'] == null) {
+    var value = result == null ? null : (result['count'] ?? result['total']);
+    if (value == null) {
       return 0;
     }
+    if (value is num) {
+      return value.toInt();
+    }
 
-    return int.parse(result['total']);
+    return int.tryParse(value.toString()) ?? 0;
   }
 
   static Future<{{name}}> get(int id) async {
     var result = await Http.get('$baseUrl/$id');
-    if (result == null || result['item'] == null) {
+    var data = result;
+    if (result is Map && result.containsKey('item'){{if hasItemKey}} && !result.containsKey('id'){{end}}) {
+      data = result['item'];
+    }
+    if (data == null) {
       return {{name}}();
     }
 
-    return {{name}}.fromJson(result);
+    return {{name}}.fromJson(data);
   }
 
   static Future<int> insert({{name}} item) async {
@@ -90,10 +103,12 @@ class {{name}}Manager {
   }
 
   static update({{name}} item) async {
-    await Http.put(baseUrl, item.toJson());
-  }
+{{if hasId}}    await Http.put('$baseUrl/${item.id}', item.toJson());
+{{else}}    await Http.put(baseUrl, item.toJson());
+{{end}}  }
 
   static delete({{name}} item) async {
-    await Http.delete(baseUrl, item.toJson());
-  }
+{{if hasId}}    await Http.delete('$baseUrl/${item.id}', item.toJson());
+{{else}}    await Http.delete(baseUrl, item.toJson());
+{{end}}  }
 }

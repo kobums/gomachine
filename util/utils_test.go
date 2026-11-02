@@ -38,6 +38,30 @@ func TestNames(t *testing.T) {
 	}
 }
 
+// JSONKey 는 Go json 태그, Kotlin 프로퍼티, TypeScript key, Dart json key 가 함께 쓰는 이름이다.
+func TestJSONKey(t *testing.T) {
+	cases := []struct{ raw, key, segment, start, end string }{
+		{"u_createddate", "createddate", "createddate", "startcreateddate", "endcreateddate"},
+		{"u_loginid", "loginid", "loginid", "startloginid", "endloginid"},
+		{"p_created_at", "createdAt", "createdat", "startcreatedat", "endcreatedat"},
+		{"a_userId", "userid", "userid", "startuserid", "enduserid"},
+		{"ur_user_id", "userId", "userid", "startuserid", "enduserid"},
+		{"id", "id", "id", "startid", "endid"},
+	}
+	for _, c := range cases {
+		col := NewColumn("x_tb", c.raw, "int", nil, config.ModelConfig{Language: "go"})
+		if got := JSONKey(col); got != c.key {
+			t.Errorf("JSONKey(%q) = %q, want %q", c.raw, got, c.key)
+		}
+		if got := SearchSegment(col); got != c.segment {
+			t.Errorf("SearchSegment(%q) = %q, want %q", c.raw, got, c.segment)
+		}
+		if s, e := RangeParams(col); s != c.start || e != c.end {
+			t.Errorf("RangeParams(%q) = %q, %q", c.raw, s, e)
+		}
+	}
+}
+
 func TestTableNames(t *testing.T) {
 	tableNameAlias = map[string]string{}
 	cases := []struct{ in, base, model, file, typ string }{
