@@ -1,87 +1,109 @@
-import { get, post, put, patch, del } from '../services/api';
-import type {
-  {{.ModelName}},
-  ApiResponse,
-  ApiSingleResponse,
-  {{.ModelName}}SearchParams,
-} from '../types/{{.TableName | lower}}';
+{{write := !.IsView}}{{byId := .HasId && !.IsView}}import { get{{if write}}, post{{end}}{{if byId}}, put, patch, del{{end}} } from '../services/api';
+import type { {{.ModelName}}, {{.ModelName}}SearchParams } from '../types/{{.TableName | lower}}';
+import { toCount{{if byId}}, toDone{{end}}{{if .HasId}}, toItem{{end}}, toList, toPage{{if write}}, toSaved, toSavedList{{end}} } from './contract';
+import type { {{if write || .HasId}}EntityShape, {{end}}Page } from './contract';
 
+// Go / Spring 어느 백엔드든 같은 결과를 돌려준다 (contract.ts). Go 의 code 에러는 ApiError 로 던진다.
+{{if .IsView}}// view 는 읽기 전용이라 쓰기 메서드(insert/update/patch/remove)가 없다.
+{{end}}{{if !.HasId}}// id 컬럼이 없어 Go 에 /{table}/:id 경로가 없으므로 get/update/patch/remove 가 없다.
+{{end}}{{if .HasId}}type Id = NonNullable<{{.ModelName}}['{{.PK.Key}}']>;
+{{end}}
+{{if write || .HasId}}const SHAPE: EntityShape = { strict: {{if .StrictShape}}true{{else}}false{{end}}, probe: '{{.PK.Key}}' };
+{{end}}
 export default class {{.ModelName}}Model {
-{{range .Enums}}  // {{.Name | title}} constants (from backend: enums/{{.Name | lower}}/Enums.kt)
+{{range .Enums}}  // {{.Name | title}} 코드 (model.json map data 위치, Go / Spring 과 같은 값)
   static readonly {{.Name | lower}} = {
-{{range .Data}}{{if .Key}}    {{.Key | upper}}: {{.Index}},
-{{end}}{{end}}  };
+{{range .Data}}{{if .Key}}    {{.Key | upper}}: {{.Code}},
+{{end}}{{end}}  } as const;
   static readonly {{.Name | lower}}s = [
-{{range .Data}}    '{{.Label}}',
+{{range .Data}}    {{.Quote|raw}},
 {{end}}  ];
 
   static get{{.Name | title}}(value: number): string {
     return this.{{.Name | lower}}s[value] || String(value);
   }
 
-{{end}}  // CRUD operations
-  static async insert(item: Partial<{{.ModelName}}>) {
-    const res = await post<{{.ModelName}}>('/{{.TableName | lower}}', item);
-    return res.data;
+{{end}}{{if !.IsView}}  // 생성. Spring 은 저장한 엔티티, Go 는 {id} 만 돌려준다.
+  static async insert(item: Partial<{{.ModelName}}>): Promise<Partial<{{.ModelName}}>> {
+    const res = await post<unknown>('/{{.TableName | lower}}', item);
+    return toSaved<{{.ModelName}}>(res.data, SHAPE);
   }
 
-  static async insertBatch(items: Partial<{{.ModelName}}>[]) {
-    const res = await post<{{.ModelName}}[]>('/{{.TableName | lower}}/batch', items);
-    return res.data;
+  // 여러 개 생성. Spring 은 저장한 엔티티 배열, Go 는 빈 배열이다.
+  static async insertBatch(items: Partial<{{.ModelName}}>[]): Promise<Partial<{{.ModelName}}>[]> {
+    const res = await post<unknown>('/{{.TableName | lower}}/batch', items);
+    return toSavedList<{{.ModelName}}>(res.data);
+  }
+{{end}}{{if .HasId && !.IsView}}
+  // PUT /{table}/{id}: 보낸 필드만 바꾼다 (두 백엔드 모두 부분 수정). 경로의 id 가 본문 id 보다 우선한다.
+  static async update(id: Id, item: Partial<{{.ModelName}}>): Promise<Partial<{{.ModelName}}>> {
+    const res = await put<unknown>(`/{{.TableName | lower}}/${encodeURIComponent(String(id))}`, item);
+    return toSaved<{{.ModelName}}>(res.data, SHAPE);
   }
 
-  static async update(id: number, item: Partial<{{.ModelName}}>) {
-    const res = await put<{{.ModelName}}>(`/{{.TableName | lower}}/${id}`, item);
-    return res.data;
+  static async patch(id: Id, item: Partial<{{.ModelName}}>): Promise<Partial<{{.ModelName}}>> {
+    const res = await patch<unknown>(`/{{.TableName | lower}}/${encodeURIComponent(String(id))}`, item);
+    return toSaved<{{.ModelName}}>(res.data, SHAPE);
   }
 
-  static async patch(id: number, item: Partial<{{.ModelName}}>) {
-    const res = await patch<{{.ModelName}}>(`/{{.TableName | lower}}/${id}`, item);
-    return res.data;
+  static async remove(id: Id): Promise<void> {
+    const res = await del<unknown>(`/{{.TableName | lower}}/${encodeURIComponent(String(id))}`);
+    toDone(res.data);
   }
 
-  static async remove(id: number) {
-    const res = await del<void>(`/{{.TableName | lower}}/${id}`);
-    return res.data;
+  // DELETE /{table}/batch 본문은 [{"{{.PK.Key}}": 1}, ...]
+  static async removeBatch(ids: Id[]): Promise<void> {
+    const res = await del<unknown>('/{{.TableName | lower}}/batch', { data: ids.map((id) => ({ {{.PK.Key}}: id })) });
+    toDone(res.data);
+  }
+{{end}}
+
+  static async find(params?: {{.ModelName}}SearchParams): Promise<{{.ModelName}}[]> {
+    const res = await get<unknown>('/{{.TableName | lower}}', { params });
+    return toList<{{.ModelName}}>(res.data);
   }
 
-  static async removeBatch(ids: number[]) {
-    const res = await del<void>('/{{.TableName | lower}}/batch', { data: ids });
-    return res.data;
+  // 전체 행: pagesize 1000 씩 페이지를 읽어 모은다 (Go / Spring 모두 pagesize 최대 10000).
+  // 받은 행이 pagesize 보다 적거나 전체 개수(total)만큼 모이면 멈춘다.
+  static async findall(params: {{.ModelName}}SearchParams = {}): Promise<{{.ModelName}}[]> {
+    const pagesize = 1000;
+    const all: {{.ModelName}}[] = [];
+    for (let page = 1; ; page++) {
+      const res = await get<unknown>('/{{.TableName | lower}}', {
+        params: { ...params, page, pagesize },
+      });
+      const list = toPage<{{.ModelName}}>(res.data);
+      all.push(...list.items);
+      if (list.items.length < pagesize || all.length >= list.total) {
+        return all;
+      }
+    }
   }
 
-  static async find(params?: {{.ModelName}}SearchParams) {
-    const res = await get<ApiResponse<{{.ModelName}}>>('/{{.TableName | lower}}', { params });
-    return res.data.content || [];
+  // page 는 1 부터. total 은 Spring totalElements / Go total.
+  static async findpage(params?: {{.ModelName}}SearchParams): Promise<Page<{{.ModelName}}>> {
+    const res = await get<unknown>('/{{.TableName | lower}}', { params });
+    return toPage<{{.ModelName}}>(res.data);
   }
 
-  static async findall(params: {{.ModelName}}SearchParams = {}) {
-    const res = await get<ApiResponse<{{.ModelName}}>>('/{{.TableName | lower}}', {
-      params: { ...params, page: 0, pagesize: 9999 },
+  static async count(params?: {{.ModelName}}SearchParams): Promise<number> {
+    const res = await get<unknown>('/{{.TableName | lower}}/count', { params });
+    return toCount(res.data);
+  }
+
+{{if .HasId}}
+  // 없으면 null (Go {item: null}, Spring 404 는 api 래퍼가 던진다).
+  static async get(id: Id): Promise<{{.ModelName}} | null> {
+    const res = await get<unknown>(`/{{.TableName | lower}}/${encodeURIComponent(String(id))}`);
+    return toItem<{{.ModelName}}>(res.data, SHAPE);
+  }
+{{end}}{{range .SearchMethods}}
+  // GET /{{.TableName}}/search/{{.Segment}}?{{.Key}}= (Go: {items}, Spring: 배열)
+  static async {{.MethodName}}({{.ParamName}}: {{.ParamType|raw}}): Promise<{{if .IsSingle}}{{.ModelName}} | null{{else}}{{.ModelName}}[]{{end}}> {
+    const res = await get<unknown>('/{{.TableName | lower}}/search/{{.Segment}}', {
+      params: { {{.Key}}: {{.ParamName}} },
     });
-    return res.data.content || [];
-  }
-
-  static async findpage(params?: {{.ModelName}}SearchParams) {
-    const res = await get<ApiResponse<{{.ModelName}}>>('/{{.TableName | lower}}', { params });
-    return res.data
-  }
-
-  static async count(params?: {{.ModelName}}SearchParams) {
-    const res = await get<{ count: number }>('/{{.TableName | lower}}/count', { params });
-    return res.data.count || 0;
-  }
-
-  static async get(id: number) {
-    const res = await get<ApiSingleResponse<{{.ModelName}}>>(`/{{.TableName | lower}}/${id}`);
-    return res.data;
-  }
-{{range .SearchMethods}}
-  // 백엔드 /search/{field} 는 목록(List)을 그대로 돌려준다.
-  static async {{.MethodName}}({{.ParamName}}: {{.ParamType}}{{if not .IsSingle}}, params?: {{.ModelName}}SearchParams{{end}}) {
-    const res = await get<{{.ModelName}}[]>('/{{.TableName | lower}}/search/{{.FieldName | lower}}', {
-      params: { {{if not .IsSingle}}...params, {{end}}{{.FieldName | lower}}: {{.ParamName}} },
-    });
-    return {{if .IsSingle}}res.data?.[0] ?? null{{else}}res.data || []{{end}};
+    const list = toList<{{.ModelName}}>(res.data);
+    return {{if .IsSingle}}list[0] ?? null{{else}}list{{end}};
   }
 {{end}}}

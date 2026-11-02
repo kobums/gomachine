@@ -1,11 +1,11 @@
-package {{name|lower}}
+package {{constClause}}
 
 type Column int
 
 const (
     _ Column = iota
     {{range items}}
-    Column{{.Name|title}}{{end}}
+    Column{{.Name}}{{end}}
 )
 
 type Params struct {
@@ -13,44 +13,47 @@ type Params struct {
     Value interface{}
 }
 
-{{range ic, c := consts}}
-type {{c.Name|title}} int
+{{range consts}}
+// {{.Name}} 의 코드는 model.json map data 배열 안의 위치다 (Kotlin / TypeScript / Dart 와 같은 값). 빈 항목은 자리만 차지한다.
+type {{.Name}} int
 
 const (
-    _ {{c.Name|title}}  = iota
-{{range c.Data}}{{if . != ""}}    {{c.Name|title}}{{.|first|title}}{{end}}
+{{e := .}}{{range .Items}}    {{.Ident}} {{e.Name}} = {{.Code}}
 {{end}})
 
-var {{c.Name|title}}s = []string{ {{range i, v := c.Data}}{{if i > 0}}, {{end}}"{{v|last}}"{{end}} }
+// {{.Name}}s 는 코드로 찾는 표시 이름이다 (빈 항목은 "").
+var {{.Name}}s = []string{ {{range i, v := .Labels}}{{if i > 0}}, {{end}}{{v|raw}}{{end}} }
 {{end}}
 
 {{range consts}}
-func Get{{.Name|title}}(value {{.Name|title}}) string {
+// Get{{.Name}} 은 코드의 표시 이름이다. 모르는 코드면 "".
+func Get{{.Name}}(value {{.Name}}) string {
     i := int(value)
-    if i <= 0 || i >= len({{.Name|title}}s) {
+    if i < 0 || i >= len({{.Name}}s) {
         return ""
     }
-     
-    return {{.Name|title}}s[i]
+
+    return {{.Name}}s[i]
 }
 
-func Find{{.Name|title}}(value string) {{.Name|title}} {
-    for i := 1; i < len({{.Name|title}}s); i++ {
-        if {{.Name|title}}s[i] == value {
-            return {{.Name|title}}(i)
+// Find{{.Name}} 은 표시 이름의 코드다. 없으면 {{if .HasZero}}-1 (코드 0 이 실제 값이다){{else}}0{{end}}.
+func Find{{.Name}}(value string) {{.Name}} {
+    for i := 0; i < len({{.Name}}s); i++ {
+        if {{.Name}}s[i] != "" && {{.Name}}s[i] == value {
+            return {{.Name}}(i)
         }
     }
-     
-    return 0
+
+    return {{if .HasZero}}-1{{else}}0{{end}}
 }
 
-func Convert{{.Name|title}}(value []int) []{{.Name|title}} {
-     items := make([]{{.Name|title}}, 0)
+func Convert{{.Name}}(value []int) []{{.Name}} {
+     items := make([]{{.Name}}, 0)
 
-     for item := range value {
-         items = append(items, {{.Name|title}}(item))
+     for _, item := range value {
+         items = append(items, {{.Name}}(item))
      }
-     
+
      return items
 }
 {{end}}

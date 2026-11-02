@@ -1,10 +1,74 @@
-import 'package:app/config/http.dart';
+{{if usesBool}}import 'dart:convert';
+
+{{end}}import 'package:app/config/http.dart';
 {{range items}}{{if .Type != "double" && .Type != "String" && .Type != "int" && .Type != "bool" && !isEnum(.Type, enums)}}import 'package:gym/models/{{.Type|lower}}.dart';
 {{end}}{{end}}
-{{range enums}}
+
+// Go 와 Spring 의 값 차이를 너그럽게 읽는다: tinyint 는 Go bool / Spring 숫자, bit 는 Go base64 문자열 / Spring bool,
+// 숫자가 문자열로 올 수도 있다.
+{{if usesBool}}bool _toBool(dynamic v) {
+  if (v is bool) {
+    return v;
+  }
+  if (v is num) {
+    return v != 0;
+  }
+  if (v is String) {
+    final s = v.trim();
+    final lower = s.toLowerCase();
+    if (lower == 'true' || lower == '1') {
+      return true;
+    }
+    if (lower == 'false' || lower == '0' || s.isEmpty) {
+      return false;
+    }
+    try {
+      return base64Decode(s).any((b) => b != 0);
+    } catch (_) {
+      return false;
+    }
+  }
+  return false;
+}
+
+{{end}}{{if usesInt}}int _toInt(dynamic v) {
+  if (v is int) {
+    return v;
+  }
+  if (v is num) {
+    return v.toInt();
+  }
+  if (v is bool) {
+    return v ? 1 : 0;
+  }
+  if (v is String) {
+    return int.tryParse(v.trim()) ?? double.tryParse(v.trim())?.toInt() ?? 0;
+  }
+  return 0;
+}
+
+{{end}}{{if usesDouble}}double _toDouble(dynamic v) {
+  if (v is num) {
+    return v.toDouble();
+  }
+  if (v is String) {
+    return double.tryParse(v.trim()) ?? 0.0;
+  }
+  return 0.0;
+}
+
+{{end}}{{if usesString}}String _toStr(dynamic v) {
+  if (v == null) {
+    return '';
+  }
+  return v is String ? v : v.toString();
+}
+
+{{end}}{{range enums}}
+// 코드(code)는 model.json map data 배열 안의 위치다 (Go / Kotlin / TypeScript 와 같은 값).
 enum {{name}}{{.Name}} {
-  none(0, ''),
-{{range .Data}}  {{.Key}}({{.Code}}, '{{.Label}}'),
+{{if .HasNone}}  none(0, ''),
+{{end}}{{range .Data}}  {{.Key}}({{.Code}}, {{dartString(.Label)|raw}}),
 {{end}};
 
   const {{name}}{{.Name}}(this.code, this.label);
@@ -16,29 +80,29 @@ enum {{name}}{{.Name}} {
   String toString() => label;
 
   static {{name}}{{.Name}} fromCode(int code) {
-    return {{name}}{{.Name}}.values.firstWhere((e) => e.code == code, orElse: () => {{name}}{{.Name}}.none);
+    return {{name}}{{.Name}}.values.firstWhere((e) => e.code == code, orElse: () => {{name}}{{.Name}}.{{.Zero}});
   }
 }
 {{end}}
 class {{name}} {
-{{range items}}  {{if .Type == "double" || .Type == "String" || .Type == "int" || .Type == "bool"}}{{.Type}} {{.Name|lower}};{{else if isEnum(.Type, enums)}}{{name}}{{.Type}} {{.Name|lower}};{{else}}{{.Type}} {{.Name|lower}};{{end}}
+{{range items}}  {{if isEnum(.Type, enums)}}{{name}}{{.Type}}{{else}}{{.Type}}{{end}}{{if .Nullable}}?{{end}} {{dartField(.)}};
 {{end}}
   Map<String, dynamic> extra;
 
   {{name}}({
-{{range items}}    this.{{.Name|lower}} = {{if .Type == "int"}}0{{else if .Type == "double"}}0.0{{else if .Type == "bool"}}false{{else if .Type == "String"}}''{{else if isEnum(.Type, enums)}}{{name}}{{.Type}}.none{{else}}{{if .Type}}{{.Type}}(){{else}}null{{end}}{{end}},
+{{range items}}    this.{{dartField(.)}}{{if !.Nullable}} = {{if .Type == "int"}}0{{else if .Type == "double"}}0.0{{else if .Type == "bool"}}false{{else if .Type == "String"}}''{{else if isEnum(.Type, enums)}}{{name}}{{.Type}}.{{enumZero(.Type, enums)}}{{else}}{{if .Type}}{{.Type}}(){{else}}null{{end}}{{end}}{{end}},
 {{end}}    this.extra = const {},
   });
 
   factory {{name}}.fromJson(Map<String, dynamic> json) {
     return {{name}}(
-{{range items}}      {{.Name|lower}}: {{if .Type == "double" || .Type == "String" || .Type == "int" || .Type == "bool"}}json['{{.Name|lower}}'] as {{.Type}}{{else if isEnum(.Type, enums)}}{{name}}{{.Type}}.fromCode(json['{{.Name|lower}}'] as int){{else}}{{.Type}}.fromJson(json['{{.Name|lower}}']){{end}},
+{{range items}}      {{dartField(.)}}: {{if .Nullable && (.Type == "double" || .Type == "String" || .Type == "int" || .Type == "bool" || isEnum(.Type, enums))}}json['{{jsonKey(.)}}'] == null ? null : {{end}}{{if .Type == "double"}}_toDouble(json['{{jsonKey(.)}}']){{else if .Type == "String"}}_toStr(json['{{jsonKey(.)}}']){{else if .Type == "int"}}_toInt(json['{{jsonKey(.)}}']){{else if .Type == "bool"}}_toBool(json['{{jsonKey(.)}}']){{else if isEnum(.Type, enums)}}{{name}}{{.Type}}.fromCode(_toInt(json['{{jsonKey(.)}}'])){{else}}{{.Type}}.fromJson(json['{{jsonKey(.)}}']){{end}},
 {{end}}      extra: json['extra'] == null ? <String, dynamic>{} : json['extra'] as Map<String, dynamic>,
     );
   }
 
   Map<String, dynamic> toJson() => {
-{{range items}}    '{{.Name|lower}}': {{if .Type == "double" || .Type == "String" || .Type == "int" || .Type == "bool"}}{{.Name|lower}}{{else if isEnum(.Type, enums)}}{{.Name|lower}}.code{{else}}{{.Name|lower}}.toJson(){{end}},
+{{range items}}    '{{jsonKey(.)}}': {{if .Type == "double" || .Type == "String" || .Type == "int" || .Type == "bool"}}{{dartField(.)}}{{else if isEnum(.Type, enums)}}{{dartField(.)}}{{if .Nullable}}?{{end}}.code{{else}}{{dartField(.)}}{{if .Nullable}}?{{end}}.toJson(){{end}},
 {{end}}  };
 
   {{name}} clone() {
@@ -46,11 +110,15 @@ class {{name}} {
   }
 }
 
+// Go 와 Spring 백엔드 응답을 모두 읽는다.
+// 목록: Spring {content, totalElements} / Go {items, total}, 개수: Spring {count} / Go {total, count},
+// 단건: Spring 엔티티 / Go {item}.
 class {{name}}Manager {
   static const baseUrl = '/api/{{name|lower}}';
 
+  // page 는 1 부터 (Go, Spring 같음).
   static Future<List<{{name}}>> find({
-    int page = 0,
+    int page = 1,
     int pagesize = 20,
     String? params,
   }) async {
@@ -58,41 +126,52 @@ class {{name}}Manager {
       'page': page,
       'pagesize': pagesize,
     }, params);
-    if (result == null || result['content'] == null) {
+    var list = result == null ? null : (result['content'] ?? result['items']);
+    if (list == null) {
       return List<{{name}}>.empty(growable: true);
     }
 
-    return result['content'].map<{{name}}>((json) => {{name}}.fromJson(json)).toList();
+    return list.map<{{name}}>((json) => {{name}}.fromJson(json)).toList();
   }
 
   static Future<int> count({String? params}) async {
     var result = await Http.get('$baseUrl/count', {}, params);
-    if (result == null || result['total'] == null) {
+    var value = result == null ? null : (result['count'] ?? result['total']);
+    if (value == null) {
       return 0;
     }
+    if (value is num) {
+      return value.toInt();
+    }
 
-    return int.parse(result['total']);
+    return int.tryParse(value.toString()) ?? 0;
   }
 
-  static Future<{{name}}> get(int id) async {
+{{if hasId}}  static Future<{{name}}> get(int id) async {
     var result = await Http.get('$baseUrl/$id');
-    if (result == null || result['item'] == null) {
+    var data = result;
+    if (result is Map && result.containsKey('item'){{if hasItemKey}} && !result.containsKey('id'){{end}}) {
+      data = result['item'];
+    }
+    if (data == null) {
       return {{name}}();
     }
 
-    return {{name}}.fromJson(result);
+    return {{name}}.fromJson(data);
   }
 
-  static Future<int> insert({{name}} item) async {
+{{end}}{{if !isView}}  static Future<int> insert({{name}} item) async {
     var result = await Http.insert(baseUrl, item.toJson());
     return result;
   }
-
+{{end}}{{if hasId && !isView}}
   static update({{name}} item) async {
-    await Http.put(baseUrl, item.toJson());
+    await Http.put('$baseUrl/${item.id}', item.toJson());
   }
 
   static delete({{name}} item) async {
-    await Http.delete(baseUrl, item.toJson());
+    await Http.delete('$baseUrl/${item.id}', item.toJson());
   }
-}
+{{end}}{{if isView}}  // view 는 읽기 전용이라 insert/update/delete 가 없다.
+{{else if !hasId}}  // id 컬럼이 없어 get/update/delete 가 없다 (Go 에 /{table}/:id 경로가 없다).
+{{end}}}

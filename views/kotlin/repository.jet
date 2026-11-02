@@ -1,22 +1,18 @@
-package com.gowoobro.gymspring.repository
+package {{.BasePackage}}.repository
 
-import com.gowoobro.gymspring.entity.{{.ModelName}}
-import com.gowoobro.gymspring.entity.{{.ModelName}}CreateRequest
-import com.gowoobro.gymspring.entity.{{.ModelName}}UpdateRequest
+import {{.BasePackage}}.entity.{{.ModelName}}
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.Pageable
-{{if len(.Joins) > 0 }}import org.springframework.data.jpa.repository.EntityGraph{{end}}
+{{if len(.EntityGraphPaths) > 0}}import org.springframework.data.jpa.repository.EntityGraph
+{{end}}import org.springframework.data.jpa.domain.Specification
 import org.springframework.data.jpa.repository.JpaRepository
-import org.springframework.data.jpa.repository.Query
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor
 import org.springframework.stereotype.Repository
-{{if .HasDateTime}}import java.time.LocalDateTime{{end}}
-{{if .HasDecimal}}import java.math.BigDecimal{{end}}
-{{range .Enums}}import com.gowoobro.gymspring.enums.{{.EnumPackage}}.{{.Name|title}}
-{{end}}
-{{allJoins := .Joins}}
 {{entityGraphPaths := .EntityGraphPaths}}
+// 목록 / 개수 / 검색은 모두 Specification(필터, 소유권)으로 조회한다. 메서드 이름으로 만드는 쿼리(findByX)는 쓰지 않는다
+// (컬럼 이름에 따라 Spring Data 가 시작할 때 해석하지 못할 수 있다).
 @Repository
-interface {{.ModelName}}Repository : JpaRepository<{{.ModelName}}, Long> {
+interface {{.ModelName}}Repository : JpaRepository<{{.ModelName}}, {{.PK.QualType}}>, JpaSpecificationExecutor<{{.ModelName}}> {
 {{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
 {{range entityGraphPaths}}{{if .IsLast}}        "{{.Path}}"{{else}}        "{{.Path}}",{{end}}
 {{end}}    ])
@@ -25,13 +21,15 @@ interface {{.ModelName}}Repository : JpaRepository<{{.ModelName}}, Long> {
 {{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
 {{range entityGraphPaths}}{{if .IsLast}}        "{{.Path}}"{{else}}        "{{.Path}}",{{end}}
 {{end}}    ])
-{{end}}    override fun findById(id: Long): java.util.Optional<{{.ModelName}}>
-{{range .Columns }}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{ if .Name != "Id"}}{{"\n"}}{{if not joinData}}{{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
+{{end}}    override fun findAll(spec: Specification<{{.ModelName}}>?, pageable: Pageable): Page<{{.ModelName}}>
+
+{{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
 {{range entityGraphPaths}}{{if .IsLast}}        "{{.Path}}"{{else}}        "{{.Path}}",{{end}}
 {{end}}    ])
-{{end}}    fun findBy{{.Name}}({{.Name|lower}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): List<{{.ModelName}}>
-{{end}}{{if joinData}}{{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
+{{end}}    override fun findAll(spec: Specification<{{.ModelName}}>?): List<{{.ModelName}}>
+
+{{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
 {{range entityGraphPaths}}{{if .IsLast}}        "{{.Path}}"{{else}}        "{{.Path}}",{{end}}
 {{end}}    ])
-{{end}}    fun findBy{{joinData.ColumnName}}Id({{joinData.Alias|lower}}: Long): List<{{.ModelName}}>
-{{end}}{{- end}}{{end}}}
+{{end}}    override fun findById(id: {{.PK.QualType}}): java.util.Optional<{{.ModelName}}>
+}

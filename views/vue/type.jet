@@ -1,43 +1,36 @@
 // Auto-generated TypeScript types for {{.ModelName}}
 // Generated from table: {{.TableName}}
-{{if len(.Joins) > 0}}
-{{range .UniqueJoinNames}}import type { {{. | title}} } from './{{. | lower}}';
-{{end}}
-{{end}}
+// 필드 이름은 Go / Spring 과 같은 JSON key 다. null 허용 컬럼은 `| null`, enum 은 코드 union (data 배열 위치),
+// 날짜는 "yyyy-MM-dd HH:mm:ss" 문자열 (date 는 "yyyy-MM-dd"). 요청에는 ISO "yyyy-MM-ddTHH:mm:ss" 도 쓸 수 있다.
+// 비밀번호 컬럼은 응답에 없고 요청에만 쓴다.
+import type { ListResponse, ItemResponse } from '../models/contract';
+export type { Page } from '../models/contract';
+{{if len(.UniqueJoins) > 0}}{{range .UniqueJoins}}import type { {{.ModelName}} } from './{{.FileName}}';
+{{end}}{{end}}
 export interface {{.ModelName}} {
-{{range .Columns}}  {{.Name | untitle}}{{if .IsOptional}}?{{end}}: {{.TypeScriptType}};
+{{range .Columns}}  {{.Key}}{{if .IsOptional}}?{{end}}: {{.TypeScriptType|raw}}{{if .IsNullable}} | null{{end}};
 {{end}}{{if len(.Joins) > 0}}  extra?: {
-{{range .Joins}}    {{.Alias | lower}}?: {{.Name | title}};
+{{range .Joins}}    {{.Alias | lower}}?: {{.ModelName}} | null;
 {{end}}  };
 {{end}}}
 
-// Create request type (omit auto-generated fields)
-export type Create{{.ModelName}}Request = Omit<{{.ModelName}}, 'id'>;
+// Create request type (기본 키는 서버가 정한다)
+export type Create{{.ModelName}}Request = Omit<{{.ModelName}}, '{{.PK.Key}}'>;
 
-// Update request type (all fields optional except id)
-export type Update{{.ModelName}}Request = Partial<Omit<{{.ModelName}}, 'id'>>;
+// Update request type (보낸 필드만 바꾼다)
+export type Update{{.ModelName}}Request = Partial<Omit<{{.ModelName}}, '{{.PK.Key}}'>>;
 
-// Search params type
+// 목록 / 개수 검색 파라미터. 이름은 Go / Spring 이 받는 이름과 같다.
+// 날짜 컬럼은 start{컬럼}/end{컬럼} 범위, page 는 1 부터, orderby 는 "createddate desc, name" 형식.
 export interface {{.ModelName}}SearchParams {
-{{range .Columns}}{{if .IsDateType}}  start{{.Name | untitle}}?: {{.TypeScriptType}};
-  end{{.Name | untitle}}?: {{.TypeScriptType}};
-{{else}}  {{.Name | untitle}}?: {{.TypeScriptType}};
-{{end}}{{end}}  page?: number;
+{{range .Columns}}{{if .IsSearchable}}{{if .IsDateType}}  {{.StartParam}}?: string;
+  {{.EndParam}}?: string;
+{{else}}  {{.Key}}?: {{.TypeScriptType|raw}};
+{{end}}{{end}}{{end}}  page?: number;
   pagesize?: number;
+  orderby?: string;
 }
 
-// API response types
-export interface ApiResponse<T> {
-  content: T[];
-  page: number;
-  pagesize: number;
-  totalElements: number;
-  totalPages: number;
-  first: boolean;
-  last: boolean;
-  empty: boolean;
-}
-
-export interface ApiSingleResponse<T> {
-  item: T;
-}
+// 백엔드 응답 원형 (Go / Spring). 모델 클래스가 Page / 엔티티로 바꿔 돌려준다.
+export type ApiResponse<T> = ListResponse<T>;
+export type ApiSingleResponse<T> = ItemResponse<T>;

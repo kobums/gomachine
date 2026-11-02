@@ -1,27 +1,36 @@
-package com.gowoobro.gymspring.enums.{{.ModelName|lower}}
+package {{.BasePackage}}.enums.{{.EnumPackage|raw}}
 
-{{range ic, c := .Enums}}
-enum class {{c.Name|title}} {
-    NONE,
-{{range i, v := c.Data}}{{if v != ""}}    {{v|first|upper}},  // {{v|last}}
-{{end}}{{end}};
+import com.fasterxml.jackson.annotation.JsonCreator
+import com.fasterxml.jackson.annotation.JsonValue
+import jakarta.persistence.AttributeConverter
+import jakarta.persistence.Converter
+
+{{range .Enums}}
+// 코드(code)는 model.json map data 배열 안의 위치다 (Go / TypeScript / Dart 와 같은 값).
+// DB 와 JSON 에는 코드(숫자)로 저장/전송한다.
+enum class {{.Name}}(@get:JsonValue val code: Int, val label: String) {
+{{if .HasNone}}    NONE(0, ""),
+{{end}}{{range .Items}}    {{.Ident|raw}}({{.Code}}, {{.Quote|raw}}),
+{{end}};
 
     companion object {
-        fun getDisplayName(value: {{c.Name|title}}): String {
-            return when (value) {
-                NONE -> ""
-{{range i, v := c.Data}}{{if v != ""}}                {{v|first|upper}} -> "{{v|last}}"
-{{end}}{{end}}            }
-        }
+        @JvmStatic
+        @JsonCreator
+        fun fromCode(code: Int): {{.Name}}? = values().firstOrNull { it.code == code }
 
-        fun fromString(value: String): {{c.Name|title}}? {
-            return when (value) {
-                "" -> NONE
-{{range i, v := c.Data}}{{if v != ""}}                "{{v|last}}" -> {{v|first|upper}}
-{{end}}{{end}}                else -> null
-            }
-        }
+        fun getDisplayName(value: {{.Name}}?): String = value?.label ?: ""
+
+        // 표시 이름으로 찾는다.
+        fun fromString(value: String): {{.Name}}? = values().firstOrNull { it.label == value }
     }
+}
+
+// {{.Name}} 을 DB 에 코드(Int)로 저장한다. 엔티티 필드에 @Convert 로 붙인다.
+@Converter
+class {{.Name}}Converter : AttributeConverter<{{.Name}}, Int> {
+    override fun convertToDatabaseColumn(attribute: {{.Name}}?): Int? = attribute?.code
+
+    override fun convertToEntityAttribute(dbData: Int?): {{.Name}}? = dbData?.let { {{.Name}}.fromCode(it) }
 }
 
 {{end}}

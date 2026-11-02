@@ -41,8 +41,7 @@ func main() {
 	// 현재 작업 디렉토리 가져오기 (config 파일이 있는 위치)
 	configDir, err := os.Getwd()
 	if err != nil {
-		log.Printf("Failed to get current working directory: %v", err)
-		return
+		log.Fatalf("Failed to get current working directory: %v", err)
 	}
 
 	// config/model.json 로드 ("pointer" config to find the real model.json location)
@@ -90,42 +89,93 @@ func main() {
 
 	db := GetConnection(modelConfig)
 	if db == nil {
-		log.Println("Failed to get database connection")
-		return
+		log.Fatal("Failed to get database connection")
 	}
 	defer db.Close()
 
-	query := fmt.Sprintf("select table_name from information_schema.tables where table_schema = '%v'", modelConfig.Database)
+	query := fmt.Sprintf("select table_name from information_schema.tables where table_schema = '%v' order by table_name", modelConfig.Database)
 	rows, err := db.Query(query)
 
+	// DB 에 붙지 못하면 아무것도 만들지 않았으므로 실패 코드로 끝낸다.
 	if err != nil {
-		log.Println(err)
-		return
+		log.Fatalf("Failed to read table list: %v", err)
 	}
-	defer rows.Close()
 
-	tables := make([]string, 0)
+	names := make([]string, 0)
 	for rows.Next() {
 		name := ""
 
 		err := rows.Scan(&name)
 		if err != nil {
 			log.Println(err)
+			continue
 		}
+		names = append(names, name)
+	}
+	rows.Close()
 
-		tableName := util.GetTableName(name)
+	util.ResolveTableNames(names)
+	util.CheckTableConfigs(gpas, names)
 
-		var gpa *config.Gpa = nil
-		for _, item := range gpas {
-			if item.Name == tableName {
-				gpa = &item
-				break
+	// 테이블마다 쓸 설정: 정확히 맞는 이름이 먼저, 그다음 _ / 대소문자 무시 (util.FindTableConfig).
+	tableGpa := make(map[string]*config.Gpa)
+	for _, name := range names {
+		if g := util.FindTableConfig(gpas, name); g != nil {
+			c := *g
+			tableGpa[name] = &c
+		}
+	}
+
+	// auth=jwt 에서 session 컬럼을 쓸 수 없으면 소유권 검사 없는 API 가 만들어지므로 아무것도 만들기 전에 멈춘다.
+	if errs := checkSessions(db, modelConfig, names, tableGpa, enabled); len(errs) > 0 {
+		for _, e := range errs {
+			log.Println("ERROR:", e)
+		}
+		os.Exit(1)
+	}
+
+	for _, name := range names {
+		readColumn(packageName, name, db, tableGpa[name], modelConfig.Buildtool, modelConfig.Auth, modelConfig, enabled)
+	}
+}
+
+// checkSessions 는 session 설정 컬럼이 있고 정수(Spring 만 생성하면 문자열도) 컬럼인지 확인한다.
+// auth=jwt 면 문제를 에러로 돌려주고, 아니면 경고만 찍는다 (session 은 jwt 일 때만 쓴다).
+func checkSessions(db *sql.DB, cnf config.ModelConfig, names []string, tableGpa map[string]*config.Gpa, languages []string) []string {
+	allowString := true
+	for _, lang := range languages {
+		if lang == "go" {
+			allowString = false
+		}
+	}
+	errs := make([]string, 0)
+	for _, name := range names {
+		gpa := tableGpa[name]
+		if gpa == nil || len(gpa.Session) == 0 {
+			continue
+		}
+		raws, err := util.QueryColumns(db, cnf.Database, name)
+		if err != nil {
+			errs = append(errs, err.Error())
+			continue
+		}
+		columns := make([]util.Column, 0)
+		for _, raw := range raws {
+			columns = append(columns, util.NewColumnFromRaw(name, raw, gpa, cnf))
+		}
+		for _, pair := range gpa.Session {
+			msg := util.SessionColumnError(columns, pair.Column, allowString)
+			if msg == "" {
+				continue
+			}
+			if cnf.Auth == "jwt" {
+				errs = append(errs, fmt.Sprintf("%s: %s; fix model.json table %q session (generation stopped: the API would have no ownership check)", name, msg, gpa.Name))
+			} else {
+				log.Printf("WARNING: %s: %s", name, msg)
 			}
 		}
-
-		readColumn(packageName, name, db, gpa, modelConfig.Buildtool, modelConfig.Auth, modelConfig, enabled)
-		tables = append(tables, tableName)
 	}
+	return errs
 }
 
 type generator func(packageName string, tableName string, prefix string, items []util.Column, db *sql.DB, gpa *config.Gpa, version string, auth string, cnf config.ModelConfig)
@@ -139,34 +189,16 @@ var generators = map[string]generator{
 }
 
 func readColumn(packageName string, tableName string, db *sql.DB, gpa *config.Gpa, version string, auth string, cnf config.ModelConfig, languages []string) {
-	query := "select column_name as column_name, data_type as data_type from information_schema.columns where table_schema = '" + cnf.Database + "' and table_name = '" + tableName + "'"
-	rows, err := db.Query(query)
-
+	// 이름, 타입, null 허용(is_nullable), 기본값(column_default) 을 ordinal_position 순서로 읽는다.
+	rawCols, err := util.QueryColumns(db, cnf.Database, tableName)
 	if err != nil {
 		log.Println(err)
 		return
 	}
-	defer rows.Close()
 
-	// Store raw column data first
-	type RawCol struct {
-		Name     string
-		DataType string
-	}
-	var rawCols []RawCol
 	prefix := ""
-
-	for rows.Next() {
-		var name string
-		var typeid string
-
-		err := rows.Scan(&name, &typeid)
-		if err != nil {
-			log.Println(err)
-			continue
-		}
-		rawCols = append(rawCols, RawCol{Name: name, DataType: typeid})
-		prefix = util.GetPrefix(name)
+	for _, raw := range rawCols {
+		prefix = util.GetPrefix(raw.Name)
 	}
 
 	// 언어마다 타입 매핑이 달라서 컬럼 목록을 따로 만든다.
@@ -175,14 +207,7 @@ func readColumn(packageName string, tableName string, db *sql.DB, gpa *config.Gp
 		localCnf.Language = lang
 		columns := make([]util.Column, 0)
 		for _, raw := range rawCols {
-			column := util.Column{
-				Name:         strings.Title(util.GetName(raw.Name)),
-				Column:       raw.Name,
-				Type:         util.GetType(util.GetTableName(tableName), util.GetName(raw.Name), raw.DataType, gpa, localCnf),
-				OriginalType: raw.DataType,
-				Prefix:       util.GetPrefix(raw.Name),
-			}
-			columns = append(columns, column)
+			columns = append(columns, util.NewColumnFromRaw(tableName, raw, gpa, localCnf))
 		}
 		generators[lang](packageName, tableName, prefix, columns, db, gpa, version, auth, localCnf)
 	}

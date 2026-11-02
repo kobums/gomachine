@@ -1,61 +1,96 @@
-package com.gowoobro.gymspring.entity
+package {{.BasePackage}}.entity
 
 import jakarta.persistence.*
-{{if .HasDateTime}}import java.time.LocalDateTime{{end}}
-{{if .HasDecimal}}import java.math.BigDecimal{{end}}
-{{range .Enums}}import com.gowoobro.gymspring.enums.{{.EnumPackage}}.{{.Name|title}}
+{{if .IsView}}import org.hibernate.annotations.Immutable
+{{end}}{{if .HasJsonDate}}import com.fasterxml.jackson.databind.annotation.JsonDeserialize
+{{end}}{{if .HasDateTime}}import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+{{end}}{{if .HasDate}}import java.time.LocalDate
+{{end}}{{if .HasDecimal}}import java.math.BigDecimal
+{{end}}{{if .HasDateTime}}import {{.BasePackage}}.support.LenientLocalDateTimeDeserializer
+{{end}}{{if .HasDate}}import {{.BasePackage}}.support.LenientLocalDateDeserializer
+{{end}}{{base := .BasePackage}}{{range .Enums}}import {{base}}.enums.{{.EnumPackage}}.{{.Name}}
+import {{base}}.enums.{{.EnumPackage}}.{{.Name}}Converter
 {{end}}
 
-{{- allJoins := .Joins}}
-@Entity
+{{- modelVar := .ModelVar}}
+{{if .HasDateTime}}
+// 응답 날짜 형식 (Go 백엔드와 같다). 요청은 날짜만, "yyyy-MM-dd HH:mm:ss", ISO(T, 밀리초, Z / 오프셋)를 모두 받는다 (DateParams).
+private val DATE_TIME_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("{{.DateTimeOut}}")
+{{end}}{{if .CamelNames}}
+// 대문자가 있는 테이블/컬럼 이름: Spring Boot 기본 이름 전략은 c_userId 를 c_user_id 로 바꾼다.
+// application.properties 에 spring.jpa.hibernate.naming.physical-strategy=org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl 이 필요하다.
+{{end}}{{if .IsView}}
+// view: 읽기 전용 (@Immutable). @Id 는 model.json primary (없으면 {{.PK.DBName}}) 이고, 같은 값의 행은 하나로 합쳐지므로 유일한 컬럼이어야 한다.
+@Immutable
+{{end}}@Entity
 @Table(name = "{{.TableName}}")
 data class {{.ModelName}}(
 {{range .Columns}}{{if .IsPrimaryKey}}    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-{{end}}{{joinData := findJoinByColumn(.DBName, allJoins)}}    @Column(name = "{{.DBName}}")
-    val {{if joinData}}{{joinData.ColumnName}}Id{{else}}{{.Name|lower}}{{end}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
+{{if .IsGenerated}}    @GeneratedValue(strategy = GenerationType.IDENTITY)
+{{end}}{{end}}{{if .IsEnum}}    @Convert(converter = {{.EnumType}}Converter::class)
+{{end}}    @Column(name = "{{.DBName}}"{{if .IsTinyint}}, columnDefinition = "tinyint"{{end}})
+    val {{.EntityField|raw}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
 {{end}}) {{if len(.Joins) > 0}}{
 {{range .Joins}}    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "{{.Column}}", insertable = false, updatable = false)
-    var {{.Alias|lower}}: {{.Name|title}}? = null
+    var {{.Alias|raw}}: {{.ModelName}}? = null
 {{end}}}{{end}}
-
+{{if not .IsView}}
+// 보호 컬럼(protect)은 요청으로 받지 않는다. id 는 자동 증가 값, createddate 는 서버 시각을 쓴다.
+// 자동 증가가 아닌 기본 키(문자열 키 등)는 반드시 보내야 하고, 이미 있는 키면 409 다.
 data class {{.ModelName}}CreateRequest(
-{{range .Columns}}{{if not .IsPrimaryKey}}    val {{.Name|lower}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
+{{range .Columns}}{{if .InCreate}}{{if .KotlinType == "LocalDateTime"}}    @JsonDeserialize(using = LenientLocalDateTimeDeserializer::class)
+{{else if .KotlinType == "LocalDate"}}    @JsonDeserialize(using = LenientLocalDateDeserializer::class)
+{{end}}    val {{.Field|raw}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault && not .IsPrimaryKey}} = {{.DefaultValue|raw}}{{end}},
 {{end}}{{end}})
 
+// PUT 은 PATCH 와 같이 보낸 필드만 바꾼다 (null / 빠진 필드는 기존 값 유지). 기본 키는 경로 변수로 덮어쓴다.
+// 보호 컬럼과 createddate 는 바꿀 수 없다.
 data class {{.ModelName}}UpdateRequest(
-{{range .Columns}}    val {{.Name|lower}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
-{{end}})
+{{range .Columns}}{{if .IsPrimaryKey}}    val {{.Field|raw}}: {{.KotlinType}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
+{{else if not .IsProtected && not .IsCreated}}{{if .KotlinType == "LocalDateTime"}}    @JsonDeserialize(using = LenientLocalDateTimeDeserializer::class)
+{{else if .KotlinType == "LocalDate"}}    @JsonDeserialize(using = LenientLocalDateDeserializer::class)
+{{end}}    val {{.Field|raw}}: {{.KotlinType}}? = null,
+{{end}}{{end}})
 
 data class {{.ModelName}}PatchRequest(
-{{range .Columns}}{{if .IsPrimaryKey}}    val {{.Name|lower}}: {{.KotlinType}} = 0,
-{{else}}    val {{.Name|lower}}: {{.KotlinType}}? = null,
+{{range .Columns}}{{if .IsPrimaryKey}}    val {{.Field|raw}}: {{.KotlinType}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
+{{else if not .IsProtected && not .IsCreated}}{{if .KotlinType == "LocalDateTime"}}    @JsonDeserialize(using = LenientLocalDateTimeDeserializer::class)
+{{else if .KotlinType == "LocalDate"}}    @JsonDeserialize(using = LenientLocalDateDeserializer::class)
+{{end}}    val {{.Field|raw}}: {{.KotlinType}}? = null,
 {{end}}{{end}})
-
+{{if .HasIdRoutes}}{{pk := .PK}}
+// DELETE /batch 본문 항목 (기본 키 하나, 예: {"{{pk.ParamName}}": 1})
+data class {{.ModelName}}IdRequest(
+    val {{pk.Field|raw}}: {{pk.KotlinType}},
+)
+{{end}}{{end}}
 {{if len(.Enums) > 0 || len(.Joins) > 0}}data class {{.ModelName}}ExtraInfo(
-{{range .Enums}}    val {{.Name|lower}}: String = "",
+{{range .Enums}}    val {{.ExtraField|raw}}: String = "",
 {{end}}
-{{range .Joins}}    val {{.Alias|lower}}: {{.Name|title}}Response? = null,
+{{range .Joins}}    val {{.Alias|raw}}: {{.ModelName}}Response? = null,
 {{end}})
 {{end}}
 
+// 날짜는 "{{.DateTimeOut}}" (date 는 yyyy-MM-dd) 문자열, enum 은 코드(Int), null 허용 컬럼은 null 일 수 있다.
 data class {{.ModelName}}Response(
-{{range .Columns}}{{if .Name != "Passwd"}}    val {{.Name|lower}}: {{.DBType}}{{if .IsNullable}}?{{end}},
+{{range .Columns}}{{if not .IsPassword}}    val {{.Field|raw}}: {{.RespType}},
 {{end}}{{end}}
-    val extra: {{if len(.Enums) > 0 || len(.Joins) > 0}}{{.ModelName}}ExtraInfo{{else}}Map<String, Any?> = emptyMap(){{end}}
+    val extra: {{if len(.Enums) > 0 || len(.Joins) > 0}}{{.ModelName}}ExtraInfo{{else}}kotlin.collections.Map<kotlin.String, kotlin.Any?> = emptyMap(){{end}}
 ){
     companion object {
-        fun from({{.ModelName|lower}}: {{.ModelName}}): {{.ModelName}}Response {
-            {{range .Joins}}val {{.Alias|lower}}Response = {{.ParentModelName|lower}}.{{.Alias|lower}}?.let { {{.Name|title}}Response.from(it) }
+        // 조인은 한 단계만 매핑한다 (_depth > 0 이면 조인을 읽지 않는다). 서로 참조하는 조인에서 끝없이 이어지거나
+        // 지연 로딩으로 쿼리가 계속 나가는 것을 막는다.
+        fun from(_e: {{.ModelName}}, _depth: Int = 0): {{.ModelName}}Response {
+            {{range .Joins}}val {{.Var}} = if (_depth == 0) _e.{{.Alias|raw}}?.let { {{.ModelName}}Response.from(it, _depth + 1) } else null
             {{end}}return {{.ModelName}}Response(
-{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if not joinData}}{{if .Name != "Passwd"}}                {{.Name|lower}} = {{if .IsEnum}}{{.ModelName|lower}}.{{.Name|lower}}.ordinal{{else if .KotlinType=="LocalDateTime"}}{{if .IsNullable}}{{.ModelName|lower}}.{{.Name|lower}}?.toString()?.replace("T", " ") ?: ""{{else}}{{.ModelName|lower}}.{{.Name|lower}}.toString().replace("T", " "){{end}}{{else}}{{.ModelName|lower}}.{{.Name|lower}}{{end}},
-{{end}}{{end}}{{if joinData}}                {{.Name|lower}} = {{.ModelName|lower}}.{{joinData.ColumnName}}Id,
+{{range .Columns}}{{if not .IsPassword}}                {{.Field|raw}} = {{if .IsEnum}}_e.{{.EntityField|raw}}{{if .IsNullable}}?{{end}}.code{{else if .KotlinType == "LocalDateTime"}}_e.{{.EntityField|raw}}{{if .IsNullable}}?{{end}}.format(DATE_TIME_FORMATTER){{else if .KotlinType == "LocalDate"}}_e.{{.EntityField|raw}}{{if .IsNullable}}?{{end}}.toString(){{else}}_e.{{.EntityField|raw}}{{end}},
 {{end}}{{end}}
                 extra = {{if len(.Enums) > 0 || len(.Joins) > 0}}{{.ModelName}}ExtraInfo(
                     {{- if len(.Enums) > 0}}
-                    {{range .Enums}}{{.Name|lower}} = {{.Name|title}}.getDisplayName({{.EnumPackage|lower}}.{{.Name|lower}}),{{end}}{{end}}
-                    {{range .Joins}}{{if .Columns}}{{.Alias|lower}} = {{.Alias|lower}}Response,{{end}}{{end}})
+                    {{range .Enums}}{{if .ColumnField != ""}}{{.ExtraField|raw}} = {{.Name}}.getDisplayName(_e.{{.ColumnField|raw}}),{{end}}{{end}}{{end}}
+                    {{range .Joins}}{{.Alias|raw}} = {{.Var}},{{end}})
                 {{else}} emptyMap(){{end}}
             )
         }

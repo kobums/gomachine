@@ -8,7 +8,6 @@ import (
 	"gomachine/util"
 	"os"
 	"strings"
-	"unicode"
 
 	"github.com/CloudyKit/jet/v6"
 	log "github.com/sirupsen/logrus"
@@ -19,102 +18,24 @@ func ProcessDart(packageName string, tableName string, prefix string, items []ut
 
 	var views = jet.NewSet(jet.NewOSFileSystemLoader(path), jet.InDevelopmentMode())
 
-	views.AddGlobal("striparray", func(str string) string {
-		return strings.ReplaceAll(str, "[]", "")
-	})
-
-	views.AddGlobal("substring", func(str string, start int, end int) string {
-		return str[start:end]
-	})
-
 	views.AddGlobal("title", func(str string) string {
 		return strings.Title(str)
 	})
 
-	views.AddGlobal("untitle", func(str string) string {
-		a := []rune(str)
-		a[0] = unicode.ToLower(a[0])
-		return string(a)
+	// dartString 은 Dart 작은따옴표 문자열 리터럴이다 (\, ', $ 이스케이프).
+	views.AddGlobal("dartString", func(str string) string {
+		r := strings.NewReplacer("\\", "\\\\", "'", "\\'", "$", "\\$", "\n", "\\n", "\r", "\\r")
+		return "'" + r.Replace(str) + "'"
 	})
 
-	views.AddGlobal("first", func(str string) string {
-		if str == "" {
-			return ""
-		}
-		ret := strings.Split(str, ":")
-		return ret[0]
-	})
-
-	views.AddGlobal("typescriptType", func(str string) string {
-		if str == "" {
-			return ""
-		}
-		ret := strings.Split(str, ":")
-		return ret[0]
-	})
-
-	views.AddGlobal("last", func(str string) string {
-		if str == "" {
-			return ""
-		}
-		ret := strings.Split(str, ":")
-		return ret[1]
-	})
-
-	views.AddGlobal("querytype", func(str string) string {
-		tokens := util.Split(str)
-		return tokens[0]
-	})
-
-	views.AddGlobal("adjustPackage", func(str string) string {
-		if strings.Index(str, ".") > 0 {
-			return "models." + str
-		} else {
-			return str
-		}
-	})
-
-	views.AddGlobal("isNeedImport", func(str string) bool {
-		if strings.Index(str, ".") > 0 {
-			return true
-		} else {
-			return false
-		}
-	})
-
-	views.AddGlobal("getPrefix", func(str string, prefix string) string {
-		strs := strings.Split(str, "_")
-
-		if len(strs) >= 2 {
-			return str
-		} else {
-			return prefix + "_" + str
-		}
-	})
-
-	views.AddGlobal("joinColumn", func(str string, cols []config.GpaJoin) bool {
-		for _, v := range cols {
-			if util.GetName(strings.ToLower(str)) == v.Name {
-				return false
+	// enumZero 는 코드 0 인 값 이름이다 (NOT NULL enum 필드 기본값).
+	views.AddGlobal("enumZero", func(typeName string, enums []util.EnumData) string {
+		for _, e := range enums {
+			if e.Name == typeName {
+				return e.Zero
 			}
 		}
-		return true
-	})
-
-	views.AddGlobal("joinVar", func(join config.GpaJoin) string {
-		if join.Alias != "" {
-			return strings.ToLower(join.Alias)
-		}
-		return strings.ToLower(join.Name)
-	})
-
-	views.AddGlobal("compareColumn", func(str string, cols []config.GpaCompare) string {
-		for _, v := range cols {
-			if util.GetName(strings.ToLower(str)) == v.Name {
-				return v.Type
-			}
-		}
-		return "="
+		return ""
 	})
 
 	views.AddGlobal("isEnum", func(typeName string, enums []util.EnumData) bool {
@@ -126,73 +47,42 @@ func ProcessDart(packageName string, tableName string, prefix string, items []ut
 		return false
 	})
 
-	views.AddGlobal("javascriptfunction", func(str string) string {
-		return strings.ToLower(str[0:1]) + str[1:]
-	})
-
-	views.AddGlobal("javascriptapiurl", func(str string) string {
-		return strings.ReplaceAll(strings.ToLower(str), "delete", "")
-	})
-
-	views.AddGlobal("apiurl", func(str string) string {
-		funcName := strings.ToLower(str)
-		url := ""
-		if len(funcName) > 5 && funcName[:5] == "getby" {
-			url = fmt.Sprintf("/get/%v", funcName[5:])
-		} else if len(funcName) > 7 && funcName[:7] == "countby" {
-			url = fmt.Sprintf("/count/%v", funcName[7:])
-		} else if len(funcName) > 6 && funcName[:6] == "findby" {
-			url = fmt.Sprintf("/find/%v", funcName[6:])
-		} else if len(funcName) > 6 && funcName[:6] == "update" {
-			strs := strings.Split(str[6:], "By")
-			url = fmt.Sprintf("/%v/%v", strings.ToLower(strs[0]), strings.ToLower(strs[1]))
-		} else if len(funcName) > 8 && funcName[:8] == "deleteby" {
-			url = fmt.Sprintf("/%v", funcName[8:])
-		} else {
-			url = fmt.Sprintf("/%v", funcName)
-		}
-		return url
-	})
-
+	// 조인 테이블 컬럼 (ordinal_position 순서)
 	views.AddGlobal("columns", func(str string) []util.Column {
-		query := "select column_name as column_name, data_type as data_type from information_schema.columns where table_schema = '" + packageName + "' and table_name = '" + strings.ToLower(str) + "_tb'"
-		rows, err := db.Query(query)
-
+		columns := make([]util.Column, 0)
+		raws, err := util.QueryColumns(db, cnf.Database, strings.ToLower(str)+"_tb")
 		if err != nil {
 			log.Println(err)
+			return columns
 		}
-
-		columns := make([]util.Column, 0)
-		for rows.Next() {
-			var name string
-			var typeid string
-
-			err := rows.Scan(&name, &typeid)
-			if err != nil {
-				log.Println(err)
-			}
-
-			prefix := util.GetPrefix(name)
-			column := util.Column{Name: strings.Title(util.GetName(name)), Column: name, Type: util.GetType(util.GetTableName(str), util.GetName(name), typeid, gpa, cnf), Prefix: prefix}
-			columns = append(columns, column)
+		for _, raw := range raws {
+			columns = append(columns, util.NewColumnFromRaw(str+"_tb", raw, gpa, cnf))
 		}
-
 		return columns
 	})
+
+	// dartField 는 Dart 필드 / 생성자 매개변수 이름이다 (컬럼 Name 소문자, 예약어나 클래스 멤버와 겹치면 뒤에 _).
+	views.AddGlobal("dartField", func(col util.Column) string { return DartIdent(strings.ToLower(col.Name)) })
+
+	// JSON key 는 모든 언어가 util.JSONKey 를 쓴다 (createddate, created_at → createdAt, userId → userid).
+	views.AddGlobal("jsonKey", func(col util.Column) string { return util.JSONKey(col) })
+
+	// _ / 대소문자만 다른 컬럼은 Go / TypeScript 와 같은 규칙으로 뒤 컬럼 이름에 번호를 붙인다.
+	items = util.DedupeColumns(tableName, items)
 
 	v := make(jet.VarMap)
 	v.Set("version", version)
 	v.Set("packageName", packageName)
 	v.Set("type", util.GetTableType(tableName))
 	v.Set("adminLevel", cnf.AdminLevel)
-	v.Set("name", strings.Title(util.GetTableName(tableName)))
+	v.Set("name", util.ModelName(tableName))
 	v.Set("tableName", tableName)
 	v.Set("prefix", prefix)
 
 	if gpa != nil {
 		for i, v := range items {
 			for _, v2 := range gpa.Primary {
-				if v.Name == strings.Title(v2) {
+				if util.MatchColumn(v, v2) {
 					items[i].Primary = true
 				}
 			}
@@ -201,6 +91,36 @@ func ProcessDart(packageName string, tableName string, prefix string, items []ut
 
 	v.Set("items", items)
 	v.Set("auth", auth)
+	// id 컬럼이 있으면 수정/삭제를 /{table}/{id} 로 부른다 (Go, Spring 모두 있는 경로).
+	hasId := false
+	// 엔티티에 item 필드가 있으면 Go 래퍼({item})와 헷갈리므로 id 가 있는 응답은 엔티티로 본다.
+	hasItemKey := false
+	for _, item := range items {
+		if item.Name == "Id" {
+			hasId = true
+		}
+		if util.JSONKey(item) == "item" {
+			hasItemKey = true
+		}
+	}
+	v.Set("hasId", hasId)
+	// fromJson 에서 쓰는 너그러운 변환 함수 (쓰는 것만 만든다)
+	uses := map[string]bool{}
+	for _, item := range items {
+		switch item.Type {
+		case "bool", "int", "double", "String":
+			uses[item.Type] = true
+		default:
+			uses["int"] = true // enum 코드
+		}
+	}
+	v.Set("usesBool", uses["bool"])
+	v.Set("usesInt", uses["int"])
+	v.Set("usesDouble", uses["double"])
+	v.Set("usesString", uses["String"])
+	// view 는 읽기 전용이라 insert/update/delete 를 만들지 않는다 (Go / Spring 에 경로가 없다).
+	v.Set("isView", util.GetTableType(tableName) == "view")
+	v.Set("hasItemKey", hasItemKey)
 	if gpa == nil {
 		v.Set("consts", make([]string, 0))
 		v.Set("methods", make([]string, 0))
@@ -213,31 +133,42 @@ func ProcessDart(packageName string, tableName string, prefix string, items []ut
 		v.Set("imports", make([]string, 0))
 		v.Set("enums", make([]util.EnumData, 0))
 	} else {
-		for i := range gpa.Join {
-			gpa.Join[i].Prefix = util.TablePrefix(gpa.Join[i].Name, packageName, db)
+		joins := make([]config.GpaJoin, 0)
+		// 백엔드와 같이 테이블 / 컬럼을 찾지 못한 조인은 건너뛴다.
+		for _, rj := range util.ResolveJoins(tableName, items, gpa.Join) {
+			join := rj.GpaJoin
+			join.Prefix = util.TablePrefixOf(rj.Table, cnf.Database, db)
+			joins = append(joins, join)
 		}
 
 		// Process map data into enums for Dart
 		enums := make([]util.EnumData, 0)
 		for _, mapItem := range gpa.Map {
 			enumData := util.EnumData{
-				Name: strings.Title(mapItem.Name),
+				Name: util.CamelCase(mapItem.Name),
 				Data: make([]util.EnumValue, 0),
+			}
+			// Dart enum 값 이름: 식별자로 못 쓰는 key 는 바꾸고, 합성 값 none 과 겹치면 번호를 붙인다.
+			// 코드는 data 위치 (Go / Kotlin / TypeScript 와 같다). none(0) 은 data[0] 이 비어 있을 때만 만든다.
+			used := map[string]bool{"none": true}
+			enumData.HasNone = len(mapItem.Data) > 0 && mapItem.Data[0] == ""
+			if enumData.HasNone {
+				enumData.Zero = "none"
 			}
 
 			for idx, dataStr := range mapItem.Data {
 				if dataStr == "" {
 					continue
 				}
-				parts := strings.Split(dataStr, ":")
-				if len(parts) == 2 {
-					enumValue := util.EnumValue{
-						Key:   parts[0],
-						Code:  idx,
-						Label: parts[1],
-					}
-					enumData.Data = append(enumData.Data, enumValue)
+				enumValue := util.EnumValue{
+					Key:   util.DedupeIdent(dartEnumIdent(util.SanitizeIdent(util.EnumKey(dataStr), "v")), used),
+					Code:  util.EnumCode(idx),
+					Label: util.EnumLabel(dataStr),
 				}
+				if idx == 0 {
+					enumData.Zero = enumValue.Key
+				}
+				enumData.Data = append(enumData.Data, enumValue)
 			}
 
 			if len(enumData.Data) > 0 {
@@ -250,99 +181,17 @@ func ProcessDart(packageName string, tableName string, prefix string, items []ut
 		v.Set("consts", gpa.Map)
 		v.Set("methods", gpa.Method)
 		v.Set("enums", enums)
-		if len(gpa.Primary) == 0 {
-			gpa.Primary = append(gpa.Primary, "id")
+		primarys := gpa.Primary
+		if len(primarys) == 0 {
+			primarys = []string{"id"}
 		}
-		v.Set("primarys", gpa.Primary)
-		v.Set("joins", gpa.Join)
+		v.Set("primarys", primarys)
+		v.Set("joins", joins)
 		v.Set("compares", gpa.Compare)
 		v.Set("search", gpa.Search)
 		v.Set("sessions", gpa.Session)
 
-		funcs := make([]util.Func, 0)
-
-		for _, item := range gpa.Method {
-			tokens := util.Split(item)
-
-			wheres := make([]util.Where, 0)
-			if tokens[0] == "Update" {
-				flag := false
-				for i := 1; i < len(tokens); i++ {
-					token := tokens[i]
-					column := ""
-					typename := ""
-					compare := ""
-
-					if token == "By" {
-						flag = true
-						continue
-					} else {
-						for _, name := range items {
-							if token == name.Name {
-								column = name.Name
-								typename = name.Type
-								if flag == true {
-									compare = "where"
-								} else {
-									compare = "column"
-								}
-								break
-							}
-						}
-					}
-
-					where := util.Where{Column: column, Type: typename, Compare: compare}
-					wheres = append(wheres, where)
-				}
-			} else {
-				for i := 2; i < len(tokens); i++ {
-					token := tokens[i]
-					column := ""
-					typename := ""
-					compare := ""
-					flag := false
-					for _, name := range items {
-						if token == name.Name {
-							column = name.Name
-							typename = name.Type
-							compare = "="
-							flag = true
-							break
-						}
-					}
-
-					if flag == false {
-						for _, name := range items {
-							if token == name.Name+"s" {
-								column = name.Name
-								typename = "[]" + name.Type
-								compare = "in"
-								flag = true
-								break
-							}
-						}
-					}
-
-					if flag == false {
-						for _, name := range items {
-							if token == name.Name+"like" {
-								column = name.Name
-								typename = name.Type
-								compare = "like"
-								flag = true
-								break
-							}
-						}
-					}
-
-					where := util.Where{Column: column, Type: typename, Compare: compare}
-					wheres = append(wheres, where)
-				}
-			}
-
-			fn := util.Func{Name: item, Wheres: wheres}
-			funcs = append(funcs, fn)
-		}
+		funcs := util.ParseFuncs(tableName, gpa.Method, items)
 
 		v.Set("funcs", funcs)
 		v.Set("imports", util.Unique(funcs))
@@ -369,7 +218,7 @@ func ProcessDart(packageName string, tableName string, prefix string, items []ut
 				}
 			}
 
-			dartFile := dartModelPath + util.GetTableName(tableName) + ".dart"
+			dartFile := dartModelPath + strings.ToLower(util.GetTableName(tableName)) + ".dart"
 
 			if err := util.WriteFile(dartFile, b.String()); err != nil {
 				log.Printf("ERROR: Failed to write dart file %s: %v", dartFile, err)
@@ -382,4 +231,35 @@ func ProcessDart(packageName string, tableName string, prefix string, items []ut
 		log.Println(err)
 		log.Println("error ========================")
 	}
+}
+
+// dartReserved 는 Dart 예약어와 생성 클래스의 멤버 이름이다. 필드 / enum 값 이름으로 쓰면 뒤에 _ 를 붙인다.
+var dartReserved = map[string]bool{
+	"assert": true, "break": true, "case": true, "catch": true, "class": true, "const": true, "continue": true, "default": true,
+	"do": true, "else": true, "enum": true, "extends": true, "false": true, "final": true, "finally": true, "for": true,
+	"if": true, "in": true, "is": true, "new": true, "null": true, "rethrow": true, "return": true, "super": true,
+	"switch": true, "this": true, "throw": true, "true": true, "try": true, "var": true, "void": true, "while": true,
+	"with": true, "await": true, "yield": true,
+	// 생성 클래스 / Object 멤버
+	"extra": true, "clone": true, "toJson": true, "fromJson": true, "hashCode": true, "runtimeType": true,
+	"toString": true, "noSuchMethod": true,
+}
+
+// dartEnumReserved 는 enum 값 이름으로 쓸 수 없는 enum 멤버 이름이다.
+var dartEnumReserved = map[string]bool{"values": true, "index": true, "name": true, "code": true, "label": true, "fromCode": true}
+
+// DartIdent 는 Dart 예약어나 생성 클래스 멤버와 겹치는 이름이면 뒤에 _ 를 붙인다.
+func DartIdent(name string) string {
+	if dartReserved[name] {
+		return name + "_"
+	}
+	return name
+}
+
+// dartEnumIdent 는 enum 값 이름이다. 예약어나 enum 멤버(values, index, code ...)와 겹치면 뒤에 _ 를 붙인다.
+func dartEnumIdent(name string) string {
+	if dartReserved[name] || dartEnumReserved[name] {
+		return name + "_"
+	}
+	return name
 }

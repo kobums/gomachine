@@ -3,21 +3,46 @@ package rest
 
 import (
 	"{{packageName}}/controllers"
-	{{if name == "User"}}"{{packageName}}/global/jwt"{{end}}
+	{{if passwordColumn != "" && !isView}}"{{packageName}}/global/jwt"{{end}}
 	"{{packageName}}/models"
-{{range imports}}
-	"{{packageName}}/models/{{.|lower}}"
+{{if restUsesConst}}
+	{{constImport|raw}}
 {{end}}
-    "regexp"
-    "strings"
+    {{if !isView && hasId}}"encoding/json"{{end}}
+    {{if adminCheck}}"reflect"{{end}}
+    {{if restNeedsStrconv}}"strconv"{{end}}
 )
 
 type {{name}}Controller struct {
 	controllers.Controller
 }
 
-func (c *{{name}}Controller) Read(id int64) {
-    {{if auth == "jwt" && len(sessions) > 0}}
+{{if adminCheck}}
+// isAdmin 은 세션 사용자의 Level 이 adminLevel({{adminLevelNum}}) 이상인지 확인한다. 세션에 Level 필드가 없으면 false.
+func (c *{{name}}Controller) isAdmin() bool {
+    if c.Session == nil {
+        return false
+    }
+    v := reflect.Indirect(reflect.ValueOf(c.Session))
+    if v.Kind() != reflect.Struct {
+        return false
+    }
+    f := v.FieldByName("Level")
+    if !f.IsValid() {
+        return false
+    }
+    switch f.Kind() {
+    case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+        return f.Int() >= {{adminLevelNum}}
+    case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+        return int64(f.Uint()) >= {{adminLevelNum}}
+    }
+    return false
+}
+{{end}}
+
+{{if hasId}}func (c *{{name}}Controller) Read(id int64) {
+    {{if auth == "jwt"}}
     if c.Session == nil {
         c.Result["code"] = "auth error"
         return
@@ -35,9 +60,20 @@ func (c *{{name}}Controller) Read(id int64) {
 	manager := models.New{{name}}Manager(conn)
 	item := manager.Get(id)
 
+    // 조회 에러와 "없는 행"을 구분한다.
+    if item == nil && manager.LastError != nil {
+        c.Result["code"] = "error"
+        return
+    }
+
     {{if auth == "jwt" && len(sessions) > 0}}
+    // 없는 행이면 세션 비교 전에 에러로 돌려준다 (nil 역참조 방지).
+    if item == nil {
+        c.Result["code"] = "error"
+        return
+    }
     {{range sessions}}
-    if item.{{.Column|title}} != c.Session.{{.Key|title}} {
+    if item.{{.Field}} != {{.Value|raw}} {
         c.Result["code"] = "auth error"
         return
     }
@@ -46,9 +82,134 @@ func (c *{{name}}Controller) Read(id int64) {
     
     c.Set("item", item)
 }
+{{end}}
+
+// Parse{{name}}Filters 는 목록/개수의 조건이다. get 은 쿼리 파라미터를 읽는 함수다 (컨트롤러 Get, 라우터 fiber Query).
+// 파라미터 이름은 컬럼의 API 이름(JSON key)이고, 날짜 컬럼은 start/end 범위다.
+// 숫자/enum/bool 파라미터를 해석하지 못하면 두 번째 값으로 그 파라미터 이름을 돌려준다 (400). bool 은 1/0/true/false 를 받고, 보냈을 때만 거른다.
+func Parse{{name}}Filters(get func(string) string) ([]interface{}, string) {
+    var args []interface{}
+    
+    {{range items}}{{if .Name != "Id" && .Name != "Passwd" && .Name != "Password" && .Type != "[]byte"}}{{if isRange(.)}}_start{{.Name|lower}} := get("{{startParam(.)}}")
+    _end{{.Name|lower}} := get("{{endParam(.)}}")
+    if _start{{.Name|lower}} != "" && _end{{.Name|lower}} != "" {        
+        var v [2]string
+        v[0] = _start{{.Name|lower}}
+        v[1] = _end{{.Name|lower}}  
+        args = append(args, models.Where{Column:"{{.Key}}", Value:v, Compare:"between"})    
+    } else if  _start{{.Name|lower}} != "" {          
+        args = append(args, models.Where{Column:"{{.Key}}", Value:_start{{.Name|lower}}, Compare:">="})
+    } else if  _end{{.Name|lower}} != "" {          
+        args = append(args, models.Where{Column:"{{.Key}}", Value:_end{{.Name|lower}}, Compare:"<="})            
+    }
+    {{else if .Type == "string"}}_{{.Name|lower}} := get("{{jsonKey(.)}}")
+    if _{{.Name|lower}} != "" {
+        {{if .Name == "Name" || .Name == "Title" || .Name == "Content"}}args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})
+        {{else}}args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"like"}){{end}}
+    }
+    {{else if .Type == "bool"}}if s := get("{{jsonKey(.)}}"); s != "" {
+        v, err := strconv.ParseBool(s)
+        if err != nil {
+            return nil, "{{jsonKey(.)}}"
+        }
+        args = append(args, models.Where{Column:"{{.Key}}", Value:v, Compare:"{{compareColumn(.Name, compares)}}"})
+    }
+    {{else if .Type == "int64"}}if s := get("{{jsonKey(.)}}"); s != "" {
+        v, err := strconv.ParseInt(s, 10, 64)
+        if err != nil {
+            return nil, "{{jsonKey(.)}}"
+        }
+        if v != 0 {
+            args = append(args, models.Where{Column:"{{.Key}}", Value:v, Compare:"{{compareColumn(.Name, compares)}}"})
+        }
+    }
+    {{else if .Type == "float64"}}if s := get("{{jsonKey(.)}}"); s != "" {
+        v, err := strconv.ParseFloat(s, 64)
+        if err != nil {
+            return nil, "{{jsonKey(.)}}"
+        }
+        if v != 0.0 {
+            args = append(args, models.Where{Column:"{{.Key}}", Value:v, Compare:"{{compareColumn(.Name, compares)}}"})
+        }
+    }
+    {{else}}if s := get("{{jsonKey(.)}}"); s != "" {
+        v, err := strconv.Atoi(s)
+        if err != nil {
+            return nil, "{{jsonKey(.)}}"
+        }
+        {{if enumZero(.Name)}}// 코드 0 도 실제 값이라 보낸 경우에는 항상 조건을 붙인다.
+        args = append(args, models.Where{Column:"{{.Key}}", Value:v, Compare:"{{compareColumn(.Name, compares)}}"})
+        {{else}}if v != 0 {
+            args = append(args, models.Where{Column:"{{.Key}}", Value:v, Compare:"{{compareColumn(.Name, compares)}}"})
+        }{{end}}
+    }
+    {{end}}{{end}}{{end}}
+    return args, ""
+}
+
+// filters 는 Parse{{name}}Filters 에 세션 조건을 더한다. 세션이 있으면 현재 사용자 소유 행만 고른다.
+// 파라미터를 해석하지 못하면 code "bad request" 를 넣고 false 를 돌려준다.
+func (c *{{name}}Controller) filters() ([]interface{}, bool) {
+    args, bad := Parse{{name}}Filters(func(key string) string { return c.Get(key) })
+    if bad != "" {
+        c.Result["code"] = "bad request"
+        c.Result["error"] = "invalid parameter: " + bad
+        return nil, false
+    }
+
+    {{if auth == "jwt" && len(sessions) > 0}}
+    {{range sessions}}
+    args = append(args, models.Where{Column:"{{.Column}}", Value:c.Session.{{.Key|title}}, Compare:"="})    
+    {{end}}
+    {{end}}
+    return args, true
+}
+
+// Search 는 GET /{table}/search/{field} 다. column(라우터가 넣는 이 테이블 컬럼)이 value 와 같은 행 목록을 items 로 돌려준다.
+// 세션이 있으면 현재 사용자 소유 행만 고른다. 비밀번호/[]byte 컬럼은 라우터가 경로를 만들지 않는다.
+func (c *{{name}}Controller) Search(column string, value interface{}) {
+    {{if auth == "jwt"}}
+    if c.Session == nil {
+        c.Result["code"] = "auth error"
+        return
+    }
+    {{range sessions}}
+    if c.Session.{{.Key|title}} == 0 {
+        c.Result["code"] = "auth error"
+        return
+    }
+    {{end}}
+    {{end}}
+
+	conn := c.NewConnection()
+
+	manager := models.New{{name}}Manager(conn)
+
+    args := []interface{}{models.Where{Column: column, Value: value, Compare: "="}}
+    {{if auth == "jwt" && len(sessions) > 0}}
+    {{range sessions}}
+    args = append(args, models.Where{Column:"{{.Column}}", Value:c.Session.{{.Key|title}}, Compare:"="})
+    {{end}}
+    {{end}}
+
+    items := manager.Find(args)
+    if len(items) == 0 && manager.LastError != nil {
+        c.Result["code"] = "error"
+        return
+    }
+    c.Set("items", items)
+}
 
 func (c *{{name}}Controller) Index(page int, pagesize int) {
-    {{if auth == "jwt" && len(sessions) > 0}}
+    // page 0 은 전체 행이다. 음수는 잘못된 요청이고, pagesize 는 10000 을 넘지 않는다 (Spring 과 같다).
+    if page < 0 || pagesize < 0 {
+        c.Result["code"] = "bad request"
+        return
+    }
+    if pagesize > 10000 {
+        pagesize = 10000
+    }
+    {{if auth == "jwt"}}
     if c.Session == nil {
         c.Result["code"] = "auth error"
         return
@@ -65,92 +226,43 @@ func (c *{{name}}Controller) Index(page int, pagesize int) {
 
 	manager := models.New{{name}}Manager(conn)
 
-    var args []interface{}
-    
-    {{range items}}{{if .Name != "Id" && .Name != "Passwd"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}_start{{.Name|lower}} := c.Get("start{{.Name|lower}}")
-    _end{{.Name|lower}} := c.Get("end{{.Name|lower}}")
-    if _start{{.Name|lower}} != "" && _end{{.Name|lower}} != "" {        
-        var v [2]string
-        v[0] = _start{{.Name|lower}}
-        v[1] = _end{{.Name|lower}}  
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:v, Compare:"between"})    
-    } else if  _start{{.Name|lower}} != "" {          
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_start{{.Name|lower}}, Compare:">="})
-    } else if  _end{{.Name|lower}} != "" {          
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_end{{.Name|lower}}, Compare:"<="})            
+    args, ok := c.filters()
+    if !ok {
+        return
     }
-    {{else if .Type == "string"}}_{{.Name|lower}} := c.Get("{{.Name|lower}}")
-    if _{{.Name|lower}} != "" {
-        {{if .Name == "Name" || .Name == "Title" || .Name == "Content"}}args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})
-        {{else}}args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"like"}){{end}}
-    }
-    {{else if .Type == "int"}}_{{.Name|lower}} := c.Geti("{{.Name|lower}}")
-    if _{{.Name|lower}} != 0 {
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
-    }
-    {{else if .Type == "int64"}}_{{.Name|lower}} := c.Geti64("{{.Name|lower}}")
-    if _{{.Name|lower}} != 0 {
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
-    }
-    {{else if .Type == "float64"}}_{{.Name|lower}} := c.Getf("{{.Name|lower}}")
-    if _{{.Name|lower}} != 0.0 {
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
-    }        
-    {{else}}_{{.Name|lower}} := c.Geti("{{.Name|lower}}")
-    if _{{.Name|lower}} != 0 {
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
-    }
-    {{end}}{{end}}{{end}}
 
-    {{if auth == "jwt" && len(sessions) > 0}}
-    {{range sessions}}
-    args = append(args, models.Where{Column:"{{.Column|lower}}", Value:c.Session.{{.Key|title}}, Compare:"="})    
-    {{end}}
-    {{end}}
-    
+    // 개수는 페이지/정렬 없이 같은 조건으로 센다.
+    countArgs := args
+
     if page != 0 && pagesize != 0 {
         args = append(args, models.Paging(page, pagesize))
     }
     
+    // orderby 는 ORDER BY 절에 들어가므로 이 테이블의 컬럼(API 이름 / 컬럼 이름) + asc/desc 만 허용하고
+    // 모르는 항목은 버린다 (SQL injection 방지). 예: "createdat desc, name"
     orderby := c.Get("orderby")
-    if orderby == "" {
-        if page != 0 && pagesize != 0 {
-            orderby = "id desc"
-            args = append(args, models.Ordering(orderby))
-        }
-    } else {
-        orderbys := strings.Split(orderby, ",")
-
-        str := ""
-        for i, v := range orderbys {
-            if i == 0 {
-                str += v
-            } else {
-                if strings.Contains(v, "_") {                   
-                    str += ", " + strings.Trim(v, " ")
-                } else {
-                    str += ", {{prefix}}_" + strings.Trim(v, " ")                
-                }
-            }
-        }
-        
-        // orderby 는 ORDER BY 절에 그대로 들어가므로 "컬럼 [asc|desc]" 목록 형태만 허용한다 (SQL injection 방지).
-        if regexp.MustCompile(`^\s*[A-Za-z0-9_]+(\s+(?i:asc|desc))?\s*(,\s*[A-Za-z0-9_]+(\s+(?i:asc|desc))?\s*)*$`).MatchString(orderby) {
-        	args = append(args, models.Ordering(str))
-        }
+    if orderby != "" {
+        orderby = manager.ParseOrder(orderby)
+    }
+    if orderby == "" && page != 0 && pagesize != 0 {
+        orderby = "{{orderKey}} desc"
+    }
+    if orderby != "" {
+        args = append(args, models.Ordering(orderby))
     }
     
 	items := manager.Find(args)
 	c.Set("items", items)
 
-    if page == 1 {
-       total := manager.Count(args)
+    // 페이지를 요청하면 몇 번째 페이지든 전체 개수를 같이 돌려준다.
+    if page != 0 && pagesize != 0 {
+       total := manager.Count(countArgs)
 	   c.Set("total", total)
     }
 }
 
 func (c *{{name}}Controller) Count() {
-    {{if auth == "jwt" && len(sessions) > 0}}
+    {{if auth == "jwt"}}
     if c.Session == nil {
         c.Result["code"] = "auth error"
         return
@@ -167,57 +279,19 @@ func (c *{{name}}Controller) Count() {
 
 	manager := models.New{{name}}Manager(conn)
 
-    var args []interface{}
-    
-    {{range items}}{{if .Name != "Id" && .Name != "Passwd"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}_start{{.Name|lower}} := c.Get("start{{.Name|lower}}")
-    _end{{.Name|lower}} := c.Get("end{{.Name|lower}}")
+    args, ok := c.filters()
+    if !ok {
+        return
+    }
 
-    if _start{{.Name|lower}} != "" && _end{{.Name|lower}} != "" {        
-        var v [2]string
-        v[0] = _start{{.Name|lower}}
-        v[1] = _end{{.Name|lower}}  
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:v, Compare:"between"})    
-    } else if  _start{{.Name|lower}} != "" {          
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_start{{.Name|lower}}, Compare:">="})
-    } else if  _end{{.Name|lower}} != "" {          
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_end{{.Name|lower}}, Compare:"<="})            
-    }
-    {{else if .Type == "string"}}_{{.Name|lower}} := c.Get("{{.Name|lower}}")
-    if _{{.Name|lower}} != "" {
-        {{if .Name == "Name" || .Name == "Title" || .Name == "Content"}}args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})
-        {{else}}args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"like"}){{end}}
-        
-    }
-    {{else if .Type == "int"}}_{{.Name|lower}} := c.Geti("{{.Name|lower}}")
-    if _{{.Name|lower}} != 0 {
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
-    }
-    {{else if .Type == "int64"}}_{{.Name|lower}} := c.Geti64("{{.Name|lower}}")
-    if _{{.Name|lower}} != 0 {
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
-    }
-    {{else if .Type == "float64"}}_{{.Name|lower}} := c.Getf("{{.Name|lower}}")
-    if _{{.Name|lower}} != 0.0 {
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
-    }        
-    {{else}}_{{.Name|lower}} := c.Geti("{{.Name|lower}}")
-    if _{{.Name|lower}} != 0 {
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
-    }
-    {{end}}{{end}}{{end}}
-    
-    {{if auth == "jwt" && len(sessions) > 0}}
-    {{range sessions}}
-    args = append(args, models.Where{Column:"{{.Column|lower}}", Value:c.Session.{{.Key|title}}, Compare:"="})    
-    {{end}}
-    {{end}}
-    
     total := manager.Count(args)
 	c.Set("total", total)
+    // GET /{table}/count 는 Spring 과 같은 count 도 돌려준다 (total 은 예전 클라이언트용).
+	c.Set("count", total)
 }
 
-func (c *{{name}}Controller) Insert(item *models.{{name}}{{if name == "User"}}Update{{end}}) {
-    {{if auth == "jwt" && len(sessions) > 0 && name != "User"}}
+{{if !isView}}func (c *{{name}}Controller) Insert(item *models.{{inputName}}) {
+    {{if auth == "jwt" && name != "User"}}
     if c.Session == nil {
         c.Set("code", "error")
         return
@@ -227,17 +301,34 @@ func (c *{{name}}Controller) Insert(item *models.{{name}}{{if name == "User"}}Up
         c.Set("code", "error")
         return
     } else {
-        item.{{.Column|title}} = c.Session.{{.Key|title}}
+        item.{{.Field}} = {{.Value|raw}}
     }    
     {{end}}
     {{end}}
-    
-    {{if name == "User"}}
-    if item.Password != "" {
-        hashed, err := jwt.GeneratePasswd(item.Password)
-        if err == nil {
-            item.Password = hashed
+
+    {{if hasId}}
+    // id 는 자동 증가 값을 쓴다. 클라이언트가 보낸 id 는 무시한다.
+    item.Id = 0
+    {{end}}
+    {{if createdDefault}}
+    // createddate 는 서버가 현재 시각으로 넣는다. 클라이언트가 보낸 값은 무시한다.
+    item.{{createdColumn}} = ""
+    {{end}}
+    {{range protects}}
+    // 보호 컬럼은 클라이언트 값을 받지 않는다.
+    {{if adminCheck}}if !c.isAdmin() {
+        item.{{.}} = models.{{inputName}}{}.{{.}}
+    }{{else}}item.{{.}} = models.{{inputName}}{}.{{.}}{{end}}
+    {{end}}
+    {{if passwordColumn != ""}}
+    if item.{{passwordColumn}} != "" {
+        hashed, err := jwt.GeneratePasswd(item.{{passwordColumn}})
+        if err != nil {
+            c.Set("code", "error")
+            c.Set("error", err)
+            return
         }
+        item.{{passwordColumn}} = hashed
     }
     {{end}}
 
@@ -253,46 +344,70 @@ func (c *{{name}}Controller) Insert(item *models.{{name}}{{if name == "User"}}Up
 
     id := manager.GetIdentity()
     c.Result["id"] = id
-    item.Id = id
+    {{if hasId}}item.Id = id{{end}}
 }
 
-func (c *{{name}}Controller) Insertbatch(item *[]models.{{name}}{{if name == "User"}}Update{{end}}) {  
+func (c *{{name}}Controller) Insertbatch(item *[]models.{{inputName}}) {  
     if item == nil || len(*item) == 0 {
         return
     }
 
     rows := len(*item)
     
-    {{if auth == "jwt" && len(sessions) > 0 && name != "User"}}
+    {{if auth == "jwt"}}
     if c.Session == nil {
         c.Set("code", "error")
         return
     }
+    {{if name != "User"}}
     {{range sessions}}
     if c.Session.{{.Key|title}} == 0 {
         c.Set("code", "error")
         return
     } else {
         for i := 0; i < rows; i++ {
-            (*item)[i].{{.Column|title}} = c.Session.{{.Key|title}}
+            (*item)[i].{{.Field}} = {{.Value|raw}}
         }
     }    
     {{end}}
     {{end}}
+    {{end}}
     
+    // 모든 행을 먼저 준비(id/보호 컬럼/비밀번호 해시)한 다음 저장한다. 준비 단계에서 실패하면 아무것도 저장하지 않는다.
+    // 저장은 트랜잭션이 아니다: 중간 행에서 실패하면 앞의 행은 이미 저장되어 있다.
+    for i := 0; i < rows; i++ {
+        {{if hasId}}
+        // id 는 자동 증가 값을 쓴다. 클라이언트가 보낸 id 는 무시한다.
+        (*item)[i].Id = 0
+        {{end}}
+        {{if createdDefault}}
+        // createddate 는 서버가 현재 시각으로 넣는다.
+        (*item)[i].{{createdColumn}} = ""
+        {{end}}
+        {{range protects}}
+        // 보호 컬럼은 클라이언트 값을 받지 않는다.
+        {{if adminCheck}}if !c.isAdmin() {
+            (*item)[i].{{.}} = models.{{inputName}}{}.{{.}}
+        }{{else}}(*item)[i].{{.}} = models.{{inputName}}{}.{{.}}{{end}}
+        {{end}}
+        {{if passwordColumn != ""}}
+        if (*item)[i].{{passwordColumn}} != "" {
+            hashed, err := jwt.GeneratePasswd((*item)[i].{{passwordColumn}})
+            if err != nil {
+                c.Set("code", "error")
+                c.Set("error", err)
+                return
+            }
+            (*item)[i].{{passwordColumn}} = hashed
+        }
+        {{end}}
+    }
+
 	conn := c.NewConnection()
     
 	manager := models.New{{name}}Manager(conn)
 
     for i := 0; i < rows; i++ {
-        {{if name == "User"}}
-        if (*item)[i].Password != "" {
-            hashed, err := jwt.GeneratePasswd((*item)[i].Password)
-            if err == nil {
-                (*item)[i].Password = hashed
-            }
-        }
-        {{end}}
 	    err := manager.Insert(&((*item)[i]))
         if err != nil {
             c.Set("code", "error")    
@@ -301,9 +416,12 @@ func (c *{{name}}Controller) Insertbatch(item *[]models.{{name}}{{if name == "Us
         }
     }
 }
+{{end}}
 
-func (c *{{name}}Controller) Update(item *models.{{name}}{{if name == "User"}}Update{{end}}) {
-    {{if auth == "jwt" && len(sessions) > 0}}
+{{if !isView && hasId}}// Update 는 body 에 있는 필드만 기존 행에 덮어쓴다 (빠진 필드는 DB 값 유지). item 은 id 를 읽는 데만 쓴다.
+// body 가 비어 있으면 item 전체로 바꾼다 (예전 동작).
+func (c *{{name}}Controller) Update(item *models.{{inputName}}, body []byte) {
+    {{if auth == "jwt"}}
     if c.Session == nil {
         c.Set("code", "error")
         return
@@ -312,47 +430,88 @@ func (c *{{name}}Controller) Update(item *models.{{name}}{{if name == "User"}}Up
     if c.Session.{{.Key|title}} == 0 {
         c.Set("code", "error")
         return
-    } else {
-        item.{{.Column|title}} = c.Session.{{.Key|title}}
-    }    
-    {{end}}
-    {{end}}
-
-    {{if auth == "jwt" && len(sessions) > 0}}
-    // 소유권 검사: 기존 행이 현재 세션 사용자 것인지 확인한다 (남의 행 수정/삭제 방지).
-    if existing := models.New{{name}}Manager(c.NewConnection()).Get(item.Id); existing == nil {
-        c.Set("code", "error")
-        return
-    } else {
-        {{range sessions}}
-        if existing.{{.Column|title}} != c.Session.{{.Key|title}} {
-            c.Set("code", "auth error")
-            return
-        }
-        {{end}}
     }
+    {{end}}
     {{end}}
     {{if auth == "jwt" && name == "User"}}
-    // 회원 정보는 본인만 수정/삭제할 수 있다.
-    if c.Session == nil || item.Id != c.Session.Id {
+    // 회원 정보는 본인만 수정/삭제할 수 있다{{if adminCheck}} (관리자 제외){{end}}.
+    if {{if adminCheck}}!c.isAdmin() && {{end}}item.Id != c.Session.Id {
         c.Set("code", "auth error")
         return
-    }
-    {{end}}
-
-    {{if name == "User"}}
-    if item.Password != "" {
-        hashed, err := jwt.GeneratePasswd(item.Password)
-        if err == nil {
-            item.Password = hashed
-        }
     }
     {{end}}
 
 	conn := c.NewConnection()
 
 	manager := models.New{{name}}Manager(conn)
-    err := manager.Update(item)
+
+    // 기존 행을 조인 없이 읽어 소유권을 확인하고, 클라이언트가 바꾸면 안 되는 값은 기존 값을 유지한다.
+    // dbNulls 는 기존 행에서 NULL 이었던 null 허용 컬럼이다.
+    existing, dbNulls := manager.GetRaw(item.Id)
+    if existing == nil {
+        c.Set("code", "error")
+        return
+    }
+    {{if auth == "jwt"}}
+    {{range sessions}}
+    // 소유권 검사: 기존 행이 현재 세션 사용자 것인지 확인한다 (남의 행 수정/삭제 방지).
+    if existing.{{.Field}} != {{.Value|raw}} {
+        c.Set("code", "auth error")
+        return
+    }
+    {{end}}
+    {{end}}
+
+    // 기존 행 위에 보낸 JSON 필드만 덮어쓴다.
+    {{if inputName != name}}merged := existing.ConvertUpdate(){{else}}merged := &models.{{name}}{}
+    *merged = *existing{{end}}
+    if len(body) == 0 {
+        body, _ = json.Marshal(item)
+    }
+    if err := json.Unmarshal(body, merged); err != nil {
+        c.Set("code", "bad request")
+        c.Set("error", err)
+        return
+    }
+    // NULL 처리: 본문에 없는 null 허용 필드는 DB 의 NULL 을 유지하고, null 로 보낸 필드는 NULL 로 지운다.
+    nulls := models.Merge{{name}}Nulls(dbNulls, body)
+    merged.Id = item.Id
+    {{if auth == "jwt"}}
+    {{range sessions}}
+    merged.{{.Field}} = {{.Value|raw}}{{if nullableCol(.Field)}}
+    delete(nulls, "{{.Field}}"){{end}}
+    {{end}}
+    {{end}}
+    {{if createdColumn != ""}}
+    merged.{{createdColumn}} = existing.{{createdColumn}}{{if nullableCol(createdColumn)}}
+    nulls["{{createdColumn}}"] = dbNulls["{{createdColumn}}"]{{end}}
+    {{end}}
+    {{range protects}}
+    // 보호 컬럼은 기존 값(NULL 포함)을 유지한다.
+    {{if adminCheck}}if !c.isAdmin() {
+        merged.{{.}} = existing.{{.}}{{if nullableCol(.)}}
+        nulls["{{.}}"] = dbNulls["{{.}}"]{{end}}
+    }{{else}}merged.{{.}} = existing.{{.}}{{if nullableCol(.)}}
+    nulls["{{.}}"] = dbNulls["{{.}}"]{{end}}{{end}}
+    {{end}}
+    {{if passwordColumn != ""}}
+    // 비밀번호를 보내지 않거나 비워 보내면 기존 해시를 유지한다.
+    if merged.{{passwordColumn}} == "" || merged.{{passwordColumn}} == existing.{{passwordColumn}} {
+        merged.{{passwordColumn}} = existing.{{passwordColumn}}{{if nullableCol(passwordColumn)}}
+        nulls["{{passwordColumn}}"] = dbNulls["{{passwordColumn}}"]{{end}}
+    } else {
+        hashed, err := jwt.GeneratePasswd(merged.{{passwordColumn}})
+        if err != nil {
+            c.Set("code", "error")
+            c.Set("error", err)
+            return
+        }
+        merged.{{passwordColumn}} = hashed{{if nullableCol(passwordColumn)}}
+        delete(nulls, "{{passwordColumn}}"){{end}}
+    }
+    {{end}}
+
+    err := manager.UpdateNulls(merged, nulls)
     if err != nil {
         c.Set("code", "error")    
         c.Set("error", err)
@@ -361,7 +520,7 @@ func (c *{{name}}Controller) Update(item *models.{{name}}{{if name == "User"}}Up
 }
 
 func (c *{{name}}Controller) Delete(item *models.{{name}}) {
-    {{if auth == "jwt" && len(sessions) > 0}}
+    {{if auth == "jwt"}}
     if c.Session == nil {
         c.Set("code", "error")
         return
@@ -370,12 +529,12 @@ func (c *{{name}}Controller) Delete(item *models.{{name}}) {
 
     {{if auth == "jwt" && len(sessions) > 0}}
     // 소유권 검사: 기존 행이 현재 세션 사용자 것인지 확인한다 (남의 행 수정/삭제 방지).
-    if existing := models.New{{name}}Manager(c.NewConnection()).Get(item.Id); existing == nil {
+    if existing, _ := models.New{{name}}Manager(c.NewConnection()).GetRaw(item.Id); existing == nil {
         c.Set("code", "error")
         return
     } else {
         {{range sessions}}
-        if existing.{{.Column|title}} != c.Session.{{.Key|title}} {
+        if existing.{{.Field}} != {{.Value|raw}} {
             c.Set("code", "auth error")
             return
         }
@@ -383,8 +542,8 @@ func (c *{{name}}Controller) Delete(item *models.{{name}}) {
     }
     {{end}}
     {{if auth == "jwt" && name == "User"}}
-    // 회원 정보는 본인만 수정/삭제할 수 있다.
-    if c.Session == nil || item.Id != c.Session.Id {
+    // 회원 정보는 본인만 수정/삭제할 수 있다{{if adminCheck}} (관리자 제외){{end}}.
+    if {{if adminCheck}}!c.isAdmin() && {{end}}item.Id != c.Session.Id {
         c.Set("code", "auth error")
         return
     }
@@ -403,26 +562,34 @@ func (c *{{name}}Controller) Delete(item *models.{{name}}) {
 }
 
 func (c *{{name}}Controller) Deletebatch(item *[]models.{{name}}) {
-    {{if auth == "jwt" && len(sessions) > 0}}
+    {{if auth == "jwt"}}
     if c.Session == nil {
         c.Set("code", "error")
         return
     }
     {{end}}
+    if item == nil {
+        return
+    }
     
     conn := c.NewConnection()
 
 	manager := models.New{{name}}Manager(conn)
 
+    {{if auth == "jwt" && (len(sessions) > 0 || name == "User")}}
+    // 모든 행의 권한을 먼저 검사하고, 하나라도 남의 행이면 아무것도 지우지 않는다. 없는 행은 건너뛴다 (Spring 과 같다).
     for _, v := range *item {
-        {{if auth == "jwt" && len(sessions) > 0}}
+        {{if len(sessions) > 0}}
         // 소유권 검사: 기존 행이 현재 세션 사용자 것인지 확인한다 (남의 행 수정/삭제 방지).
-        if existing := manager.Get(v.Id); existing == nil {
-            c.Set("code", "error")
-            return
+        if existing, _ := manager.GetRaw(v.Id); existing == nil {
+            if manager.LastError != nil {
+                c.Set("code", "error")
+                return
+            }
+            continue
         } else {
             {{range sessions}}
-            if existing.{{.Column|title}} != c.Session.{{.Key|title}} {
+            if existing.{{.Field}} != {{.Value|raw}} {
                 c.Set("code", "auth error")
                 return
             }
@@ -430,13 +597,17 @@ func (c *{{name}}Controller) Deletebatch(item *[]models.{{name}}) {
         }
         {{end}}
         {{if auth == "jwt" && name == "User"}}
-        // 회원 정보는 본인만 수정/삭제할 수 있다.
-        if c.Session == nil || v.Id != c.Session.Id {
+        // 회원 정보는 본인만 수정/삭제할 수 있다{{if adminCheck}} (관리자 제외){{end}}.
+        if {{if adminCheck}}!c.isAdmin() && {{end}}v.Id != c.Session.Id {
             c.Set("code", "auth error")
             return
         }
         {{end}}
+    }
+    {{end}}
 
+    // 삭제는 트랜잭션이 아니다: 중간 행에서 DB 에러가 나면 앞의 행은 이미 지워져 있다.
+    for _, v := range *item {
 	    err := manager.Delete(v.Id)
         if err != nil {
             c.Set("code", "error")    
@@ -445,16 +616,18 @@ func (c *{{name}}Controller) Deletebatch(item *[]models.{{name}}) {
         }
     }
 }
+{{end}}
 
-{{range funcs}}
-{{if querytype(.Name) == "Update"}}// @Put(){{end}}{{if querytype(.Name) == "Delete"}}// @Delete(){{end}}
-func (c *{{name}}Controller) {{.Name}}({{range i, v := .Wheres}}{{if i > 0}} ,{{end}}{{v.Column|lower}} {{v.Type}}{{end}}) {{if querytype(.Name) == "Get"}}*models.{{name}} {{else if querytype(.Name) == "Find"}}[]models.{{name}} {{else if querytype(.Name) == "Count"}}int {{end}}{
-    {{if auth == "jwt" && len(sessions) > 0}}
+{{range _, f := funcs}}
+{{qt := f.Kind}}
+{{if qt == "Update"}}// @Put(){{end}}{{if qt == "Delete"}}// @Delete(){{end}}
+func (c *{{name}}Controller) {{f.Name}}({{range i, v := f.Wheres}}{{if i > 0}} ,{{end}}{{v.Param}} {{v.Type}}{{end}}) {{if qt == "Get"}}*models.{{name}} {{else if qt == "Find"}}[]models.{{name}} {{else if qt == "Count"}}int {{end}}{
+    {{if auth == "jwt"}}
     if c.Session == nil {
         c.Result["code"] = "auth error"
-        {{if querytype(.Name) == "Get" || querytype(.Name) == "Find"}}
+        {{if qt == "Get" || qt == "Find"}}
         return nil
-        {{else if querytype(.Name) == "Count"}}
+        {{else if qt == "Count"}}
         return 0
         {{else}}
         return
@@ -463,39 +636,90 @@ func (c *{{name}}Controller) {{.Name}}({{range i, v := .Wheres}}{{if i > 0}} ,{{
     {{range _, s:= sessions}}
     if c.Session.{{s.Key|title}} == 0 {
         c.Result["code"] = "auth error"
-        {{if querytype(.Name) == "Get" || querytype(.Name) == "Find"}}
+        {{if qt == "Get" || qt == "Find"}}
         return nil
-        {{else if querytype(.Name) == "Count"}}
+        {{else if qt == "Count"}}
         return 0
         {{else}}
         return
         {{end}}
     } else {
-        {{range i, v := .Wheres}}
-        {{if lower(s.Column) == lower(v.Column)}}
-        {{v.Column|lower}} = c.Session.{{s.Key|title}}
-        {{end}}
+        {{range i, v := f.Wheres}}
+        {{if s.Field == v.Column}}{{if !hasPrefix(v.Type, "[]")}}
+        {{v.Param}} = {{s.Value|raw}}
+        {{end}}{{end}}
         {{end}}
     }
     {{end}}
     {{end}}
+    {{locked := false}}{{if qt == "Update"}}{{range i, v := f.Wheres}}{{if v.Compare == "column" && isProtected(v.Column, protects)}}{{locked = true}}{{end}}{{end}}{{end}}
+    {{noOwner := auth == "jwt" && name == "User" && !hasId && (qt == "Update" || qt == "Delete")}}
+    {{if noOwner}}
+    // id 컬럼이 없어 본인 행인지 확인할 수 없으므로 회원 정보 수정/삭제는 거부한다.
+    c.Result["code"] = "auth error"
+    {{else if locked && !adminCheck}}
+    // 보호 컬럼은 클라이언트가 바꿀 수 없다.
+    c.Result["code"] = "auth error"
+    {{else}}
+    {{if locked}}
+    // 보호 컬럼은 관리자만 바꿀 수 있다.
+    if !c.isAdmin() {
+        c.Result["code"] = "auth error"
+        return
+    }
+    {{end}}
     conn := c.NewConnection()
 
 	manager := models.New{{name}}Manager(conn)
-    {{if querytype(.Name) == "Get" || querytype(.Name) == "Find" || querytype(.Name) == "Count"}}
-    item := manager.{{.Name}}({{range i, v := .Wheres}}{{if i > 0}}, {{end}}{{v.Column|lower}}{{end}})
-    {{if querytype(.Name) == "Get"}}
+    {{if qt == "Get" || qt == "Find" || qt == "Count"}}
+    item := manager.{{f.Name}}({{range i, v := f.Wheres}}{{if i > 0}}, {{end}}{{v.Param}}{{end}}{{if auth == "jwt"}}{{range sessions}}, models.Where{Column:"{{.Column}}", Value:c.Session.{{.Key|title}}, Compare:"="}{{end}}{{end}})
+    {{if qt == "Get"}}
     c.Set("item", item)
     {{end}}
-    {{if querytype(.Name) == "Find"}}
+    {{if qt == "Find"}}
     c.Set("items", item)
     {{end}}
-    {{if querytype(.Name) == "Count"}}
+    {{if qt == "Count"}}
     c.Set("count", item)
     {{end}}
     return item
     {{else}}
-    manager.{{.Name}}({{range i, v := .Wheres}}{{if i > 0}}, {{end}}{{v.Column|lower}}{{end}})
+    {{if auth == "jwt"}}
+    {{range sessions}}
+    // 소유권 검사: 조건에 맞는 행 중 다른 사용자 소유 행이 있으면 거부한다 (남의 행 수정/삭제 방지).
+    if manager.Count([]interface{}{ {{range i, v := f.Wheres}}{{if qt == "Delete" || v.Compare == "where"}}models.Where{Column:"{{v.Key}}", Value:{{v.Param}}, Compare:"{{if v.Compare == "where"}}={{else}}{{v.Compare}}{{end}}"}, {{end}}{{end}}models.Custom{Query:"({{.SQL}} <> ? or {{.SQL}} is null)", Params:[]interface{}{c.Session.{{.Key|title}}}}}) > 0 {
+        c.Result["code"] = "auth error"
+        return
+    }
+    {{end}}
+    {{if name == "User" && hasId}}
+    // 회원 정보는 본인만 수정/삭제할 수 있다{{if adminCheck}} (관리자 제외){{end}}.
+    if {{if adminCheck}}!c.isAdmin() && {{end}}manager.Count([]interface{}{ {{range i, v := f.Wheres}}{{if qt == "Delete" || v.Compare == "where"}}models.Where{Column:"{{v.Key}}", Value:{{v.Param}}, Compare:"{{if v.Compare == "where"}}={{else}}{{v.Compare}}{{end}}"}, {{end}}{{end}}models.Where{Column:"{{orderKey}}", Value:c.Session.Id, Compare:"<>"}}) > 0 {
+        c.Result["code"] = "auth error"
+        return
+    }
+    {{end}}
+    {{end}}
+    {{if qt == "Update"}}{{range i, v := f.Wheres}}{{if v.Compare == "column" && v.Column == passwordColumn}}
+    // 비밀번호는 REST Update 와 같이 해시해서 저장한다. 빈 비밀번호는 받지 않는다.
+    if {{v.Param}} == "" {
+        c.Result["code"] = "bad request"
+        return
+    }
+    if hashed, err := jwt.GeneratePasswd({{v.Param}}); err != nil {
+        c.Set("code", "error")
+        c.Set("error", err)
+        return
+    } else {
+        {{v.Param}} = hashed
+    }
+    {{end}}{{end}}{{end}}
+    err := manager.{{f.Name}}({{range i, v := f.Wheres}}{{if i > 0}}, {{end}}{{v.Param}}{{end}})
+    if err != nil {
+        c.Set("code", "error")
+        c.Set("error", err)
+    }
+    {{end}}
     {{end}}
 }
 {{end}}
