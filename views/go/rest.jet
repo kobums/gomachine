@@ -577,13 +577,16 @@ func (c *{{name}}Controller) Deletebatch(item *[]models.{{name}}) {
 	manager := models.New{{name}}Manager(conn)
 
     {{if auth == "jwt" && (len(sessions) > 0 || name == "User")}}
-    // 모든 행의 권한을 먼저 검사하고, 하나라도 실패하면 아무것도 지우지 않는다.
+    // 모든 행의 권한을 먼저 검사하고, 하나라도 남의 행이면 아무것도 지우지 않는다. 없는 행은 건너뛴다 (Spring 과 같다).
     for _, v := range *item {
         {{if len(sessions) > 0}}
         // 소유권 검사: 기존 행이 현재 세션 사용자 것인지 확인한다 (남의 행 수정/삭제 방지).
         if existing, _ := manager.GetRaw(v.Id); existing == nil {
-            c.Set("code", "error")
-            return
+            if manager.LastError != nil {
+                c.Set("code", "error")
+                return
+            }
+            continue
         } else {
             {{range sessions}}
             if existing.{{.Field}} != {{.Value|raw}} {

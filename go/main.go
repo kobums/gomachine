@@ -91,12 +91,11 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 
 	// 조인 테이블 컬럼 (ordinal_position 순서). 테이블마다 한 번만 읽는다.
 	joinColumnCache := map[string][]util.Column{}
-	joinColumns := func(str string) []util.Column {
-		if cols, ok := joinColumnCache[str]; ok {
+	joinColumns := func(joinTable string) []util.Column {
+		if cols, ok := joinColumnCache[joinTable]; ok {
 			return cols
 		}
 		columns := make([]util.Column, 0)
-		joinTable := strings.ToLower(str) + "_tb"
 		raws, err := util.QueryColumns(db, cnf.Database, joinTable)
 		if err != nil {
 			log.Println(err)
@@ -107,7 +106,7 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 			columns = append(columns, util.NewColumnFromRaw(joinTable, raw, joinGpa, cnf))
 		}
 		columns = util.DedupeColumns(joinTable, columns)
-		joinColumnCache[str] = columns
+		joinColumnCache[joinTable] = columns
 		return columns
 	}
 
@@ -204,6 +203,9 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 
 	consts := make([]GoEnum, 0)
 	joins := make([]config.GpaJoin, 0)
+	joinTables := make([]string, 0) // 조인마다 테이블 이름
+	joinLocals := make([]string, 0) // 조인마다 이 테이블의 조인 컬럼 (DB 이름)
+	joinVars := make([]string, 0)   // 조인마다 변수 / Extra key (util.JoinVars)
 	compares := make([]config.GpaCompare, 0)
 	sessions := make([]GoSession, 0)
 	funcs := make([]util.Func, 0)
@@ -226,25 +228,33 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 			consts = append(consts, e)
 		}
 
-		for _, join := range gpa.Join {
-			join.Prefix = util.TablePrefix(join.Name, cnf.Database, db)
+		// 조인 테이블과 이 테이블의 조인 컬럼(접두사 있는/없는 이름 모두)을 찾는다. 없으면 경고를 찍고 건너뛴다.
+		for _, rj := range util.ResolveJoins(tableName, items, gpa.Join) {
+			join := rj.GpaJoin
+			join.Prefix = util.TablePrefixOf(rj.Table, cnf.Database, db)
 			joins = append(joins, join)
+			joinTables = append(joinTables, rj.Table)
+			joinLocals = append(joinLocals, rj.Local.Column)
+			joinVars = append(joinVars, rj.Var)
 		}
 		compares = append(compares, gpa.Compare...)
 		search = gpa.Search
 
 		for _, pair := range gpa.Session {
-			s := GoSession{Key: pair.Key, Field: util.CamelCase(pair.Column), Column: strings.ToLower(pair.Column)}
-			s.Value = "c.Session." + strings.Title(pair.Key)
-			if col := util.FindColumn(items, pair.Column); col != nil {
-				s.Field = col.Name
-				s.Column = col.Key
-				// 세션 필드(보통 int64)와 컬럼 타입(int 등)이 달라도 컴파일되게 컬럼 타입으로 바꾼다.
-				if isNumericType(col.Type) {
-					s.Value = col.Type + "(" + s.Value + ")"
+			// 쓸 수 없는 session 컬럼: jwt 면 소유권 검사 없는 API 가 되므로 멈추고, 아니면 (session 을 쓰지 않으니) 경고만 찍는다.
+			if msg := util.SessionColumnError(items, pair.Column, false); msg != "" {
+				if auth == "jwt" {
+					log.Fatalf("ERROR: %s: %s (generation stopped)", tableName, msg)
 				}
-			} else {
-				log.Printf("WARNING: session column %s not found in %s", pair.Column, tableName)
+				log.Printf("WARNING: %s: %s", tableName, msg)
+				continue
+			}
+			col := util.FindColumn(items, pair.Column)
+			s := GoSession{Key: pair.Key, Field: col.Name, Column: col.Key}
+			s.Value = "c.Session." + strings.Title(pair.Key)
+			// 세션 필드(보통 int64)와 컬럼 타입(int 등)이 달라도 컴파일되게 컬럼 타입으로 바꾼다.
+			if isNumericType(col.Type) {
+				s.Value = col.Type + "(" + s.Value + ")"
 			}
 			sessions = append(sessions, s)
 		}
@@ -272,7 +282,6 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 	// 조인 SQL: 조인 테이블은 left join 으로 붙인다 (조인 키가 NULL 이거나 없는 행도 목록/개수/Read 에 나온다).
 	// 같은 테이블이 다시 나오면(자기 조인, 같은 테이블 두 번) SQL 별칭(j_{변수})을 붙이고, 이 테이블과 접두사가 같은 테이블을
 	// 조인하면 이 테이블의 컬럼을 테이블 이름으로 한정한다 (Not unique table/alias, ambiguous column 방지).
-	joinVars := util.JoinVars(joins)
 	goJoins := make([]GoJoin, 0)
 	qual := ""
 	for _, join := range joins {
@@ -284,10 +293,10 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 	var joinFrom strings.Builder
 	selectCols := make([]string, 0)
 	for _, item := range items {
-		selectCols = append(selectCols, qualify(len(joins) > 0, tableName, item.Column))
+		selectCols = append(selectCols, selectColumn(item, qualify(len(joins) > 0, tableName, item.Column)))
 	}
 	for i, join := range joins {
-		joinTable := strings.ToLower(join.Name) + "_tb"
+		joinTable := joinTables[i]
 		ref := joinTable
 		alias := ""
 		if usedTables[joinTable] {
@@ -295,13 +304,10 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 			ref = alias
 		}
 		usedTables[joinTable] = true
-		for _, col := range joinColumns(join.Name) {
-			selectCols = append(selectCols, ref+"."+col.Column)
+		for _, col := range joinColumns(joinTable) {
+			selectCols = append(selectCols, selectColumn(col, ref+"."+col.Column))
 		}
-		local := prefix + "_" + strings.ToLower(join.Column)
-		if col := util.FindColumn(items, join.Column); col != nil {
-			local = col.Column
-		}
+		local := joinLocals[i]
 		joinFrom.WriteString(" left join " + joinTable)
 		if alias != "" {
 			joinFrom.WriteString(" " + alias)
@@ -311,7 +317,7 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 	}
 	mainCols := make([]string, 0)
 	for _, item := range items {
-		mainCols = append(mainCols, item.Column)
+		mainCols = append(mainCols, selectColumn(item, item.Column))
 	}
 	for i := range sessions {
 		sessions[i].SQL = qual + prefix + "_" + sessions[i].Column
@@ -370,9 +376,9 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 		scan.add("item", "n_"+item.Name, item, constPkg, false, false)
 	}
 	var joinExtra strings.Builder
-	for _, join := range goJoins {
+	for i, join := range goJoins {
 		idTmp := ""
-		for _, col := range joinColumns(join.Name) {
+		for _, col := range joinColumns(joinTables[i]) {
 			tmp := "n_" + join.Var + "_" + col.Name
 			scan.add("_"+join.Var, tmp, col, "", true, false)
 			if col.Key == "id" {
@@ -860,12 +866,7 @@ type OrderColumn struct {
 
 // findGpa 는 model.json table 설정 중 tableName 에 해당하는 것을 찾는다.
 func findGpa(cnf config.ModelConfig, tableName string) *config.Gpa {
-	for i := range cnf.Gpa {
-		if util.MatchTableName(cnf.Gpa[i].Name, tableName) {
-			return &cnf.Gpa[i]
-		}
-	}
-	return nil
+	return util.FindTableConfig(cnf.Gpa, tableName)
 }
 
 // scanCode 는 ReadRow/ReadRows/GetRaw 의 Scan 코드다. null 허용 컬럼은 sql.Null* 임시 변수로 읽고 0 값으로 바꾼다.
@@ -956,6 +957,14 @@ func createdNowCode(tz string) string {
 	}
 	name := strconv.Quote(strings.TrimSpace(tz))
 	return "t := time.Now().UTC().Add(time.Hour * 9)\n        if loc, err := time.LoadLocation(" + name + "); err == nil {\n            t = time.Now().In(loc)\n        }"
+}
+
+// selectColumn 은 select 절의 컬럼 식이다. bit 컬럼은 드라이버가 원시 바이트("\x01")로 돌려주므로 +0 으로 숫자로 읽는다 (bool 로 Scan).
+func selectColumn(col util.Column, expr string) string {
+	if col.OriginalType == "bit" {
+		return "(" + expr + "+0)"
+	}
+	return expr
 }
 
 // qualify 는 on 이 true 면 컬럼을 테이블 이름으로 한정한다.

@@ -3,6 +3,7 @@ package util
 import (
 	"gomachine/config"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -124,7 +125,7 @@ func TestGetType(t *testing.T) {
 		{"smallint", "int", "Int"},
 		{"mediumint", "int", "Int"},
 		{"bigint", "int64", "Long"},
-		{"tinyint", "bool", "Int"},
+		{"tinyint", "bool", "Boolean"},
 		{"year", "int", "Int"},
 		{"double", "float64", "Double"},
 		{"float", "float64", "Double"},
@@ -144,7 +145,7 @@ func TestGetType(t *testing.T) {
 		{"blob", "[]byte", "ByteArray"},
 		{"longblob", "[]byte", "ByteArray"},
 		{"varbinary", "[]byte", "ByteArray"},
-		{"bit", "[]byte", "Boolean"},
+		{"bit", "bool", "Boolean"},
 		{"VARCHAR", "string", "String"},
 		{"geometry", "string", "String"},
 	}
@@ -400,5 +401,133 @@ func TestParseFuncPrimaryUpdate(t *testing.T) {
 	}
 	if _, err := ParseFunc("FindById", items); err != nil {
 		t.Errorf("FindById rejected: %v", err)
+	}
+}
+
+func TestFindTableConfigPriority(t *testing.T) {
+	defer func() { tableNameAlias = map[string]string{}; knownTables = nil }()
+	tables := []string{"user_role_tb", "user_tb", "user_vw", "userrole_tb"}
+	ResolveTableNames(tables)
+
+	gpas := []config.Gpa{{Name: "userrole"}, {Name: "user_role"}, {Name: "user"}, {Name: "user_vw"}, {Name: "ghost"}}
+	want := map[string]string{
+		"userrole_tb":  "userrole",  // 정확히 맞는 이름이 먼저 (_ 무시 규칙으로 user_role_tb 에 붙지 않는다)
+		"user_role_tb": "user_role", // 정확히
+		"user_tb":      "user",
+		"user_vw":      "user_vw", // view 는 전체 이름으로
+	}
+	for _, table := range tables {
+		g := FindTableConfig(gpas, table)
+		if g == nil || g.Name != want[table] {
+			t.Errorf("%s: got %v, want %s", table, g, want[table])
+		}
+	}
+
+	// userrole_tb 가 있으면 userrole 은 정확히 맞는 userrole_tb 에만 붙는다.
+	if g := FindTableConfig([]config.Gpa{{Name: "userrole"}}, "user_role_tb"); g != nil {
+		t.Error("userrole should not match user_role_tb when userrole_tb exists")
+	}
+
+	warnings := CheckTableConfigs(gpas, tables)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], `"ghost"`) {
+		t.Errorf("warnings = %q", warnings)
+	}
+
+	// _ 무시 규칙: 다른 테이블을 정확히 가리키지 않으면 쓴다.
+	tableNameAlias = map[string]string{}
+	ResolveTableNames([]string{"user_role_tb"})
+	if g := FindTableConfig([]config.Gpa{{Name: "UserRole"}}, "user_role_tb"); g == nil {
+		t.Error("UserRole should match user_role_tb")
+	}
+
+	// 두 테이블에 붙는 설정은 경고한다 (테이블 이름 user 와 user_tb 의 기본 이름 user).
+	tableNameAlias = map[string]string{}
+	ResolveTableNames([]string{"user", "user_tb"})
+	if w := CheckTableConfigs([]config.Gpa{{Name: "user"}}, []string{"user", "user_tb"}); len(w) != 1 || !strings.Contains(w[0], "several") {
+		t.Errorf("ambiguous: %q", w)
+	}
+	if w := CheckTableConfigs([]config.Gpa{{Name: "user_tb"}}, []string{"user", "user_tb"}); len(w) != 0 {
+		t.Errorf("full name: %q", w)
+	}
+}
+
+func TestResolveJoins(t *testing.T) {
+	defer func() { knownTables = nil }()
+	cnf := config.ModelConfig{Language: "go"}
+	items := []Column{
+		NewColumn("art_tb", "a_id", "bigint", nil, cnf),
+		NewColumn("art_tb", "a_member", "bigint", nil, cnf),
+		NewColumn("art_tb", "a_owner_id", "bigint", nil, cnf),
+	}
+	knownTables = []string{"member_tb", "art_tb", "user_role_tb"}
+	joins := []config.GpaJoin{
+		{Name: "member", Column: "a_member"},              // 접두사 포함
+		{Name: "member", Column: "member", Alias: "m2"},   // 접두사 없음
+		{Name: "member", Column: "ownerId", Alias: "own"}, // API 이름
+		{Name: "member", Column: "nothing"},               // 없는 컬럼
+		{Name: "ghost", Column: "member"},                 // 없는 테이블
+		{Name: "userrole", Column: "member", Alias: "r"},  // _ 무시로 찾는 테이블
+	}
+	got := ResolveJoins("art_tb", items, joins)
+	if len(got) != 4 {
+		t.Fatalf("got %d joins: %+v", len(got), got)
+	}
+	wantLocal := []string{"a_member", "a_member", "a_owner_id", "a_member"}
+	wantVar := []string{"member", "m2", "own", "r"}
+	for i := range got {
+		if got[i].Local.Column != wantLocal[i] || got[i].Var != wantVar[i] {
+			t.Errorf("join %d: local %s var %s", i, got[i].Local.Column, got[i].Var)
+		}
+	}
+	if got[3].Table != "user_role_tb" || got[0].Table != "member_tb" {
+		t.Errorf("tables: %s %s", got[0].Table, got[3].Table)
+	}
+	// 건너뛴 조인 뒤의 변수 이름은 전체 설정 기준이다 (Go / Spring / TypeScript 가 같다).
+	vars := JoinVars([]config.GpaJoin{{Name: "member"}, {Name: "ghost"}, {Name: "member"}})
+	if vars[2] != "member2" {
+		t.Errorf("vars = %v", vars)
+	}
+}
+
+func TestSessionColumnError(t *testing.T) {
+	cnf := config.ModelConfig{Language: "go"}
+	items := []Column{
+		NewColumn("doc_tb", "d_user", "int", nil, cnf),
+		NewColumn("doc_tb", "d_owner", "varchar", nil, cnf),
+		NewColumn("doc_tb", "d_flag", "tinyint", nil, cnf),
+	}
+	if msg := SessionColumnError(items, "user", false); msg != "" {
+		t.Errorf("int: %s", msg)
+	}
+	if msg := SessionColumnError(items, "owner", false); msg == "" {
+		t.Error("varchar for Go: want error")
+	}
+	if msg := SessionColumnError(items, "owner", true); msg != "" {
+		t.Errorf("varchar for Spring: %s", msg)
+	}
+	if msg := SessionColumnError(items, "flag", true); msg == "" {
+		t.Error("tinyint: want error")
+	}
+	if msg := SessionColumnError(items, "usr", true); !strings.Contains(msg, "not found") {
+		t.Errorf("missing: %q", msg)
+	}
+}
+
+func TestReservedNames(t *testing.T) {
+	// extra 컬럼은 생성 코드의 extra 와 겹치므로 번호를 붙인다.
+	cnf := config.ModelConfig{Language: "go"}
+	items := DedupeColumns("t_tb", []Column{NewColumn("t_tb", "t_id", "bigint", nil, cnf), NewColumn("t_tb", "t_extra", "varchar", nil, cnf)})
+	if items[1].Name != "Extra2" || JSONKey(items[1]) != "extra2" || items[1].Column != "t_extra" {
+		t.Errorf("extra column: %+v json %s", items[1], JSONKey(items[1]))
+	}
+	// Kotlin 타입과 겹치는 이름에는 접미사를 붙인다. 생성 코드가 쓰지 않는 이름(Order)은 그대로다.
+	cases := map[string]string{"Page": "PageEntity", "List": "ListEntity", "Column": "ColumnEntity", "Order": "Order", "User": "User", "Sort": "SortEntity"}
+	for in, want := range cases {
+		if got := KotlinTypeName(in, "Entity"); got != want {
+			t.Errorf("KotlinTypeName(%s) = %s, want %s", in, got, want)
+		}
+	}
+	if got := KotlinTypeName("Item", "Enum", "Item"); got != "ItemEnum" {
+		t.Errorf("taken: %s", got)
 	}
 }

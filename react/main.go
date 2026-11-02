@@ -53,7 +53,7 @@ type ReactColumn struct {
 	IsPrimaryKey   bool
 	IsOptional     bool
 	IsDateType     bool
-	IsSearchable   bool // 목록 필터에 쓸 수 있다 (기본 키, 비밀번호, blob 제외: Go / Spring 과 같다)
+	IsSearchable   bool // 목록 필터에 쓸 수 있다 (id, gpa.primary, 비밀번호, blob 제외: Go / Spring 과 같다)
 	IsPassword     bool // 응답에 없다 (Go json:"-", Spring Response 제외). 요청에만 쓴다.
 }
 
@@ -184,7 +184,7 @@ func BuildTemplateData(packageName string, tableName string, items []util.Column
 			IsPrimaryKey:   i == pkIndex,
 			IsOptional:     i == pkIndex || isPassword,
 			IsDateType:     util.IsRangeFilter(originalTypeLower),
-			IsSearchable:   i != pkIndex && col.Name != "Id" && !isPassword && !isBinaryType(originalTypeLower),
+			IsSearchable:   col.Name != "Id" && !util.IsConfigPrimary(col, gpa) && !isPassword && !isBinaryType(originalTypeLower),
 			IsPassword:     isPassword,
 		})
 	}
@@ -243,15 +243,15 @@ func BuildTemplateData(packageName string, tableName string, items []util.Column
 	seenJoin := map[string]bool{}
 	if gpa != nil {
 		// extra key 는 Go 와 같다 (alias 또는 name 소문자, 겹치면 번호).
-		joinVars := util.JoinVars(gpa.Join)
-		for i, join := range gpa.Join {
-			alias := joinVars[i]
+		// 백엔드와 같이 테이블 / 컬럼을 찾지 못한 조인은 건너뛴다.
+		for _, rj := range util.ResolveJoins(tableName, items, gpa.Join) {
+			join := rj.GpaJoin
 			j := ReactJoin{
 				Name:      join.Name,
 				Column:    join.Column,
-				Alias:     alias,
-				ModelName: util.ModelName(join.Name),
-				FileName:  util.FileName(join.Name),
+				Alias:     rj.Var,
+				ModelName: util.ModelName(rj.Table),
+				FileName:  util.FileName(rj.Table),
 			}
 			joins = append(joins, j)
 			if !seenJoin[j.ModelName] {
@@ -310,9 +310,9 @@ func mapMySQLTypeToTypeScript(mysqlType string) string {
 	switch mysqlType {
 	case "int", "integer", "bigint", "smallint", "mediumint", "year":
 		return "number"
-	case "tinyint":
-		// Go 는 bool(true/false), Spring 은 Int(0/1) 로 주고받는다.
-		return "boolean | number"
+	case "tinyint", "bit":
+		// Go / Spring 모두 bool(true/false) 로 주고받는다.
+		return "boolean"
 	case "float", "double", "real", "decimal", "numeric":
 		return "number"
 	case "varchar", "char", "tinytext", "text", "mediumtext", "longtext", "enum", "set":
@@ -321,9 +321,6 @@ func mapMySQLTypeToTypeScript(mysqlType string) string {
 		return "string"
 	case "boolean", "bool":
 		return "boolean"
-	case "bit":
-		// Spring 은 Boolean, Go 는 []byte (JSON 에서 base64 문자열) 다.
-		return "boolean | string"
 	case "json":
 		// Go / Spring 모두 JSON 문자열로 주고받는다.
 		return "string"

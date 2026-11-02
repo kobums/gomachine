@@ -6,18 +6,15 @@ import {{.BasePackage}}.entity.{{.ModelName}}UpdateRequest
 import {{.BasePackage}}.entity.{{.ModelName}}PatchRequest
 {{end}}import {{.BasePackage}}.repository.{{.ModelName}}Repository
 {{if len(.Joins) > 0 && not .IsView}}import jakarta.persistence.EntityManager
+{{end}}{{if not .IsView && not .PK.IsGenerated}}import org.springframework.dao.DuplicateKeyException
 {{end}}import org.springframework.data.domain.Page
 import org.springframework.data.domain.Pageable
 import org.springframework.data.jpa.domain.Specification
-{{if .HasPassword && not .IsView}}import org.springframework.security.crypto.password.PasswordEncoder{{- end}}
-import org.springframework.stereotype.Service
+{{if .HasPassword && not .IsView}}import org.springframework.security.crypto.password.PasswordEncoder
+{{end}}import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
-{{if .HasDateTime}}import java.time.LocalDateTime
-{{end}}{{if .HasDate}}import java.time.LocalDate
-{{end}}{{if .HasDecimal}}import java.math.BigDecimal
-{{end}}{{base := .BasePackage}}{{range .Enums}}import {{base}}.enums.{{.EnumPackage}}.{{.Name}}
-{{end}}
-{{allJoins := .Joins}}{{pk := .PK}}{{repo := lower(.ModelName) + "Repository"}}
+{{if .HasCreatedNow && not .IsView}}import {{.BasePackage}}.support.DateParams
+{{end}}{{- pk := .PK}}{{repo := lower(.ModelName) + "Repository"}}{{modelName := .ModelName}}
 @Service
 @Transactional
 class {{.ModelName}}Service(
@@ -32,8 +29,14 @@ class {{.ModelName}}Service(
         return {{repo}}.findAll(spec, pageable)
     }
 
+    // 조건에 맞는 모든 행 (GET /search/{field}).
     @Transactional(readOnly = true)
-    fun findById(id: {{pk.KotlinType}}): {{.ModelName}}? {
+    fun findAll(spec: Specification<{{.ModelName}}>): List<{{.ModelName}}> {
+        return {{repo}}.findAll(spec)
+    }
+
+    @Transactional(readOnly = true)
+    fun findById(id: {{pk.QualType}}): {{.ModelName}}? {
         return {{repo}}.findById(id).orElse(null)
     }
 
@@ -41,40 +44,33 @@ class {{.ModelName}}Service(
     fun count(spec: Specification<{{.ModelName}}>): Long {
         return {{repo}}.count(spec)
     }
-
-{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if .IsSearchable}}{{if not joinData}}
-    @Transactional(readOnly = true)
-    fun findBy{{.Name}}({{.Field|raw}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): List<{{.ModelName}}> {
-        return {{repo}}.findBy{{.Name}}({{.Field|raw}})
-    }
-{{end}}{{if joinData}}
-    @Transactional(readOnly = true)
-    fun findBy{{.Name}}({{joinData.AliasVar|raw}}: {{.KotlinType}}): List<{{.ModelName}}> {
-        return {{repo}}.findBy{{joinData.ColumnName}}Id({{joinData.AliasVar|raw}})
-    }
-{{end}}{{end}}{{end}}
 {{if not .IsView}}
 {{if len(.Joins) > 0}}
     // 저장한 엔티티는 조인(@ManyToOne) 필드가 비어 있으므로, DB 에 반영한 뒤 조인까지 다시 읽는다.
     private fun reload(saved: {{.ModelName}}): {{.ModelName}} {
         {{repo}}.flush()
         entityManager.detach(saved)
-        return {{repo}}.findById(saved.{{pk.Field|raw}}).orElse(saved)
+        return {{repo}}.findById(saved.{{pk.EntityField|raw}}).orElse(saved)
     }
 {{end}}
-    fun create(request: {{.ModelName}}CreateRequest): {{.ModelName}} {
-        val entity = {{.ModelName}}(
-{{range .Columns}}{{if not .IsPrimaryKey}}            {{.EntityField|raw}} = {{if .IsProtected}}{{if .HasDefault}}{{.DefaultValue|raw}}{{else}}null{{end}}{{else if .IsPassword}}{{if .IsNullable}}request.{{.Field|raw}}?.takeIf { it.isNotBlank() }?.let { passwordEncoder.encode(it) }{{else}}if (request.{{.Field|raw}}.isBlank()) "" else passwordEncoder.encode(request.{{.Field|raw}}){{end}}{{else}}request.{{.Field|raw}}{{end}},
+    private fun toEntity(request: {{.ModelName}}CreateRequest): {{.ModelName}} {
+        return {{.ModelName}}(
+{{range .Columns}}{{if not .IsGenerated}}            {{.EntityField|raw}} = {{if .CreatedNow != ""}}{{.CreatedNow|raw}}{{else if .IsProtected}}{{if .HasDefault}}{{.QualDefault|raw}}{{else}}null{{end}}{{else if .IsPassword}}{{if .IsNullable}}request.{{.Field|raw}}?.takeIf { it.isNotBlank() }?.let { passwordEncoder.encode(it) }{{else}}if (request.{{.Field|raw}}.isBlank()) "" else passwordEncoder.encode(request.{{.Field|raw}}){{end}}{{else}}request.{{.Field|raw}}{{end}},
 {{end}}{{end}}        )
+    }
+
+    fun create(request: {{.ModelName}}CreateRequest): {{.ModelName}} {
+{{if not pk.IsGenerated}}        // 기본 키를 클라이언트가 정한다. save 는 같은 키의 행을 덮어쓰므로(merge) 이미 있으면 409 로 거절한다.
+        if ({{repo}}.existsById(request.{{pk.Field|raw}})) throw DuplicateKeyException("{{.ModelName}} already exists")
+{{end}}        val entity = toEntity(request)
         return {{if len(.Joins) > 0}}reload({{repo}}.save(entity)){{else}}{{repo}}.save(entity){{end}}
     }
 
     fun createBatch(requests: List<{{.ModelName}}CreateRequest>): List<{{.ModelName}}> {
-        val entities = requests.map { request ->
-            {{.ModelName}}(
-{{range .Columns}}{{if not .IsPrimaryKey}}                {{.EntityField|raw}} = {{if .IsProtected}}{{if .HasDefault}}{{.DefaultValue|raw}}{{else}}null{{end}}{{else if .IsPassword}}{{if .IsNullable}}request.{{.Field|raw}}?.takeIf { it.isNotBlank() }?.let { passwordEncoder.encode(it) }{{else}}if (request.{{.Field|raw}}.isBlank()) "" else passwordEncoder.encode(request.{{.Field|raw}}){{end}}{{else}}request.{{.Field|raw}}{{end}},
-{{end}}{{end}}            )
-        }
+{{if not pk.IsGenerated}}        // 요청 안에서 겹치거나 이미 있는 키가 하나라도 있으면 아무것도 저장하지 않는다 (409).
+        val keys = requests.map { it.{{pk.Field|raw}} }
+        if (keys.toSet().size != keys.size || keys.any { {{repo}}.existsById(it) }) throw DuplicateKeyException("{{.ModelName}} already exists")
+{{end}}        val entities = requests.map { toEntity(it) }
         val saved = {{repo}}.saveAll(entities)
         return {{if len(.Joins) > 0}}saved.map { reload(it) }{{else}}saved{{end}}
     }
@@ -89,7 +85,7 @@ class {{.ModelName}}Service(
     }
 
     // 존재하지 않으면 false (컨트롤러가 404 를 돌려준다). DB 에러는 그대로 던진다.
-    fun deleteById(id: {{pk.KotlinType}}): Boolean {
+    fun deleteById(id: {{pk.QualType}}): Boolean {
         if (!{{repo}}.existsById(id)) return false
         {{repo}}.deleteById(id)
         return true

@@ -29,19 +29,37 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
 - `languages` 가 없으면 예전 `language` 문자열을 쓰고, 그것도 없으면 go 만 생성한다.
 - 실행 인자로 덮어쓸 수 있다: `buildtool-model . go,react` 또는 `buildtool-model . all`
 
+## model.json 읽기
+
+- 실행한 디렉터리의 `config/model.json` 을 읽는다 (`modelJsonPath` 가 있으면 그 디렉터리의 `model.json`). 첫 번째 실행 인자(경로)는 쓰지 않는다.
+- JSON 문법 오류나 타입 오류(`"session": {...}` 처럼 배열 자리에 객체 등)가 있으면 에러를 찍고 **아무것도 생성하지 않고** 종료한다 (exit 1).
+  예전에는 반쯤 읽은 설정으로 계속해서 `session` / `protect` 가 조용히 빠질 수 있었다.
+- 모르는 key(`"sesion"` 같은 오타 포함)는 위치와 함께 경고만 찍는다 (`unknown key table[0].sesion (ignored)`). 생성은 계속한다.
+- `auth: "jwt"` 에서 `session` 컬럼이 없거나 쓸 수 없는 타입이면(Go 는 정수 컬럼, Spring 만 생성하면 문자열 컬럼도 된다)
+  에러를 찍고 아무것도 생성하지 않는다 (소유권 검사 없는 API 가 만들어지므로). jwt 가 아니면 경고만 찍는다.
+
 ## 이름 규칙
 
 - 테이블: 끝의 `_tb` / `_vw` 만 떼고 나머지를 쓴다. `user_tb` → `User` (파일/패키지/URL `user`),
   `user_role_tb` → `UserRole` (파일/패키지/URL `userrole`). 예전에는 첫 `_` 앞만 써서 `user_role_tb` 가 `user_tb` 를 덮어썼다.
   - `_tb` 가 없는 테이블도 전체 이름을 쓴다 (`member_info` → `MemberInfo`, 예전에는 `Member`).
   - 이름이 겹치면 (`user_tb` 와 `user_vw`) `_tb` 가 원래 이름을 갖고 나머지는 경고와 함께 다른 이름이 된다 (`user_vw` → `UserView`).
-  - `model.json` 의 `table[].name` 은 `user_role`, `userrole`, `UserRole` 어느 것으로 써도 된다.
+  - `model.json` 의 `table[].name` 은 테이블마다 이 순서로 찾는다: ① 전체 이름(`user_role_tb`)이나 접미사 뺀 이름(`user_role`)이
+    정확히 같은 설정(대소문자 무시) ② `_` 를 무시하고 같은 설정(`userrole`, `UserRole` → `user_role_tb`). 다른 테이블을 정확히
+    가리키는 설정은 ②로 붙지 않는다 (`userrole_tb` 가 있으면 `"userrole"` 은 `userrole_tb` 설정이다. 예전에는 `user_role_tb` 에 붙었다).
+    어느 테이블에도 붙지 않거나 여러 테이블에 붙는 설정은 경고를 찍는다.
+  - 이름 충돌로 다른 이름이 된 테이블(`user_vw` → `UserView`, `userrole_tb` → `UserroleTb`)은 설정에서 **전체 테이블 이름**
+    (`"user_vw"`, `"userrole_tb"`)으로 적는다.
+  - 조인(`join[].name`)도 같은 규칙으로 테이블을 찾는다 (`{name}_tb` 가 먼저). 테이블이 없으면 경고를 찍고 그 조인을 건너뛴다.
 - view(`_vw`)는 읽기 전용이다. Go 는 Insert/Update/Delete 계열 모델 메서드·핸들러·경로를, Spring 은 POST/PUT/PATCH/DELETE 와
   서비스 쓰기 메서드를 만들지 않는다. view 에 설정한 `UpdateXByY` / `DeleteByX` 는 경고를 찍고 건너뛴다.
 - 컬럼: 첫 `_` 앞(접두사)만 뗀다. `p_created_at` → SQL `created_at`, Go 필드 `CreatedAt`, JSON key(Go json 태그, Kotlin/TypeScript/Dart) `createdAt`.
   자세한 규칙은 아래 [HTTP 계약](#http-계약-go--spring--react--vue--dart).
   밑줄이 하나인 컬럼은 예전과 같은 이름이다 (`u_createddate` → `Createddate` / `createddate`).
 - 컬럼 이름이 예약어면 Go 매개변수는 뒤에 `_` 를 붙이고 (`type_`), Kotlin 은 backtick 으로 감싼다 (`` `class` ``).
+- Kotlin 클래스 이름이 생성 코드가 쓰는 Kotlin / Spring / JPA 타입과 같으면 접미사를 붙인다 (경고): 엔티티 `page_tb` → `PageEntity`
+  (`list`, `map`, `column`, `sort`, `string` ... 도 같다), enum `sort` → `SortEnum` (같은 테이블 엔티티 / 조인 엔티티와 같은 이름도).
+  URL(`/api/page`), JSON, 파일 이름 외 다른 언어는 그대로다. 생성 코드가 쓰지 않는 이름(`Order` 등)은 바꾸지 않는다.
 - Go 상수 패키지(`models/{table}`) 이름이 생성 코드의 import(`log`, `config`, `time` ...)나 지역 변수와 겹치면
   생성 파일에서는 별칭(`logpkg`)으로 import 한다. 디렉터리와 `package` 이름은 그대로다 (예약어인 `type` 등은 `package typepkg`).
 - 컬럼 순서는 `information_schema.columns.ordinal_position` 순서다.
@@ -52,7 +70,7 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
 |---|---|---|
 | `int`, `smallint`, `mediumint`, `year` | `int` | `Int` |
 | `bigint` | `int64` | `Long` |
-| `tinyint` | `bool` | `Int` |
+| `tinyint` | `bool` | `Boolean` |
 | `float`, `double` | `float64` | `Double` |
 | `decimal` | `float64` | `BigDecimal` |
 | `char`, `varchar`, `*text`, `enum`, `set`, `json` | `string` | `String` |
@@ -60,12 +78,17 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
 | `date` | `string` | `LocalDate` |
 | `time` | `string` | `String` |
 | `*blob`, `binary`, `varbinary` | `[]byte` | `ByteArray` |
-| `bit` | `[]byte` | `Boolean` |
+| `bit` | `bool` | `Boolean` |
 
 - 모르는 타입은 경고를 찍고 문자열로 처리한다.
 - Go `decimal` 은 예전 `int` 에서 `float64` 로 바뀌었다 (`int` 는 소수점이 잘리고 `"12.50"` Scan 이 실패했다). 정밀도가 중요하면 직접 바꿔 쓴다.
 - Go `double`/`float` 은 예전 `Double`(대상 프로젝트에 정의가 필요했다)에서 `float64` 로 바뀌었다.
-- Go `bit` 는 MySQL 드라이버가 원시 바이트를 돌려줘서 `bool` 로 Scan 할 수 없으므로 `[]byte` 다.
+- `tinyint` 와 `bit` 는 모든 언어에서 bool 이다 (Go `bool`, Kotlin `Boolean`, TypeScript `boolean`, Dart `bool`).
+  - **바뀐 점**: Kotlin `tinyint` 는 예전 `Int`, Go `bit` 는 예전 `[]byte`(JSON base64 문자열)였다. 0/1 이 아닌 값을 쓰는 `tinyint` 컬럼은
+    읽을 때 0 이 아니면 `true` 다.
+  - Go 는 `bit` 컬럼을 `(컬럼+0)` 으로 select 해서 정수로 읽는다 (드라이버가 원시 바이트를 돌려주므로). `bit(1)` 플래그를 가정한다.
+  - Kotlin `tinyint` 프로퍼티에는 `@Column(columnDefinition = "tinyint")` 가 붙는다 (Hibernate 기본 Boolean 타입은 `bit`).
+  - JSON 요청은 Spring 이 `true/false` 와 `0/1` 을, 목록 필터는 두 백엔드 모두 `true/false/1/0` 을 받는다.
 - Kotlin `double` 은 예전 `BigDecimal` 에서 `Double` 로, `date` 는 `LocalDateTime` 에서 `LocalDate` 로 바뀌었다.
 
 ## NULL 허용 컬럼 (`information_schema.columns.is_nullable`)
@@ -98,8 +121,17 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
 - Go REST `Insert`/`Insertbatch` 는 문자열 `createddate` 를 서버가 현재 시각으로 넣는다 (클라이언트가 보낸 값은 무시한다).
   현재 시각은 예전과 같이 UTC+9 (Asia/Seoul) 다. `model.json` 의 `"timezone"` 으로 바꿀 수 있다:
   `"local"`(서버 지역 시간), `"UTC"`, 또는 IANA 이름(`"America/New_York"`, 서버에서 찾지 못하면 UTC+9). 비어 있으면 예전과 같다.
+- Spring 생성(`POST`)도 `createddate`(datetime / date)를 서버가 현재 시각으로 넣는다. 요청 DTO 에 `createddate` 가 없다
+  (보내도 무시된다). 시간대는 Go 와 같은 `timezone` 설정이다 (`{kotlinPackage}.support.DateParams.ZONE`, 비어 있으면 Asia/Seoul).
 - 형식: Go 와 Spring 모두 응답은 `yyyy-MM-dd HH:mm:ss` (date 는 `yyyy-MM-dd`) 문자열이다.
-  Spring 요청 본문과 검색 파라미터는 `yyyy-MM-dd HH:mm:ss` 와 ISO `yyyy-MM-ddTHH:mm:ss` 둘 다 받는다 (초 생략 가능).
+  Spring 요청(JSON 본문, 목록 날짜 범위, `/search`)은 `support/DateParams.kt` 가 해석한다:
+  - `2024-01-02` (날짜만) → 그날 `00:00:00`. Go 는 문자열을 MySQL 에 그대로 넘기고 MySQL 도 `00:00:00` 으로 비교하므로
+    `end{날짜}=2024-01-02` 는 두 백엔드 모두 그날 0시까지다 (그날 전체를 원하면 다음 날을 보낸다).
+  - `2024-01-02 03:04:05`, `2024-01-02 03:04`, ISO `2024-01-02T03:04:05`, 밀리초 `2024-01-02T03:04:05.123`.
+  - `Z` / 오프셋(`2024-01-02T03:04:05.000Z`, JS `toISOString()`, `+09:00`)은 `timezone` 지역 시간으로 바꾼다 (Z 를 버리지 않는다).
+  - date 컬럼은 시간이 붙은 값도 날짜 부분만 쓴다. 해석하지 못하면 400.
+  - Go 는 날짜 문자열을 MySQL 에 그대로 넘긴다 (`Z` 붙은 ISO 값은 MySQL 버전에 따라 해석이 다르다). 두 백엔드 모두 응답 형식
+    (`yyyy-MM-dd HH:mm:ss`) 그대로 보내는 것이 가장 안전하다.
   React/Vue 는 응답 문자열을 그대로 보내면 된다.
 
 ## enum 코드 (`table[].map`)
@@ -162,7 +194,10 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
   - `Count` / `GroupBy` 도 같은 from 을 쓴다.
 - REST Update/Delete/Deletebatch 의 기존 행 읽기와 소유권 검사는 조인 없이 이 테이블만 읽는다 (`GetRaw`).
 - `Insertbatch` 는 모든 행을 준비(해시 등)한 뒤 저장하고, `Deletebatch` 는 모든 행의 권한을 검사한 뒤 지운다.
-  둘 다 트랜잭션은 아니다: 저장/삭제 중간에 DB 에러가 나면 앞의 행은 이미 반영되어 있다.
+  없는 행은 건너뛰고, 남의 행이 하나라도 있으면 아무것도 지우지 않는다 (`auth error`, Spring 은 403). 예전 Go 는 없는 행이 있으면
+  `error` 로 멈췄다. 둘 다 트랜잭션은 아니다: 저장/삭제 중간에 DB 에러가 나면 앞의 행은 이미 반영되어 있다.
+- 조인 `column` 은 접두사가 있어도(`"a_member"`) 없어도(`"member"`), API 이름(`"memberId"`)이어도 된다. 이 테이블에 없는 컬럼이면
+  경고를 찍고 그 조인을 건너뛴다 (Spring / TypeScript / Dart 도 같다).
 - Postgres 는 지원하지 않는다. 생성 Go 모델의 `Find/Count/UpdateWhere/GroupBy` 는 `$n` 자리표시를 쓰지만 `Get/GetRaw/Insert/Update/Delete`,
   커스텀 `UpdateXByY`, 소유권 검사 등은 `?` 를 쓴다. MySQL 만 대상으로 한다.
 
@@ -173,11 +208,28 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
 User 테이블에 id 가 없고 `auth: "jwt"` 면 본인 확인을 할 수 없으므로 커스텀 `UpdateXByY` / `DeleteBy` 는 항상 `auth error` 다.
 
 Spring 은 기본 키를 `gpa.primary` > `id` 컬럼 > 첫 컬럼 순서로 정하고, 그 타입으로 `JpaRepository<X, 타입>` 과 경로 변수를 만든다.
+Go 와 같이 `id` 컬럼도 `primary` 도 없으면 id 경로(`GET/PUT/PATCH/DELETE /{id}`, `DELETE /batch`)를 만들지 않는다 (JPA `@Id` 는 첫 컬럼).
+
+### 기본 키 값 (Spring)
+
+- `id` 이름의 정수(`Int`/`Long`) 기본 키만 자동 증가(`@GeneratedValue(IDENTITY)`)로 보고 생성 요청에서 받지 않는다.
+- 그 밖의 기본 키(`primary` 로 정한 문자열 키, 첫 컬럼 키 등)는 생성 요청(`{Model}CreateRequest`)에 **반드시** 있어야 한다.
+  이미 있는 키면 덮어쓰지 않고 409 다 (예전에는 키가 요청에 없어서 모든 생성이 `""` 키 행으로 merge 되었다). batch 는
+  요청 안에서 겹치거나 이미 있는 키가 하나라도 있으면 아무것도 저장하지 않는다. 확인과 저장 사이에 다른 요청이 같은 키를 넣는 경우는 막지 않는다.
 
 ## Spring (Kotlin) 패키지와 경로
 
 - `kotlinPackage` 로 생성 코드의 패키지를 정한다. 없으면 예전 값 `com.gowoobro.gymspring` 이다.
-- `kotlinModelFilePath` 는 그 패키지의 디렉터리를 가리켜야 한다 (아래에 `entity/`, `repository/`, `service/`, `controller/`, `enums/`, `config/` 를 만든다).
+- `kotlinModelFilePath` 는 그 패키지의 디렉터리를 가리켜야 한다 (아래에 `entity/`, `repository/`, `service/`, `controller/`, `enums/`, `config/`, `support/` 를 만든다).
+- `support/DateParams.kt` (날짜 해석, 시간대, `InvalidParamException`, Jackson 날짜 역직렬화기)는 생성 파일이라 매번 다시 쓴다.
+  `config/SessionProvider.kt` 는 없을 때만 만든다.
+- 대문자가 있는 테이블/컬럼 이름(`c_userId`): Spring Boot 기본 이름 전략(`CamelCaseToUnderscoresNamingStrategy`)은 `@Column(name = "c_userId")` 를
+  `c_user_id` 로 바꿔 없는 컬럼을 찾는다. backtick 으로 감싸도 바뀐다 (Hibernate 6.6 에서 확인). 그런 이름이 있으면 생성기가 경고를 찍고
+  엔티티에 주석을 남긴다. 대상 프로젝트 `application.properties` 에
+  `spring.jpa.hibernate.naming.physical-strategy=org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl` 이 필요하다.
+- view(`_vw`) 엔티티는 `@Immutable` 이고 `@GeneratedValue` 가 없다. `@Id` 는 `primary` 컬럼(없으면 `id`, 그것도 없으면 첫 컬럼)이다.
+  JPA 는 같은 `@Id` 값의 행을 하나로 합치므로 view 에는 유일한 컬럼을 `primary` 로 적어야 한다 (없으면 경고). `primary` 가 없을 때
+  대신 쓰는 첫 컬럼은 목록 필터 / 검색으로 거를 수 있다.
 
 ## Vue (Vue 3 + TypeScript)
 
@@ -236,32 +288,42 @@ API 경로와 응답 처리는 [HTTP 계약](#http-계약-go--spring--react--vue
 
 - `Passwd`/`Password` 컬럼이 있으면 서비스에 `PasswordEncoder` 를 주입한다 (대상 프로젝트에 `PasswordEncoder` 빈 필요).
   생성/수정 시 인코딩하고, PUT 에서 비워 보내면 기존 해시 유지, PATCH 는 값이 있을 때만 인코딩한다.
-  응답(`{Model}Response`), 목록 필터, `/search/{field}`, 리포지토리 `findBy` 에서 비밀번호 컬럼은 빠진다.
-- Create/Update/Patch 요청 DTO 에는 `protect` 컬럼(기본: User 의 level)이 없다. id 는 경로 변수로만 정한다.
-  Spring 쪽에는 관리자 예외가 없다.
-- `"auth": "jwt"` 이고 `session` 이 있는 테이블은 컨트롤러가 `{kotlinPackage}.config.SessionProvider` 를 주입받아
-  목록/검색/개수를 본인 소유 행으로 거르고, 단건 조회/수정/삭제는 남의 행이면 404(일괄 삭제는 403), 비로그인이면 401 을 돌려준다.
-  생성/수정 요청의 세션 컬럼은 세션 값으로 고정한다. User 의 생성(회원가입)은 세션 없이 호출할 수 있다.
+  응답(`{Model}Response`), 목록 필터, `/search/{field}` 에서 비밀번호 컬럼은 빠진다.
+- Create/Update/Patch 요청 DTO 에는 `protect` 컬럼(기본: User 의 level, `protect` 를 설정해도 빠지지 않는다)과 `createddate` 가 없다.
+  기본 키는 경로 변수로만 정한다. Spring 쪽에는 관리자 예외가 없다.
+- `"auth": "jwt"` 면 **모든** 컨트롤러가 `{kotlinPackage}.config.SessionProvider` 를 주입받고, 모든 엔드포인트가
+  `currentUserId()` 가 null 이면 401 이다 (Go 와 같다. 예전에는 `session` 이 없는 테이블이 모두 공개였다).
+  - 예외: User 의 단건 생성(`POST /api/user`, 회원가입)은 로그인 없이 호출할 수 있다 (`POST /batch` 는 로그인 필요, Go 와 같다).
+  - User 테이블에 id `session` 이 없으면 수정/삭제는 본인(`currentUserId()`) 행만 된다 (Go 와 같다, 남의 행은 404 / 일괄 삭제 403).
+- `session` 이 있는 테이블은 목록/검색/개수를 본인 소유 행으로 거르고(DB where), 단건 조회/수정/삭제는 남의 행이면 404,
+  일괄 삭제는 남의 행이 하나라도 있으면 403 (없는 행은 건너뛴다) 이다. 생성/수정 요청의 세션 컬럼은 세션 값으로 고정한다.
   - `config/SessionProvider.kt` 인터페이스는 파일이 없을 때만 생성한다(덮어쓰지 않음). 대상 프로젝트에서 `@Component` 로
     `currentUserId(): Long?` 를 구현해야 하고, `session` 의 key 가 `id` 가 아니면 `currentValue(key)` 도 구현한다.
-  - 목록/개수의 소유권 필터는 Specification(DB where)으로 실행한다. `/search/{field}` 는 조건에 맞는 행만 읽은 뒤 거른다.
 
 ### Spring 목록 / 수정 / 삭제
 
 - 리포지토리는 `JpaSpecificationExecutor` 를 상속한다. `GET /api/{table}` 은 필터(같음, 날짜 `start`/`end` 범위, enum 코드)와
   소유권을 Specification 으로, 페이지와 정렬을 `PageRequest` 로 DB 에서 처리한다 (예전에는 전체 행을 읽어 메모리에서 걸렀다).
-  - `page` 는 Go 와 같이 1 부터다 (0 이하는 1. 예전에는 0 부터), `pagesize` 는 1..10000 으로 맞춘다. 응답에 `pagesize`(= `size`)도 있다.
+  - `page` / `pagesize` 는 Go 와 같다: 둘 다 1 이상이면 그 페이지 (page 는 1 부터, pagesize 는 10000 까지), 없거나 0 이면 전체 행이다
+    (예전 Spring 은 10 행이었다). 전체 행도 10000 행까지만 돌려주고, 더 있으면 `X-Truncated: true` 헤더를 붙이고 경고 로그를 남긴다.
+    음수는 400. 응답에 `pagesize`(= `size`)도 있다.
   - 정렬: `sort` (또는 `orderby`) = `createddate desc, name` 또는 `createddate,desc`. 모르는 이름이면 400. 기본은 기본 키 내림차순.
+  - 필터 파라미터 이름은 `@RequestParam("{key}")` 로 적고, 생성 코드의 지역 변수 / 매개변수는 `_page`, `_sort`, `{key}_start` 처럼
+    컬럼 프로퍼티(밑줄 없음)와 겹치지 않는 이름이다. 그래서 `sort`, `page`, `order`, `result` 같은 컬럼도 컴파일된다.
+    단, `page`/`pagesize`/`sort`/`orderby` 이름의 컬럼은 Go 와 같이 같은 쿼리 파라미터를 페이지/정렬과 함께 쓴다.
+- `GET /api/{table}/search/{field}?{key}=값` 은 Specification(= 조건 + 소유권)으로 찾는다. 리포지토리에 메서드 이름 쿼리(`findByX`)는
+  만들지 않는다 (예전 `findByUserId` / `findByCheckIn` 처럼 컬럼 이름에 따라 Spring Data 가 시작할 때 실패했다).
 - `GET /api/{table}/count` 는 목록과 같은 필터 파라미터를 받는다.
 - `PUT` 은 `PATCH` 와 같이 보낸(null 이 아닌) 필드만 바꾼다. `createddate` 와 보호 컬럼은 바꾸지 않는다.
   NULL 허용 컬럼을 null 로 지우는 요청은 할 수 없다 (null = 기존 값 유지).
 - `DELETE /api/{table}/{id}` 는 없는 행이면 404.
-- `DELETE /api/{table}/batch` 본문은 `[{"id": 1}, ...]` 이다 (Go 와 같다. 예전에는 엔티티 배열). 없는 행은 건너뛴다.
-- 생성 실패는 로그를 남기고 본문에 에러를 돌려준다 (제약 조건 위반 409 `{"error": "constraint violation"}`, 그 밖 400).
+- `DELETE /api/{table}/batch` 본문은 `[{"id": 1}, ...]` 이다 (Go 와 같다. 예전에는 엔티티 배열). 없는 행은 건너뛰고,
+  `session` 이 있으면 남의 행이 하나라도 있을 때 아무것도 지우지 않고 403 이다 (예전에는 없는 행도 403 이었다).
+- 생성 실패는 로그를 남기고 본문에 에러를 돌려준다 (제약 조건 위반 / 이미 있는 기본 키 409 `{"error": "constraint violation"}`, 그 밖 400).
 - 응답의 조인 객체는 한 단계만 채운다 (조인의 조인은 `null`). `@EntityGraph` 도 직접 조인만 가져온다.
   생성/수정 후에는 조인까지 다시 읽어 응답한다 (조인이 있는 서비스는 `EntityManager` 를 주입받는다).
-- 대상 프로젝트 요구사항: Spring Boot 기본 의존성(jackson-annotations, jackson-module-kotlin, jackson-datatype-jsr310, slf4j)과
-  Spring Data JPA 3.x.
+- 대상 프로젝트 요구사항: Spring Boot 기본 의존성(jackson-databind, jackson-module-kotlin, jackson-datatype-jsr310, slf4j)과
+  Spring Data JPA 3.x (Hibernate 6: view 의 `@Immutable`). 대문자 컬럼 이름이 있으면 위의 `physical-strategy` 설정.
 
 ## HTTP 계약 (Go / Spring / React / Vue / Dart)
 
@@ -272,8 +334,10 @@ React/Vue(그리고 Dart)가 두 백엔드 중 어느 것에도 붙을 수 있�
 - JSON key = 접두사 뺀 컬럼 이름의 lowerCamel (`util.JSONKey`). Go json 태그, Kotlin 프로퍼티, TypeScript 필드, Dart json key 가 모두 같다.
 - `_` / 대소문자만 다른 컬럼(`p_created_at` 과 `p_createdat`, `user_id` 와 `userId`)은 이름이 겹치므로 경고를 찍고,
   앞(ordinal_position) 컬럼이 원래 이름을 갖고 뒤 컬럼은 번호를 붙인다 (`util.DedupeColumns`): Go 필드 `Createdat2`,
-  JSON key / 필터 `createdat2`, 검색 경로 `/search/createdat2`, 날짜 범위 `startcreatedat2`. Go / TypeScript / Dart 가 같은 규칙이다
-  (Spring 은 아직 적용하지 않았다). SQL 컬럼 이름은 그대로다.
+  JSON key / 필터 `createdat2`, 검색 경로 `/search/createdat2`, 날짜 범위 `startcreatedat2`. Go / Spring / TypeScript / Dart 가 같은 규칙이다.
+  SQL 컬럼 이름은 그대로다.
+- 생성 코드가 이미 쓰는 이름 `extra`(Go `Extra` 필드, Kotlin / TypeScript `extra`)와 같은 컬럼(`p_extra`)도 같은 방법으로 `extra2`
+  (Go 필드 `Extra2`) 가 된다 (예전 Go 는 두 필드의 json 태그가 겹쳐 둘 다 JSON 에서 빠졌다).
 
   | 컬럼 | JSON key | 검색 경로 | 날짜 범위 파라미터 |
   |---|---|---|---|
@@ -284,21 +348,21 @@ React/Vue(그리고 Dart)가 두 백엔드 중 어느 것에도 붙을 수 있�
   - 밑줄 하나짜리 컬럼은 예전 Go 와 같다. camelCase 컬럼(`userId`)도 예전 Go 처럼 `userid` 다 (예전 TypeScript 는 `userId` 였다).
   - 여러 단어 컬럼의 Go json 태그가 `createdat` → `createdAt` 으로 바뀌었다 (이번 브랜치에서 처음 생긴 이름이라 기존 클라이언트 없음).
 - 목록/개수 필터 파라미터 = JSON key, 날짜 컬럼(date/datetime/timestamp)은 `start{key 소문자}` / `end{key 소문자}`.
-  기본 키, 비밀번호, blob 컬럼은 필터/검색이 없다.
+  `id`, `primary` 컬럼, 비밀번호, blob 컬럼은 필터/검색이 없다 (id 도 primary 도 없어 대신 키로 쓰는 첫 컬럼은 거를 수 있다. 세 언어가 같다).
 
 ### 경로 (prefix 는 대상 프로젝트 설정, 예: `/api`)
 
 | 요청 | Go | Spring | 비고 |
 |---|---|---|---|
-| `GET /{t}?page&pagesize&{필터}&orderby` | O | O | page 는 1 부터. Go 는 page 가 없으면(0) 전체 행 |
+| `GET /{t}?page&pagesize&{필터}&orderby` | O | O | page 는 1 부터. page / pagesize 가 없으면(0) 전체 행 (Spring 은 10000 행까지) |
 | `GET /{t}/count?{필터}` | O (추가) | O | Go 는 예전 `POST /{t}/count` 도 유지 |
-| `GET /{t}/:id` | O | O | |
+| `GET /{t}/:id` | O | O | id 컬럼이나 `primary` 가 있을 때 |
 | `GET /{t}/search/{field}?{key}=값` | O (추가, 모든 검색 컬럼) | O | 같은 값(=) 목록. Go 는 세션 조건을 붙인다 |
 | `POST /{t}` | O | O | view 없음 |
 | `POST /{t}/batch` | O | O | |
 | `PUT /{t}/:id`, `PATCH /{t}/:id` | O (추가) | O | 보낸 필드만 수정. 경로 id 가 본문 id 보다 우선 |
 | `DELETE /{t}/:id` | O (추가) | O | |
-| `DELETE /{t}/batch` 본문 `[{"id":1}]` | O | O (본문 모양 변경) | |
+| `DELETE /{t}/batch` 본문 `[{"id":1}]` | O | O (본문 모양 변경) | 없는 행은 건너뛴다, 남의 행이 있으면 아무것도 지우지 않는다 |
 | `PUT /{t}`, `DELETE /{t}` (본문) | O (예전 경로) | X | |
 | `GET /{t}/{get,find,count}/...`, `PUT /{t}/{x}/{y}` | O (예전 경로) | X | 커스텀 메서드 |
 | `DELETE /{t}/delete/{by}/:{값}` | O (추가) | X | 커스텀 `DeleteBy` (like 조건 제외) |
@@ -331,15 +395,15 @@ React/Vue(그리고 Dart)가 두 백엔드 중 어느 것에도 붙을 수 있�
   Vue composable 은 둘 다 `error` 에 담는다.
 - Dart 는 목록 `content ?? items`, 개수 `count ?? total`, 단건 `item` 래퍼를 읽고, 수정/삭제를 `/{t}/{id}` 로 부른다.
   view 는 `insert/update/delete` 가 없고, id 컬럼이 없는 테이블은 `get/update/delete` 가 없다 (예전에는 Go 에 없는 `PUT /{t}` 를 불렀다).
-  `fromJson` 은 값을 너그럽게 읽는다: bool 은 `true/false`, 숫자(0 이 아니면 true), `"1"/"true"`, base64(Go `bit`) 를,
+  `fromJson` 은 값을 너그럽게 읽는다: bool 은 `true/false`, 숫자(0 이 아니면 true), `"1"/"true"`, base64(예전 Go `bit`) 를,
   int/double 은 숫자, 숫자 문자열, bool 을 받는다. 없는 NOT NULL 문자열 필드(예: 응답에 없는 비밀번호)는 `''` 이다.
   필드 / enum 값 이름이 Dart 예약어나 생성 멤버(`class`, `in`, `extra`, enum 의 `values`, `index` ...)면 뒤에 `_` 를 붙인다 (JSON key 는 그대로).
 
 ### 값
 
 - enum 은 코드(숫자, data 위치)로 주고받는다. TypeScript 필드 타입은 코드 union (`0 | 1 | 2`). 필터와 `/search` 도 코드.
-- 날짜는 `yyyy-MM-dd HH:mm:ss` (date 는 `yyyy-MM-dd`). Spring 은 요청에서 ISO 형식도 받는다.
-- 두 백엔드가 다른 타입: `tinyint` 는 Go `bool`, Spring `Int` 라 TypeScript 는 `boolean | number`. Go 목록 필터는 `true/false/1/0` 을 받는다.
-  `bit` 는 Go `[]byte`(base64 문자열), Spring `Boolean` 이라 `boolean | string`. `json` 은 둘 다 문자열.
+- 날짜는 `yyyy-MM-dd HH:mm:ss` (date 는 `yyyy-MM-dd`). Spring 은 요청에서 날짜만, ISO(밀리초, `Z` / 오프셋 포함)도 받는다 (위 [날짜 값](#날짜-값)).
+- `tinyint` / `bit` 는 두 백엔드 모두 bool(`true/false`)이라 TypeScript 는 `boolean` 이다 (예전에는 `boolean | number`, `boolean | string`).
+  목록 필터는 두 백엔드 모두 `true/false/1/0` 을 받는다. `json` 은 둘 다 문자열.
 - 문자열 필터: Go 는 `name`/`title`/`content` 는 `=`(또는 `compare` 설정), 나머지는 `like`(와일드카드는 보낸 값 그대로), Spring 은 모두 `=`.
 

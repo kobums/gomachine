@@ -36,3 +36,44 @@ func TestResolveLanguagesArg(t *testing.T) {
 		t.Errorf("dedupe: got %v", got)
 	}
 }
+
+func TestParseStrict(t *testing.T) {
+	// 문법 오류 / 타입 오류는 에러다 (반쯤 읽은 설정으로 계속하지 않는다).
+	for name, src := range map[string]string{
+		"syntax":       `{"database": "db", "table": [}`,
+		"type":         `{"database": "db", "table": [{"name": "user", "session": {"key": "id"}}]}`,
+		"top-level":    `{"auth": 1}`,
+		"not object":   `[1, 2]`,
+		"primary type": `{"table": [{"name": "user", "primary": "id"}]}`,
+	} {
+		if _, _, err := Parse([]byte(src)); err == nil {
+			t.Errorf("%s: want error", name)
+		}
+	}
+
+	// 모르는 key 는 경고만 (위치 포함), 나머지 설정은 읽는다.
+	cnf, warnings, err := Parse([]byte(`{"database": "db", "auth": "jwt", "extra": 1,
+		"table": [{"name": "user", "sesion": [{"key": "id", "column": "id"}], "join": [{"name": "a", "colum": "b"}]}],
+		"languages": {"go": true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cnf.Database != "db" || cnf.Auth != "jwt" || len(cnf.Gpa) != 1 || cnf.Gpa[0].Name != "user" {
+		t.Errorf("config not parsed: %+v", cnf)
+	}
+	want := []string{"unknown key extra (ignored)", "unknown key table[0].join[0].colum (ignored)", "unknown key table[0].sesion (ignored)"}
+	if !reflect.DeepEqual(warnings, want) {
+		t.Errorf("warnings = %q, want %q", warnings, want)
+	}
+
+	// 대소문자만 다른 key 는 encoding/json 처럼 받는다.
+	if _, warnings, err := Parse([]byte(`{"Database": "db", "table": [{"Name": "x"}]}`)); err != nil || len(warnings) != 0 {
+		t.Errorf("case-insensitive keys: %v %v", warnings, err)
+	}
+}
+
+func TestLoadMissing(t *testing.T) {
+	if _, _, err := Load(t.TempDir()); err == nil {
+		t.Error("missing model.json: want error")
+	}
+}

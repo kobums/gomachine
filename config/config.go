@@ -2,10 +2,13 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
 	"path"
+	"reflect"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -78,21 +81,35 @@ type Pubspec struct {
 	Name string `yaml:"name"`
 }
 
+// Init 은 dir/model.json 을 읽는다. 읽거나 해석하지 못하면 에러를 찍고 생성을 멈춘다 (exit 1).
+// 반쯤 읽은 설정으로 계속하면 session / protect 같은 보안 설정이 조용히 빠질 수 있다.
 func Init(dir string) ModelConfig {
+	modelConfig, _, err := Load(dir)
+	if err != nil {
+		log.Println("ERROR:", err)
+		os.Exit(1)
+	}
+	return modelConfig
+}
+
+// Load 는 dir/model.json 을 읽는다. JSON 문법 / 타입 오류는 에러다. 모르는 key 는 에러가 아니고 경고 목록으로 돌려준다
+// (예전 model.json 에 남은 key 가 있을 수 있다). 경고는 로그에도 찍는다.
+func Load(dir string) (ModelConfig, []string, error) {
 	var modelConfig ModelConfig
 
-	log.Println("config dir", dir)
-	file, err := os.Open(path.Join(dir, "model.json"))
+	file := path.Join(dir, "model.json")
+	log.Println("config", file)
+	data, err := os.ReadFile(file)
 	if err != nil {
-		log.Println(err)
-		return modelConfig
+		return modelConfig, nil, fmt.Errorf("cannot read %s: %v", file, err)
 	}
 
-	defer file.Close()
-	data, _ := ioutil.ReadAll(file)
-
-	if err := json.Unmarshal(data, &modelConfig); err != nil {
-		log.Println("Error parsing model.json:", err)
+	modelConfig, warnings, err := Parse(data)
+	if err != nil {
+		return modelConfig, warnings, fmt.Errorf("invalid %s: %v", file, err)
+	}
+	for _, w := range warnings {
+		log.Printf("WARNING: %s: %s", file, w)
 	}
 
 	// DB 접속 정보는 model.json 에 커밋하지 않고 환경변수로 주입할 수 있다 (설정 시 model.json 값보다 우선).
@@ -106,7 +123,66 @@ func Init(dir string) ModelConfig {
 		modelConfig.Password = v
 	}
 
-	return modelConfig
+	return modelConfig, warnings, nil
+}
+
+// Parse 는 model.json 내용을 해석한다. 문법 / 타입 오류는 에러, 모르는 key 는 경고("unknown key table[0].sesion") 다.
+func Parse(data []byte) (ModelConfig, []string, error) {
+	var modelConfig ModelConfig
+	if err := json.Unmarshal(data, &modelConfig); err != nil {
+		return modelConfig, nil, err
+	}
+	var raw interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return modelConfig, nil, err
+	}
+	warnings := make([]string, 0)
+	unknownKeys(raw, reflect.TypeOf(modelConfig), "", &warnings)
+	return modelConfig, warnings, nil
+}
+
+// unknownKeys 는 raw(JSON 값)에서 t(구조체)의 json 태그에 없는 key 를 찾아 warnings 에 넣는다. 배열 / 하위 구조체도 본다.
+func unknownKeys(raw interface{}, t reflect.Type, at string, warnings *[]string) {
+	for t.Kind() == reflect.Ptr || t.Kind() == reflect.Slice {
+		if t.Kind() == reflect.Slice {
+			if arr, ok := raw.([]interface{}); ok {
+				for i, v := range arr {
+					unknownKeys(v, t.Elem(), fmt.Sprintf("%s[%d]", at, i), warnings)
+				}
+			}
+			return
+		}
+		t = t.Elem()
+	}
+	obj, ok := raw.(map[string]interface{})
+	if !ok || t.Kind() != reflect.Struct {
+		return
+	}
+	fields := map[string]reflect.Type{}
+	for i := 0; i < t.NumField(); i++ {
+		name := strings.Split(t.Field(i).Tag.Get("json"), ",")[0]
+		if name != "" && name != "-" {
+			fields[strings.ToLower(name)] = t.Field(i).Type
+		}
+	}
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		name := k
+		if at != "" {
+			name = at + "." + k
+		}
+		// encoding/json 처럼 key 는 대소문자를 무시한다.
+		ft, ok := fields[strings.ToLower(k)]
+		if !ok {
+			*warnings = append(*warnings, "unknown key "+name+" (ignored)")
+			continue
+		}
+		unknownKeys(obj[k], ft, name, warnings)
+	}
 }
 
 func GetGoModelFilePath(dir string) string {

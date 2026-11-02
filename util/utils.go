@@ -199,6 +199,7 @@ func FileName(tableName string) string {
 // ResolveTableNames 는 생성 파일 이름이 겹치는 테이블(user_tb 와 user_vw 등)에 다른 이름을 붙인다.
 // 테이블(_tb)이 원래 이름을 갖고, 나머지는 view 면 {name}_view, 아니면 테이블 이름 전체를 쓴다.
 func ResolveTableNames(names []string) {
+	SetKnownTables(names)
 	groups := make(map[string][]string)
 	order := make([]string, 0)
 	for _, name := range names {
@@ -244,17 +245,194 @@ func ResolveTableNames(names []string) {
 	}
 }
 
-// MatchTableName 은 model.json table[].name 이 이 테이블을 가리키는지 확인한다.
-// user_role, userrole, UserRole 모두 user_role_tb 와 맞는다.
+// MatchTableName 은 model.json table[].name 이 이 테이블을 가리키는지 확인한다 (정확히 또는 _ / 대소문자 무시).
+// user_role, userrole, UserRole 모두 user_role_tb 와 맞는다. 여러 테이블 중 고를 때는 FindTableConfig 를 쓴다.
 func MatchTableName(configName string, tableName string) bool {
+	return tableExact(configName, tableName) || tableNormalized(configName, tableName)
+}
+
+// rawTableBase 는 이름 충돌 별칭을 무시하고 _tb / _vw 만 뗀 이름이다.
+func rawTableBase(name string) string {
+	lower := strings.ToLower(name)
+	for _, suffix := range []string{"_tb", "_vw"} {
+		if strings.HasSuffix(lower, suffix) && len(name) > len(suffix) {
+			return name[:len(name)-len(suffix)]
+		}
+	}
+	return name
+}
+
+// tableExact 는 설정 이름이 테이블 전체 이름이나 기본 이름과 같은지 확인한다 (대소문자 무시).
+// 이름 충돌로 별칭이 붙은 테이블(userrole_tb)도 접미사 뺀 이름(userrole)으로 정확히 맞는다. view 는 전체 이름 / 별칭으로만 맞는다.
+func tableExact(configName string, tableName string) bool {
 	if configName == "" {
 		return false
 	}
-	base := GetTableName(tableName)
-	if strings.EqualFold(configName, base) || strings.EqualFold(configName, tableName) {
+	if strings.EqualFold(configName, tableName) || strings.EqualFold(configName, GetTableName(tableName)) {
 		return true
 	}
-	return strings.EqualFold(strings.ReplaceAll(configName, "_", ""), FileName(tableName))
+	return GetTableType(tableName) == "table" && strings.EqualFold(configName, rawTableBase(tableName))
+}
+
+// tableNormalized 는 _ 와 대소문자를 무시하고 맞는지 확인한다 (userrole ↔ user_role_tb).
+func tableNormalized(configName string, tableName string) bool {
+	if configName == "" {
+		return false
+	}
+	n := strings.ToLower(strings.ReplaceAll(configName, "_", ""))
+	if n == FileName(tableName) {
+		return true
+	}
+	return GetTableType(tableName) == "table" && n == strings.ToLower(strings.ReplaceAll(rawTableBase(tableName), "_", ""))
+}
+
+// knownTables 는 DB 의 테이블 이름 목록이다 (ResolveTableNames 가 채운다). 비어 있으면(테스트) 다른 테이블을 고려하지 않는다.
+var knownTables []string
+
+// SetKnownTables 는 테이블 목록을 기록한다 (FindTableConfig / JoinTableName 이 쓴다).
+func SetKnownTables(names []string) {
+	knownTables = append([]string(nil), names...)
+}
+
+// exactOther 는 설정 이름이 tableName 이 아닌 다른 테이블을 정확히 가리키는지 확인한다.
+func exactOther(configName string, tableName string) bool {
+	for _, t := range knownTables {
+		if t != tableName && tableExact(configName, t) {
+			return true
+		}
+	}
+	return false
+}
+
+// FindTableConfigIndex 는 tableName 에 쓸 model.json table 설정 위치다. 없으면 -1.
+// 정확히 맞는 설정(전체 이름 / 접미사 뺀 이름)이 먼저이고, 그다음 _ / 대소문자를 무시해 맞는 설정을 쓴다.
+// 다른 테이블을 정확히 가리키는 설정은 _ 무시 규칙으로 이 테이블에 붙지 않는다 (userrole 은 userrole_tb 가 있으면 user_role_tb 가 아니다).
+func FindTableConfigIndex(gpas []config.Gpa, tableName string) int {
+	for i := range gpas {
+		if tableExact(gpas[i].Name, tableName) {
+			return i
+		}
+	}
+	for i := range gpas {
+		if tableNormalized(gpas[i].Name, tableName) && !exactOther(gpas[i].Name, tableName) {
+			return i
+		}
+	}
+	return -1
+}
+
+// FindTableConfig 는 FindTableConfigIndex 의 설정이다. 없으면 nil.
+func FindTableConfig(gpas []config.Gpa, tableName string) *config.Gpa {
+	if i := FindTableConfigIndex(gpas, tableName); i >= 0 {
+		return &gpas[i]
+	}
+	return nil
+}
+
+// CheckTableConfigs 는 어느 테이블에도 붙지 않거나 여러 테이블에 붙는 model.json table 설정에 경고를 찍는다.
+func CheckTableConfigs(gpas []config.Gpa, tables []string) []string {
+	warnings := make([]string, 0)
+	for i := range gpas {
+		matched := make([]string, 0)
+		for _, t := range tables {
+			if FindTableConfigIndex(gpas, t) == i {
+				matched = append(matched, t)
+			}
+		}
+		switch {
+		case len(matched) == 0:
+			warnings = append(warnings, fmt.Sprintf("WARNING: model.json table %q matches no table (or another table entry is used instead)", gpas[i].Name))
+		case len(matched) > 1:
+			warnings = append(warnings, fmt.Sprintf("WARNING: model.json table %q matches several tables %v; use the full table name (e.g. %q) to pick one", gpas[i].Name, matched, matched[0]))
+		}
+	}
+	for _, w := range warnings {
+		log.Println(w)
+	}
+	return warnings
+}
+
+// JoinTableName 은 조인 설정 name 이 가리키는 테이블 이름이다. {name}_tb 가 있으면 그것이고, 없으면 FindTableConfig 와 같은 규칙
+// (전체 이름 / 기본 이름, 그다음 _ 무시)으로 찾는다. 테이블 목록을 모르면(테스트) {name}_tb 를 쓴다. 못 찾으면 false.
+func JoinTableName(name string) (string, bool) {
+	def := strings.ToLower(name) + "_tb"
+	if len(knownTables) == 0 {
+		return def, true
+	}
+	for _, t := range knownTables {
+		if strings.EqualFold(t, def) {
+			return t, true
+		}
+	}
+	for _, t := range knownTables {
+		if tableExact(name, t) {
+			return t, true
+		}
+	}
+	for _, t := range knownTables {
+		if tableNormalized(name, t) {
+			return t, true
+		}
+	}
+	return def, false
+}
+
+// warned 는 이미 찍은 경고다 (언어마다 같은 조인을 다시 확인하므로 한 번만 찍는다).
+var warned = map[string]bool{}
+
+func warnOnce(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	if !warned[msg] {
+		warned[msg] = true
+		log.Println(msg)
+	}
+}
+
+// ResolvedJoin 은 테이블과 조인 컬럼을 찾은 조인 설정이다.
+type ResolvedJoin struct {
+	config.GpaJoin
+	Var   string // Go 변수 / extra key (JoinVars: 건너뛴 조인을 포함한 전체 설정 기준이라 언어 사이에 같다)
+	Table string // 조인 테이블 이름
+	Local Column // 이 테이블의 조인 컬럼
+}
+
+// ResolveJoins 는 조인 설정마다 테이블과 이 테이블의 조인 컬럼을 찾는다. column 은 접두사 있는/없는 DB 이름(a_member, member)이나
+// API 이름(memberId) 모두 된다. 테이블이나 컬럼이 없으면 경고를 찍고 그 조인을 건너뛴다.
+func ResolveJoins(tableName string, items []Column, joins []config.GpaJoin) []ResolvedJoin {
+	vars := JoinVars(joins)
+	ret := make([]ResolvedJoin, 0, len(joins))
+	for i, join := range joins {
+		joinTable, ok := JoinTableName(join.Name)
+		if !ok {
+			warnOnce("WARNING: %s join %q: table %s not found, join skipped", tableName, join.Name, joinTable)
+			continue
+		}
+		col := FindColumn(items, join.Column)
+		if col == nil {
+			warnOnce("WARNING: %s join %q: column %q not found, join skipped", tableName, join.Name, join.Column)
+			continue
+		}
+		ret = append(ret, ResolvedJoin{GpaJoin: join, Var: vars[i], Table: joinTable, Local: *col})
+	}
+	return ret
+}
+
+// SessionColumnError 는 session 설정 컬럼을 소유권 검사에 쓸 수 없는 이유다. 쓸 수 있으면 "".
+// 세션 값은 사용자 id(정수)라 정수 컬럼만 된다. allowString 이면(Spring) 문자열 컬럼도 된다 (id 를 문자열로 비교).
+func SessionColumnError(items []Column, column string, allowString bool) string {
+	col := FindColumn(items, column)
+	if col == nil {
+		return fmt.Sprintf("session column %q not found", column)
+	}
+	switch col.OriginalType {
+	case "int", "integer", "bigint", "smallint", "mediumint":
+		return ""
+	case "char", "varchar":
+		if allowString {
+			return ""
+		}
+	}
+	return fmt.Sprintf("session column %q has unsupported type %s (integer column required)", column, col.OriginalType)
 }
 
 // GetName 은 컬럼 이름에서 접두사(첫 번째 _ 앞)를 뗀 나머지다. p_created_at → created_at.
@@ -324,20 +502,29 @@ func JSONKey(col Column) string {
 	return LowerCamel(key) + col.Dup
 }
 
+// ReservedColumnKeys 는 생성 코드가 이미 쓰는 JSON key 다 (Go Extra 필드 / Kotlin·TypeScript extra 프로퍼티).
+// 이 이름의 컬럼은 DedupeColumns 가 번호를 붙인다 (extra → extra2).
+var ReservedColumnKeys = []string{"extra"}
+
 // DedupeColumns 는 _ / 대소문자만 다른 컬럼(p_created_at 과 p_createdat, user_id 와 userId)을 찾아
 // 뒤 컬럼의 Name 과 JSON key 에 번호(2, 3 ...)를 붙인 복사본을 돌려준다. 앞(ordinal_position) 컬럼이 원래 이름을 갖는다.
+// ReservedColumnKeys 와 같은 이름의 컬럼은 첫 컬럼이라도 번호를 붙인다.
 // Go 필드/변수, JSON key, 목록 필터, 검색 경로가 모두 이 이름을 쓰므로 언어 사이에 같다. SQL 컬럼(Key, Column)은 그대로다.
 func DedupeColumns(tableName string, items []Column) []Column {
 	ret := make([]Column, len(items))
 	copy(ret, items)
 	norm := func(s string) string { return strings.ToLower(strings.ReplaceAll(s, "_", "")) }
 	used := map[string]bool{}
+	seen := map[string]bool{}
+	for _, k := range ReservedColumnKeys {
+		used[k] = true
+		seen[k] = true
+	}
 	for _, item := range ret {
 		if item.Dup == "" {
 			used[norm(JSONKey(item))] = true
 		}
 	}
-	seen := map[string]bool{}
 	for i := range ret {
 		if ret[i].Dup != "" {
 			continue
@@ -356,7 +543,7 @@ func DedupeColumns(tableName string, items []Column) []Column {
 				break
 			}
 		}
-		log.Printf("WARNING: %s column %s has the same name as another column except _ / case, generated as %s (json %s)", tableName, ret[i].Column, ret[i].Name, JSONKey(ret[i]))
+		log.Printf("WARNING: %s column %s has the same name as another column (except _ / case) or a generated name, generated as %s (json %s)", tableName, ret[i].Column, ret[i].Name, JSONKey(ret[i]))
 	}
 	return ret
 }
@@ -411,6 +598,19 @@ func PrimaryKeyIndex(columns []Column, gpa *config.Gpa) int {
 		}
 	}
 	return 0
+}
+
+// IsConfigPrimary 는 gpa.primary 에 적힌 컬럼인지 확인한다. 목록 필터 / 검색에서 id 와 함께 뺀다 (Go, Spring, TypeScript 가 같다).
+func IsConfigPrimary(col Column, gpa *config.Gpa) bool {
+	if gpa == nil {
+		return false
+	}
+	for _, p := range gpa.Primary {
+		if MatchColumn(col, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsRangeFilter 는 목록 필터에서 start/end 범위로 거르는 날짜 컬럼인지 확인한다 (date, datetime, timestamp).
@@ -565,14 +765,16 @@ var goTypes = map[string]string{
 	"enum": "string", "set": "string", "json": "string",
 	"datetime": "string", "date": "string", "timestamp": "string", "time": "string",
 	"binary": "[]byte", "varbinary": "[]byte", "tinyblob": "[]byte", "blob": "[]byte", "mediumblob": "[]byte", "longblob": "[]byte",
-	// bit 은 드라이버가 원시 바이트("\x01")로 돌려줘서 bool 로 Scan 할 수 없다.
-	"bit": "[]byte",
+	// bit 은 bit(1) 플래그로 보고 bool 이다 (Spring Boolean 과 같다). 드라이버가 원시 바이트로 주므로 select 에서 +0 으로 숫자로 읽는다.
+	"bit": "bool",
 }
 
 var kotlinTypes = map[string]string{
-	"int": "Int", "integer": "Int", "mediumint": "Int", "smallint": "Int", "tinyint": "Int", "year": "Int",
-	"bigint": "Long",
-	"float":  "Double", "double": "Double", "real": "Double",
+	"int": "Int", "integer": "Int", "mediumint": "Int", "smallint": "Int", "year": "Int",
+	// tinyint 는 Go / Dart / TypeScript 와 같이 bool 이다 (JSON true/false, 0/1 도 받는다).
+	"tinyint": "Boolean",
+	"bigint":  "Long",
+	"float":   "Double", "double": "Double", "real": "Double",
 	"decimal": "BigDecimal", "numeric": "BigDecimal",
 	"char": "String", "varchar": "String", "tinytext": "String", "text": "String", "mediumtext": "String", "longtext": "String",
 	"enum": "String", "set": "String", "json": "String", "time": "String",
@@ -594,7 +796,12 @@ var dartTypes = map[string]string{
 
 // TablePrefix 는 {str}_tb 테이블의 컬럼 접두사를 돌려준다 (첫 번째 컬럼 기준).
 func TablePrefix(str string, schema string, db *sql.DB) string {
-	cols, err := QueryColumns(db, schema, str+"_tb")
+	return TablePrefixOf(str+"_tb", schema, db)
+}
+
+// TablePrefixOf 는 table 의 컬럼 접두사를 돌려준다 (첫 번째 컬럼 기준).
+func TablePrefixOf(table string, schema string, db *sql.DB) string {
+	cols, err := QueryColumns(db, schema, table)
 	if err != nil {
 		log.Println(err)
 		return ""
@@ -769,6 +976,42 @@ func GoConstPackageClause(tableName string) string {
 		return GoConstPackage(tableName)
 	}
 	return name
+}
+
+// kotlinReservedTypes 는 생성 Kotlin 코드가 이름만으로 쓰는 Kotlin / Java / Spring / JPA / Jackson 타입과 어노테이션이다.
+// 엔티티나 enum 이 이 이름이면 같은 패키지 / import 에서 가려져 컴파일되지 않는다. 생성 코드가 쓰지 않는 이름(Order 등)은 넣지 않는다
+// (흔한 테이블 이름의 클래스 이름이 바뀌지 않게).
+var kotlinReservedTypes = toSet(
+	// Kotlin
+	"Any", "Boolean", "ByteArray", "Double", "Int", "Long", "String", "List", "Map", "Regex", "Exception", "JvmStatic",
+	// java.time / java.math
+	"LocalDate", "LocalDateTime", "DateTimeFormatter", "BigDecimal",
+	// Spring / Spring Data
+	"Page", "Pageable", "PageRequest", "Sort", "Specification", "ResponseEntity", "HttpStatus", "Repository", "JpaRepository",
+	"JpaSpecificationExecutor", "EntityGraph", "Service", "Transactional", "PasswordEncoder", "DataIntegrityViolationException",
+	"DuplicateKeyException", "RestController", "RequestMapping", "GetMapping", "PostMapping", "PutMapping", "PatchMapping",
+	"DeleteMapping", "RequestParam", "RequestBody", "PathVariable", "ExceptionHandler", "LoggerFactory",
+	// JPA / Hibernate
+	"Entity", "Table", "Column", "Id", "GeneratedValue", "GenerationType", "Convert", "Converter", "AttributeConverter", "ManyToOne",
+	"JoinColumn", "FetchType", "Predicate", "EntityManager", "Immutable",
+	// Jackson
+	"JsonCreator", "JsonValue", "JsonDeserialize",
+	// 생성 코드 (support / config)
+	"SessionProvider", "DateParams", "InvalidParamException", "LenientLocalDateTimeDeserializer", "LenientLocalDateDeserializer",
+)
+
+// KotlinTypeName 은 Kotlin 생성 타입(엔티티, enum) 이름이다. 위 타입이나 taken 과 겹치면 suffix 를 붙인다 (Page → PageEntity, Sort → SortEnum).
+func KotlinTypeName(name string, suffix string, taken ...string) string {
+	clash := kotlinReservedTypes[name]
+	for _, t := range taken {
+		if t == name {
+			clash = true
+		}
+	}
+	if !clash {
+		return name
+	}
+	return name + suffix
 }
 
 // KotlinIdent 는 Kotlin 예약어면 backtick 으로 감싼다.

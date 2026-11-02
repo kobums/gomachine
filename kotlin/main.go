@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+	"unicode"
 
 	"github.com/CloudyKit/jet/v6"
 	log "github.com/sirupsen/logrus"
@@ -22,22 +24,30 @@ type KotlinColumn struct {
 	ModelName    string
 	IsNullable   bool
 	IsPrimaryKey bool
-	IsGenerated  bool // 정수형 기본 키: @GeneratedValue(IDENTITY)
+	IsGenerated  bool // id 정수 기본 키: @GeneratedValue(IDENTITY), 생성 요청에서 받지 않는다
 	HasDefault   bool
 	DefaultValue string
 	IsEnum       bool
 	EnumType     string
 	IsPassword   bool   // 비밀번호 컬럼: 응답/검색에서 제외하고 저장 시 해시한다
 	IsProtected  bool   // 보호 컬럼: Create/Update/Patch 요청으로 바꿀 수 없다
-	IsSearchable bool   // 목록 필터 / /search 엔드포인트 / findBy 를 만든다
-	DateFormat   string // LocalDateTime / LocalDate 요청 파라미터의 @DateTimeFormat ISO 값 (DATE_TIME / DATE)
+	IsSearchable bool   // 목록 필터 / /search 엔드포인트를 만든다
+	DateFormat   string // DATE_TIME (LocalDateTime) / DATE (LocalDate). 요청 파라미터는 문자열로 받아 DateParams 로 해석한다
 	IsCreated    bool   // createddate: PUT/PATCH 로 바꿀 수 없다
+	CreatedNow   string // createddate 를 서버가 채우는 식 (DateParams.now()). 비어 있으면 요청 값을 쓴다
+	InCreate     bool   // CreateRequest 에 있는 컬럼
+	IsTinyint    bool   // tinyint → Boolean (@Column columnDefinition)
 	Prop         string // 엔티티 프로퍼티의 JPA 속성 이름 (backtick 없음, 조인 컬럼은 {join}Id)
 	EntityField  string // 엔티티 프로퍼티 이름 (조인 컬럼은 {join}Id)
 	RespType     string // 응답 타입 (null 허용이면 ?)
+	ParamName    string // 요청 파라미터 / JSON key (util.JSONKey)
 	SearchPath   string // GET /search/{SearchPath} (util.SearchSegment)
 	StartParam   string // 날짜 범위 필터 파라미터 (util.RangeParams)
 	EndParam     string
+	StartVar     string // 날짜 범위 매개변수 이름 (컬럼 프로퍼티와 겹치지 않게 _ 포함)
+	EndVar       string
+	QualType     string // 패키지까지 쓴 타입 (기본 키 타입: repository / service / controller 는 java.time 을 import 하지 않는다)
+	QualDefault  string // 패키지까지 쓴 기본값 (service 의 보호 컬럼 값: enum 을 import 하지 않는다)
 }
 
 // KotlinSort 는 정렬 파라미터 이름(소문자)과 엔티티 프로퍼티의 매핑이다.
@@ -46,15 +56,11 @@ type KotlinSort struct {
 	Prop string
 }
 
-// Kotlin 날짜 형식. 응답은 Go 와 같은 "yyyy-MM-dd HH:mm:ss", 요청은 ISO('T') 와 공백 형식을 모두 받는다.
+// Kotlin 날짜 형식. 응답은 Go 와 같은 "yyyy-MM-dd HH:mm:ss" 다.
+// 요청(JSON / 쿼리 파라미터)은 DateParams 가 날짜만, 공백 / ISO('T'), 밀리초, 'Z' / 오프셋을 모두 받는다.
 const (
-	kotlinDateTimeOut  = "yyyy-MM-dd HH:mm:ss"
-	kotlinDateTimeIn   = "yyyy-MM-dd['T'][' ']HH:mm[:ss]"
-	kotlinDateTimeIso  = `@DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME, fallbackPatterns = ["yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm"])`
-	kotlinDateIso      = `@DateTimeFormat(iso = DateTimeFormat.ISO.DATE)`
-	kotlinMaxPageSize  = 10000
-	kotlinDefaultPage  = 10
-	kotlinJsonDateTime = `@JsonFormat(pattern = "` + kotlinDateTimeIn + `")`
+	kotlinDateTimeOut = "yyyy-MM-dd HH:mm:ss"
+	kotlinMaxPageSize = 10000
 )
 
 // KotlinSession 은 세션 값(SessionProvider.currentValue(Key))과 엔티티 컬럼의 매핑이다.
@@ -68,7 +74,7 @@ type KotlinSession struct {
 }
 
 type KotlinEnumData struct {
-	Name        string // enum class 이름 (CamelCase)
+	Name        string // enum class 이름 (CamelCase, Kotlin/Spring 타입과 겹치면 Enum 접미사)
 	ExtraField  string // ExtraInfo 프로퍼티 이름
 	ColumnField string // 이 enum 을 쓰는 엔티티 프로퍼티. 컬럼이 없으면 ""
 	Items       []util.EnumItem
@@ -79,15 +85,14 @@ type KotlinEnumData struct {
 
 type KotlinJoin struct {
 	Name            string
-	Column          string
-	ColumnName      string // camelCase column name for Kotlin
+	Column          string // 이 테이블의 조인 컬럼 (DB 이름)
+	ColumnName      string // 조인 컬럼 엔티티 프로퍼티의 앞부분 ({ColumnName}Id)
 	Prefix          string
-	Alias           string
-	AliasVar        string // 별칭을 매개변수로 쓸 때의 이름
-	ModelName       string
+	Alias           string // 엔티티 조인 프로퍼티 / extra key (util.JoinVars, Go / TypeScript 와 같다)
+	Var             string // Response.from 의 지역 변수 이름 (_ 접두사: 컬럼 프로퍼티와 겹치지 않는다)
+	ModelName       string // 조인 엔티티 이름
 	ParentModelName string // The main model name
-	Columns         []KotlinColumn
-	Index           int // Index in the joins array
+	Index           int    // Index in the joins array
 }
 
 type EntityGraphPath struct {
@@ -100,31 +105,34 @@ type KotlinTemplateData struct {
 	BasePackage      string // 생성 코드의 기본 패키지 (kotlinPackage)
 	PackageName      string
 	TableName        string
-	ModelName        string
+	ModelName        string // Kotlin 엔티티 이름 (Kotlin/Spring 타입과 겹치면 Entity 접미사)
+	UrlName          string // /api/{UrlName} (Go 와 같은 util.FileName)
 	ModelVar         string // 모델을 매개변수로 쓸 때의 이름
+	EnumPackage      string // enums 하위 패키지 이름
 	Columns          []KotlinColumn
 	PK               KotlinColumn // 기본 키 컬럼
 	HasDateTime      bool         // LocalDateTime 컬럼이 있다
 	HasDate          bool         // LocalDate 컬럼이 있다
-	HasDateFilter    bool         // 목록 필터에 날짜 범위 컬럼이 있다
+	HasDateFilter    bool         // 목록 필터 / 검색에 날짜 컬럼이 있다
 	HasDecimal       bool
-	IsView           bool // _vw: 읽기 전용 (쓰기 엔드포인트/서비스 메서드 없음)
+	IsView           bool // _vw: 읽기 전용 (쓰기 엔드포인트/서비스 메서드 없음, @Immutable)
+	HasIdRoutes      bool // id 컬럼이나 gpa.primary 가 있다: GET/PUT/PATCH/DELETE /{id}, DELETE /batch
 	Enums            []KotlinEnumData
 	Joins            []KotlinJoin
-	UniqueJoinNames  []string          // Unique join model names for imports
 	EntityGraphPaths []EntityGraphPath // Nested entity graph paths for @EntityGraph with metadata
 	HasPassword      bool
 	PasswordField    string          // 비밀번호 컬럼의 프로퍼티 이름 (passwd / password)
 	Sessions         []KotlinSession // auth=jwt 이고 session 설정이 있을 때만 채워진다
+	RequireLogin     bool            // auth=jwt: 모든 엔드포인트가 로그인을 요구한다 (User 생성 제외)
+	IsUser           bool            // user 테이블 (회원 가입: 로그인 없이 생성)
+	SelfOnly         bool            // auth=jwt 의 User 에 id session 이 없으면 수정/삭제는 본인 행만 (Go 와 같다)
+	SelfConvert      string          // SelfOnly 비교에서 currentUserId()(Long) 를 PK 타입으로 바꾸는 접미사
 	Sorts            []KotlinSort    // 목록 정렬에 쓸 수 있는 이름
-	HasJsonDate      bool            // 요청 DTO 에 LocalDateTime 이 있다 (@JsonFormat)
+	HasJsonDate      bool            // 요청 DTO 에 날짜가 있다 (@JsonDeserialize)
+	HasCreatedNow    bool            // createddate 를 서버 시각으로 채운다 (DateParams)
+	CamelNames       bool            // 대문자가 있는 테이블/컬럼 이름 (Spring Boot 기본 이름 전략이 바꾼다)
 	DateTimeOut      string
-	DateTimeIn       string
-	DateTimeIso      string
-	DateIso          string
-	JsonDateTime     string
 	MaxPageSize      int
-	DefaultPageSize  int
 }
 
 // buildEntityGraphPaths 는 @EntityGraph 경로다. 응답은 조인을 한 단계만 매핑하므로 직접 조인만 가져온다
@@ -133,10 +141,9 @@ func buildEntityGraphPaths(joins []KotlinJoin) []EntityGraphPath {
 	pathStrings := make([]string, 0)
 	seen := map[string]bool{}
 	for _, join := range joins {
-		alias := strings.ToLower(join.Alias)
-		if !seen[alias] {
-			seen[alias] = true
-			pathStrings = append(pathStrings, alias)
+		if !seen[join.Alias] {
+			seen[join.Alias] = true
+			pathStrings = append(pathStrings, strings.Trim(join.Alias, "`"))
 		}
 	}
 
@@ -153,8 +160,14 @@ func buildEntityGraphPaths(joins []KotlinJoin) []EntityGraphPath {
 
 // kotlinField 는 컬럼의 Kotlin 프로퍼티 이름이다. JSON key 와 요청 파라미터 이름이 되므로 util.JSONKey 를 쓴다
 // (createddate, created_at → createdAt, userId → userid). 예약어는 backtick 으로 감싼다.
+// JSONKey 는 _ 가 없으므로 생성 코드의 지역 변수(_page, _sort ...)나 날짜 범위 매개변수({field}_start)와 겹치지 않는다.
 func kotlinField(col util.Column) string {
 	return util.KotlinIdent(util.JSONKey(col))
+}
+
+// KotlinModelName 은 테이블의 Kotlin 엔티티 이름이다. Kotlin/Spring/JPA 타입과 겹치면 Entity 를 붙인다 (page_tb → PageEntity).
+func KotlinModelName(tableName string) string {
+	return util.KotlinTypeName(util.ModelName(tableName), "Entity")
 }
 
 // findPrimaryKey 는 기본 키 컬럼 위치다. gpa.primary > 이름이 id 인 컬럼 > 첫 번째 컬럼 순서.
@@ -165,11 +178,11 @@ func findPrimaryKey(columns []util.Column, gpa *config.Gpa) int {
 func defaultValue(kotlinType string) string {
 	switch kotlinType {
 	case "LocalDateTime":
-		return "LocalDateTime.now()"
+		return "java.time.LocalDateTime.now()"
 	case "LocalDate":
-		return "LocalDate.now()"
+		return "java.time.LocalDate.now()"
 	case "BigDecimal":
-		return "BigDecimal.ZERO"
+		return "java.math.BigDecimal.ZERO"
 	case "String":
 		return `""`
 	case "Int":
@@ -186,8 +199,33 @@ func defaultValue(kotlinType string) string {
 	return ""
 }
 
+// qualifiedType 은 java.time / java.math 타입을 패키지까지 쓴 이름이다 (import 없이 쓸 수 있게).
+func qualifiedType(kotlinType string) string {
+	switch kotlinType {
+	case "LocalDateTime", "LocalDate":
+		return "java.time." + kotlinType
+	case "BigDecimal":
+		return "java.math.BigDecimal"
+	}
+	return kotlinType
+}
+
+// hasUpper 는 대문자가 있는지 확인한다.
+func hasUpper(s string) bool {
+	for _, r := range s {
+		if unicode.IsUpper(r) {
+			return true
+		}
+	}
+	return false
+}
+
 func ProcessKotlin(packageName string, tableName string, prefix string, columns []util.Column, db *sql.DB, gpa *config.Gpa, version string, auth string, cnf config.ModelConfig) {
-	modelName := util.ModelName(tableName)
+	baseModelName := util.ModelName(tableName)
+	modelName := KotlinModelName(tableName)
+	if modelName != baseModelName {
+		log.Printf("WARNING: %s: Kotlin class %s clashes with a Kotlin/Spring/JPA type, generated as %s", tableName, baseModelName, modelName)
+	}
 
 	// 출력 경로는 kotlinModelFilePath 만 쓴다 (main.go 가 경로 없는 언어는 건너뛴다).
 	targetPath := cnf.KotlinModelFilePath
@@ -204,29 +242,83 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 		}
 	}
 
-	protects := util.ProtectedColumns(modelName, columns, gpa)
+	// _ / 대소문자만 다른 컬럼, extra 컬럼은 Go / TypeScript 와 같은 규칙으로 이름에 번호를 붙인다.
+	columns = util.DedupeColumns(tableName, columns)
+
+	isView := util.GetTableType(tableName) == "view"
+	basePackage := cnf.GetKotlinPackage()
+	enumPackage := util.KotlinIdent(strings.ToLower(baseModelName))
+
+	// 조인 (테이블 / 조인 컬럼을 찾지 못하면 건너뛴다)
+	resolved := make([]util.ResolvedJoin, 0)
+	if gpa != nil {
+		resolved = util.ResolveJoins(tableName, columns, gpa.Join)
+	}
+
+	// enum 이름: Kotlin/Spring 타입, 이 엔티티, 조인 엔티티와 겹치면 Enum 을 붙인다.
+	taken := []string{modelName}
+	for _, rj := range resolved {
+		taken = append(taken, KotlinModelName(rj.Table))
+	}
+	enumNames := map[string]string{}
+	if gpa != nil {
+		for _, m := range gpa.Map {
+			name := util.KotlinTypeName(util.CamelCase(m.Name), "Enum", taken...)
+			if name != util.CamelCase(m.Name) {
+				log.Printf("WARNING: %s: Kotlin enum %s clashes with another type, generated as %s", tableName, util.CamelCase(m.Name), name)
+			}
+			enumNames[m.Name] = name
+		}
+	}
+
+	protects := util.ProtectedColumns(baseModelName, columns, gpa)
 	kotlinColumns := make([]KotlinColumn, 0)
 	hasDateTime := false
 	hasDate := false
 	hasDateFilter := false
 	hasDecimal := false
 	pkIndex := findPrimaryKey(columns, gpa)
+	// gpa.primary 가 실제 컬럼을 가리키는지 (그러면 그 컬럼이 기본 키다)
+	hasPrimaryConfig := false
+	if gpa != nil {
+		for _, p := range gpa.Primary {
+			if util.FindColumn(columns, p) != nil {
+				hasPrimaryConfig = true
+			}
+		}
+	}
+	hasIdColumn := false
+	for _, col := range columns {
+		if col.Name == "Id" {
+			hasIdColumn = true
+		}
+	}
+	if isView && !hasPrimaryConfig {
+		log.Printf("WARNING: %s is a view and uses column %s as @Id; rows with the same %s collapse into one. Set model.json table.primary to a unique column", tableName, columns[pkIndex].Column, columns[pkIndex].Column)
+	}
+	createdNow := createdExpr()
+	camelNames := hasUpper(tableName)
 
 	for i, col := range columns {
 		isPrimaryKey := i == pkIndex
+		if hasUpper(col.Column) {
+			camelNames = true
+		}
 
 		// null 허용은 information_schema.columns.is_nullable 을 따른다 (기본 키는 항상 NOT NULL).
 		isDateType := col.Type == "LocalDateTime" || col.Type == "LocalDate"
 		isNullable := !isPrimaryKey && col.Nullable
 		hasDefault := false
 		defValue := ""
+		kotlinType := col.Type
 
 		// Check if this column is an enum type
 		isEnumType := false
 		enumTypeName := ""
 		if m := util.FindEnumMap(gpa, col.Key); m != nil {
 			isEnumType = true
-			enumTypeName = col.Type
+			enumTypeName = enumNames[m.Name]
+			kotlinType = enumTypeName
 			// 코드 0 인 상수를 기본값으로 쓴다 (Go 의 0 값과 같다).
 			if zero := enumZeroIdent(m.Data); zero != "" && !isNullable {
 				hasDefault = true
@@ -246,16 +338,15 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 			hasDecimal = true
 		}
 
-		isGenerated := false
-		// Special handling for primary key
+		// id 정수 기본 키만 자동 증가(IDENTITY)로 본다. gpa.primary / 첫 컬럼 / 문자열 키와 view 는 클라이언트가 값을 정한다.
+		isGenerated := isPrimaryKey && !isView && col.Name == "Id" && (col.Type == "Long" || col.Type == "Int")
 		if isPrimaryKey {
-			hasDefault = true
 			isNullable = false
-			switch col.Type {
-			case "Long", "Int":
+			if isGenerated {
+				hasDefault = true
 				defValue = "0"
-				isGenerated = true
-			default:
+			} else {
+				// 생성 요청에서 반드시 보내야 한다 (기본값 없음). 엔티티는 JPA 용 기본값을 둔다.
 				defValue = defaultValue(col.Type)
 				hasDefault = defValue != ""
 			}
@@ -267,7 +358,7 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 		}
 
 		// Determine DBType for Response
-		dbType := col.Type
+		dbType := kotlinType
 		if isEnumType {
 			dbType = "Int" // enum 은 응답에서 코드(Int)다
 		} else if isDateType {
@@ -279,7 +370,7 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 			Name:         col.Name,
 			Field:        kotlinField(col),
 			DBName:       col.Column,
-			KotlinType:   col.Type,
+			KotlinType:   kotlinType,
 			DBType:       dbType,
 			ModelName:    modelName,
 			IsNullable:   isNullable,
@@ -290,17 +381,31 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 			IsEnum:       isEnumType,
 			EnumType:     enumTypeName,
 			IsPassword:   isPassword,
-			IsSearchable: !isPrimaryKey && col.Name != "Id" && !isPassword && col.Type != "ByteArray",
+			// Go 의 isSearchColumn 과 같다: id, gpa.primary, 비밀번호, 바이트 컬럼은 빼고, 첫 컬럼을 대신 키로 쓴 경우는 거를 수 있다.
+			IsSearchable: col.Name != "Id" && !util.IsConfigPrimary(col, gpa) && !isPassword && col.Type != "ByteArray",
 			IsCreated:    col.Name == "Createddate" && !isPrimaryKey,
+			IsTinyint:    col.OriginalType == "tinyint" && col.Type == "Boolean",
 			Prop:         strings.Trim(kotlinField(col), "`"),
 			EntityField:  kotlinField(col),
 			RespType:     dbType,
+			ParamName:    util.JSONKey(col),
+		}
+		// createddate 는 서버가 현재 시각으로 넣는다 (Go 와 같다). 클라이언트 값은 받지 않는다.
+		if kotlinCol.IsCreated {
+			switch col.Type {
+			case "LocalDateTime":
+				kotlinCol.CreatedNow = createdNow
+			case "LocalDate":
+				kotlinCol.CreatedNow = createdNow + ".toLocalDate()"
+			}
 		}
 		if isNullable {
 			kotlinCol.RespType += "?"
 		}
 		kotlinCol.SearchPath = util.SearchSegment(col)
 		kotlinCol.StartParam, kotlinCol.EndParam = util.RangeParams(col)
+		bare := strings.Trim(kotlinCol.Field, "`")
+		kotlinCol.StartVar, kotlinCol.EndVar = bare+"_start", bare+"_end"
 		if col.Type == "LocalDateTime" {
 			kotlinCol.DateFormat = "DATE_TIME"
 		} else if col.Type == "LocalDate" {
@@ -314,6 +419,15 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 				kotlinCol.IsProtected = true
 			}
 		}
+		kotlinCol.InCreate = !(isPrimaryKey && isGenerated) && !kotlinCol.IsProtected && kotlinCol.CreatedNow == ""
+		kotlinCol.QualType = qualifiedType(kotlinType)
+		kotlinCol.QualDefault = defValue
+		if isEnumType {
+			kotlinCol.QualType = basePackage + ".enums." + enumPackage + "." + enumTypeName
+			if defValue != "null" && defValue != "" {
+				kotlinCol.QualDefault = basePackage + ".enums." + enumPackage + "." + defValue
+			}
+		}
 		kotlinColumns = append(kotlinColumns, kotlinCol)
 	}
 
@@ -321,14 +435,16 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 		log.Printf("WARNING: %s has no column, skip kotlin", tableName)
 		return
 	}
+	if camelNames {
+		warnCamelOnce()
+	}
 
 	// Get enum data from GPA and convert to KotlinEnumData
 	enums := make([]KotlinEnumData, 0)
-	enumPackage := util.KotlinIdent(strings.ToLower(modelName))
 	if gpa != nil {
 		for _, gpaMap := range gpa.Map {
 			e := KotlinEnumData{
-				Name:        util.CamelCase(gpaMap.Name),
+				Name:        enumNames[gpaMap.Name],
 				ExtraField:  util.KotlinIdent(strings.ToLower(gpaMap.Name)),
 				Items:       util.KotlinEnumItems(gpaMap.Data),
 				EnumPackage: enumPackage,
@@ -344,88 +460,52 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 		}
 	}
 
-	// Process joins
-	joins := make([]KotlinJoin, 0)
-	if gpa != nil {
-		for joinIndex, join := range gpa.Join {
-			joinTableName := strings.ToLower(join.Name) + "_tb"
-			joinModelName := util.ModelName(joinTableName)
-
-			// Get columns for joined table
-			joinColumns := make([]KotlinColumn, 0)
-			raws, err := util.QueryColumns(db, cnf.Database, joinTableName)
-			if err != nil {
-				log.Printf("Failed to query join table columns: %v", err)
-				continue
-			}
-			for _, raw := range raws {
-				col := util.NewColumnFromRaw(joinTableName, raw, nil, cnf)
-				dbType := col.Type
-				if dbType == "LocalDateTime" || dbType == "LocalDate" {
-					dbType = "String"
-				}
-				joinColumns = append(joinColumns, KotlinColumn{
-					Name:         col.Name,
-					Field:        kotlinField(col),
-					DBName:       raw.Name,
-					KotlinType:   col.Type,
-					DBType:       dbType,
-					ModelName:    joinModelName,
-					IsNullable:   col.Nullable,
-					IsPrimaryKey: col.Name == "Id",
-				})
-			}
-
-			alias := join.Alias
-			if alias == "" {
-				alias = join.Name
-			}
-
-			// Convert column name to camelCase for Kotlin (e.g., author_id -> authorId)
-			columnName := util.LowerCamel(join.Column)
-			if columnName == "" {
-				log.Printf("WARNING: join %s of %s has no column, skipped", join.Name, tableName)
-				continue
-			}
-
-			// Build full column name with prefix (e.g., "gym" -> "m_gym")
-			// Always use current table's prefix for the join column
-			fullColumnName := prefix + "_" + join.Column
-
-			joins = append(joins, KotlinJoin{
-				Name:            join.Name,
-				Column:          fullColumnName,
-				ColumnName:      columnName,
-				Prefix:          join.Prefix,
-				Alias:           alias,
-				AliasVar:        util.KotlinIdent(strings.ToLower(alias)),
-				ModelName:       joinModelName,
-				ParentModelName: modelName,
-				Columns:         joinColumns,
-				Index:           joinIndex,
-			})
+	// 조인: 조인 컬럼 프로퍼티는 {컬럼}Id, 조인 엔티티 프로퍼티는 util.JoinVars 이름이다.
+	// 조인 컬럼 자신은 {컬럼}Id 로 바뀌므로 겹침 검사에서 뺀다.
+	joinLocal := map[string]bool{}
+	for _, rj := range resolved {
+		joinLocal[rj.Local.Column] = true
+	}
+	fields := map[string]bool{}
+	for _, col := range kotlinColumns {
+		if !joinLocal[col.DBName] {
+			fields[strings.Trim(col.Field, "`")] = true
 		}
 	}
-
-	// Extract unique join model names for imports
-	uniqueJoinNamesMap := make(map[string]bool)
-	var uniqueJoinNames []string
-	for _, join := range joins {
-		if !uniqueJoinNamesMap[join.Name] {
-			uniqueJoinNamesMap[join.Name] = true
-			uniqueJoinNames = append(uniqueJoinNames, join.Name)
+	joins := make([]KotlinJoin, 0)
+	for joinIndex, rj := range resolved {
+		alias := util.KotlinIdent(rj.Var)
+		if fields[rj.Var] {
+			log.Printf("WARNING: %s join %q: property %s clashes with a column, join skipped (set another alias)", tableName, rj.Name, rj.Var)
+			continue
 		}
+		joins = append(joins, KotlinJoin{
+			Name:            rj.Name,
+			Column:          rj.Local.Column,
+			ColumnName:      strings.Trim(kotlinField(rj.Local), "`"),
+			Prefix:          rj.Prefix,
+			Alias:           alias,
+			Var:             "_" + rj.Var,
+			ModelName:       KotlinModelName(rj.Table),
+			ParentModelName: modelName,
+			Index:           joinIndex,
+		})
 	}
 
 	// Build entity graph paths with nested joins
 	entityGraphPaths := buildEntityGraphPaths(joins)
 
-	// 조인 컬럼은 엔티티에서 {join}Id 프로퍼티다.
+	// 조인 컬럼은 엔티티에서 {컬럼}Id 프로퍼티다 (다른 컬럼과 겹치면 {컬럼}JoinId).
 	for i := range kotlinColumns {
 		for _, join := range joins {
 			if join.Column == kotlinColumns[i].DBName {
-				kotlinColumns[i].EntityField = join.ColumnName + "Id"
-				kotlinColumns[i].Prop = join.ColumnName + "Id"
+				name := join.ColumnName + "Id"
+				if fields[name] {
+					name = join.ColumnName + "JoinId"
+				}
+				kotlinColumns[i].EntityField = name
+				kotlinColumns[i].Prop = name
+				break
 			}
 		}
 	}
@@ -446,9 +526,13 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 	}
 
 	hasJsonDate := false
+	hasCreatedNow := false
 	for _, col := range kotlinColumns {
-		if col.KotlinType == "LocalDateTime" {
+		if col.DateFormat != "" {
 			hasJsonDate = true
+		}
+		if col.CreatedNow != "" {
+			hasCreatedNow = true
 		}
 	}
 
@@ -460,41 +544,66 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 		}
 	}
 
-	basePackage := cnf.GetKotlinPackage()
-	sessions := buildKotlinSessions(auth, gpa, kotlinColumns, joins)
-	if len(sessions) > 0 {
+	pk := kotlinColumns[pkIndex]
+	sessions := buildKotlinSessions(tableName, auth, gpa, kotlinColumns, joins)
+	requireLogin := auth == "jwt"
+	if requireLogin {
 		generateSessionProvider(targetPath, basePackage)
 	}
+	// User 테이블은 id session 이 없어도 수정/삭제는 본인 행만 (Go 와 같다).
+	selfOnly := false
+	selfConvert := ""
+	if requireLogin && baseModelName == "User" && !isView {
+		selfOnly = true
+		for _, s := range sessions {
+			if s.IsPrimaryKey {
+				selfOnly = false
+			}
+		}
+		switch pk.KotlinType {
+		case "Long":
+		case "Int":
+			selfConvert = ".toInt()"
+		case "String":
+			selfConvert = ".toString()"
+		default:
+			selfOnly = false
+		}
+	}
+	generateSupport(targetPath, basePackage, cnf.Timezone)
 
 	templateData := KotlinTemplateData{
 		BasePackage:      basePackage,
 		PackageName:      packageName,
 		TableName:        tableName,
 		ModelName:        modelName,
+		UrlName:          util.FileName(tableName),
 		ModelVar:         util.KotlinIdent(strings.ToLower(modelName)),
+		EnumPackage:      enumPackage,
 		Columns:          kotlinColumns,
-		PK:               kotlinColumns[pkIndex],
+		PK:               pk,
 		HasDateTime:      hasDateTime,
 		HasDate:          hasDate,
 		HasDateFilter:    hasDateFilter,
 		HasDecimal:       hasDecimal,
-		IsView:           util.GetTableType(tableName) == "view",
+		IsView:           isView,
+		HasIdRoutes:      hasIdColumn || hasPrimaryConfig,
 		Enums:            enums,
 		Joins:            joins,
-		UniqueJoinNames:  uniqueJoinNames,
 		EntityGraphPaths: entityGraphPaths,
 		HasPassword:      passwordField != "",
 		PasswordField:    passwordField,
 		Sessions:         sessions,
+		RequireLogin:     requireLogin,
+		IsUser:           baseModelName == "User",
+		SelfOnly:         selfOnly,
+		SelfConvert:      selfConvert,
 		Sorts:            sorts,
 		HasJsonDate:      hasJsonDate,
+		HasCreatedNow:    hasCreatedNow,
+		CamelNames:       camelNames,
 		DateTimeOut:      kotlinDateTimeOut,
-		DateTimeIn:       kotlinDateTimeIn,
-		DateTimeIso:      kotlinDateTimeIso,
-		DateIso:          kotlinDateIso,
-		JsonDateTime:     kotlinJsonDateTime,
 		MaxPageSize:      kotlinMaxPageSize,
-		DefaultPageSize:  kotlinDefaultPage,
 	}
 
 	views := newViews()
@@ -503,54 +612,102 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 	render(views, "service.jet", filepath.Join(targetPath, "service"), modelName+"Service.kt", templateData)
 	render(views, "controller.jet", filepath.Join(targetPath, "controller"), modelName+"Controller.kt", templateData)
 	if len(enums) > 0 {
-		render(views, "enums.jet", filepath.Join(targetPath, "enums", strings.ToLower(modelName)), "Enums.kt", templateData)
+		render(views, "enums.jet", filepath.Join(targetPath, "enums", strings.Trim(enumPackage, "`")), "Enums.kt", templateData)
 	}
 }
 
+var camelWarned = false
+
+// warnCamelOnce 는 대문자가 있는 테이블/컬럼 이름에 대한 경고를 한 번 찍는다.
+func warnCamelOnce() {
+	if camelWarned {
+		return
+	}
+	camelWarned = true
+	log.Println("WARNING: some table/column names have upper-case letters (e.g. c_userId). Spring Boot's default naming strategy rewrites them " +
+		"(c_userId → c_user_id); set spring.jpa.hibernate.naming.physical-strategy=org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl")
+}
+
+// createdExpr 는 createddate 를 채우는 현재 시각 식이다 (DateParams.ZONE 은 model.json timezone).
+func createdExpr() string {
+	return "DateParams.now()"
+}
+
+// kotlinZone 은 model.json timezone 의 ZoneId 식이다. Go 와 같이 비어 있으면 Asia/Seoul (UTC+9), local 은 서버 시간대.
+// 모르는 이름이면 경고를 찍고 Asia/Seoul 을 쓴다 (Go 도 LoadLocation 이 실패하면 UTC+9 다).
+func kotlinZone(tz string) string {
+	tz = strings.TrimSpace(tz)
+	switch tz {
+	case "":
+		return `ZoneId.of("Asia/Seoul")`
+	case "local", "Local":
+		return "ZoneId.systemDefault()"
+	case "utc":
+		return `ZoneId.of("UTC")`
+	}
+	if _, err := time.LoadLocation(tz); err != nil {
+		log.Printf("WARNING: unknown timezone %q, Spring uses Asia/Seoul", tz)
+		return `ZoneId.of("Asia/Seoul")`
+	}
+	return "ZoneId.of(" + util.KotlinString(tz) + ")"
+}
+
 // buildKotlinSessions 는 auth=jwt 이고 session 설정이 있을 때 소유권 검사용 매핑을 만든다.
-func buildKotlinSessions(auth string, gpa *config.Gpa, columns []KotlinColumn, joins []KotlinJoin) []KotlinSession {
+// 쓸 수 없는 session 컬럼은 jwt 면 생성을 멈추고 (소유권 검사 없는 API 가 된다), 아니면 경고만 찍는다.
+func buildKotlinSessions(tableName string, auth string, gpa *config.Gpa, columns []KotlinColumn, joins []KotlinJoin) []KotlinSession {
 	ret := make([]KotlinSession, 0)
-	if auth != "jwt" || gpa == nil {
+	if gpa == nil {
 		return ret
 	}
 
+	items := make([]util.Column, 0, len(columns))
+	for _, col := range columns {
+		items = append(items, util.Column{Name: col.Name, Column: col.DBName, Key: util.GetName(col.DBName), OriginalType: kotlinOriginalType(col)})
+	}
 	for _, pair := range gpa.Session {
-		found := false
-		for _, col := range columns {
-			if !util.MatchColumn(util.Column{Name: col.Name, Column: col.DBName, Key: util.GetName(col.DBName)}, pair.Column) {
-				continue
+		if msg := util.SessionColumnError(items, pair.Column, true); msg != "" {
+			if auth == "jwt" {
+				log.Fatalf("ERROR: %s: %s (generation stopped)", tableName, msg)
 			}
-			found = true
-
-			field := col.Field
-			for _, join := range joins {
-				if join.Column == col.DBName {
-					field = join.ColumnName + "Id"
-				}
-			}
-
-			convert := ""
-			switch col.KotlinType {
-			case "Long":
-				convert = ""
-			case "Int":
-				convert = ".toInt()"
-			case "String":
-				convert = ".toString()"
-			default:
-				log.Printf("WARNING: session column %s has unsupported type %s, ownership check skipped", col.Name, col.KotlinType)
-				found = false
-			}
-			if found {
-				ret = append(ret, KotlinSession{Key: strings.ToLower(pair.Key), Field: field, RequestField: col.Field, Convert: convert, IsPrimaryKey: col.IsPrimaryKey, Prop: strings.Trim(field, "`")})
-			}
-			break
+			log.Printf("WARNING: %s: %s", tableName, msg)
+			continue
 		}
-		if !found {
-			log.Printf("WARNING: session column %s not found in %s", pair.Column, gpa.Name)
+		if auth != "jwt" {
+			continue
 		}
+		var col KotlinColumn
+		for i := range items {
+			if util.MatchColumn(items[i], pair.Column) {
+				col = columns[i]
+				break
+			}
+		}
+		convert := ""
+		switch col.KotlinType {
+		case "Int":
+			convert = ".toInt()"
+		case "String":
+			convert = ".toString()"
+		}
+		ret = append(ret, KotlinSession{Key: strings.ToLower(pair.Key), Field: col.EntityField, RequestField: col.Field, Convert: convert, IsPrimaryKey: col.IsPrimaryKey, Prop: strings.Trim(col.EntityField, "`")})
 	}
 	return ret
+}
+
+// kotlinOriginalType 은 session 검사용으로 Kotlin 타입을 MySQL 타입 계열로 되돌린다 (Long/Int → 정수, String → 문자열).
+func kotlinOriginalType(col KotlinColumn) string {
+	if col.IsEnum {
+		return "enum"
+	}
+	switch col.KotlinType {
+	case "Long":
+		return "bigint"
+	case "Int":
+		return "int"
+	case "String":
+		return "varchar"
+	}
+	return strings.ToLower(col.KotlinType)
 }
 
 // generateSessionProvider 는 대상 프로젝트가 구현해야 할 SessionProvider 인터페이스를 한 번만 만든다 (이미 있으면 덮어쓰지 않는다).
@@ -567,10 +724,10 @@ func generateSessionProvider(targetPath string, basePackage string) {
 
 	content := `package ` + basePackage + `.config
 
-// 생성된 컨트롤러가 소유권 검사에 쓰는 현재 로그인 사용자 정보.
+// 생성된 컨트롤러가 로그인 확인과 소유권 검사에 쓰는 현재 로그인 사용자 정보 (auth=jwt).
 // 대상 프로젝트에서 인증 방식(JWT 필터, Spring Security 등)에 맞게 @Component 로 구현해야 한다.
 interface SessionProvider {
-    // 현재 로그인 사용자의 id. 비로그인이면 null.
+    // 현재 로그인 사용자의 id. 비로그인이면 null (생성된 엔드포인트가 401 을 돌려준다).
     fun currentUserId(): Long?
 
     // model.json session 의 key 에 해당하는 세션 값. 기본은 "id" 만 지원한다.
@@ -583,6 +740,107 @@ interface SessionProvider {
 	}
 	log.Printf("Generated Kotlin: %s", outputPath)
 }
+
+// generateSupport 는 생성 코드가 함께 쓰는 support/DateParams.kt 를 만든다 (생성 파일이라 매번 다시 쓴다).
+func generateSupport(targetPath string, basePackage string, timezone string) {
+	dir := filepath.Join(targetPath, "support")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Printf("Failed to create support directory: %v", err)
+		return
+	}
+	content := strings.ReplaceAll(strings.ReplaceAll(supportSource, "{{package}}", basePackage), "{{zone}}", kotlinZone(timezone))
+	outputPath := filepath.Join(dir, "DateParams.kt")
+	if old, err := os.ReadFile(outputPath); err == nil && string(old) == content {
+		return
+	}
+	if err := util.WriteFile(outputPath, content); err != nil {
+		log.Printf("Failed to write %s: %v", outputPath, err)
+		return
+	}
+	log.Printf("Generated Kotlin: %s", outputPath)
+}
+
+const supportSource = `package {{package}}.support
+
+import com.fasterxml.jackson.core.JsonParser
+import com.fasterxml.jackson.databind.DeserializationContext
+import com.fasterxml.jackson.databind.JsonDeserializer
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeParseException
+
+// buildtool 이 만드는 파일이다 (다시 생성하면 덮어쓴다).
+
+// 잘못된 요청 파라미터 (컨트롤러가 400 으로 돌려준다).
+class InvalidParamException(val param: String) : RuntimeException("invalid parameter: $param")
+
+// 날짜 요청 값 해석과 서버 시간대.
+object DateParams {
+    // model.json timezone (비어 있으면 Asia/Seoul, Go 와 같다). createddate 와 'Z' / 오프셋 입력을 이 시간대 지역 시간으로 바꾼다.
+    val ZONE: ZoneId = {{zone}}
+
+    fun now(): LocalDateTime = LocalDateTime.now(ZONE)
+
+    // "2024-01-02" (그날 00:00:00, Go 의 MySQL 비교와 같다), "2024-01-02 03:04[:05]", "2024-01-02T03:04:05[.SSS]",
+    // "2024-01-02T03:04:05.000Z" / "+09:00" (ZONE 지역 시간으로 바꾼다). 해석하지 못하면 DateTimeParseException.
+    fun parseDateTime(value: String): LocalDateTime {
+        val s = value.trim()
+        if (s.length == 10) return LocalDate.parse(s).atStartOfDay()
+        val iso = s.replace(' ', 'T')
+        return try {
+            LocalDateTime.parse(iso)
+        } catch (e: DateTimeParseException) {
+            OffsetDateTime.parse(iso).atZoneSameInstant(ZONE).toLocalDateTime()
+        }
+    }
+
+    // "2024-01-02", 시간이 붙은 값("2024-01-02 00:00:00", ISO)은 날짜 부분만 쓴다.
+    fun parseDate(value: String): LocalDate {
+        val s = value.trim()
+        if (s.length > 10 && (s[10] == ' ' || s[10] == 'T')) return parseDateTime(s).toLocalDate()
+        return LocalDate.parse(s)
+    }
+
+    // 쿼리 파라미터: 비어 있으면 null, 해석하지 못하면 InvalidParamException (400).
+    fun dateTimeParam(value: String?, name: String): LocalDateTime? {
+        if (value.isNullOrBlank()) return null
+        return try { parseDateTime(value) } catch (e: Exception) { throw InvalidParamException(name) }
+    }
+
+    fun dateParam(value: String?, name: String): LocalDate? {
+        if (value.isNullOrBlank()) return null
+        return try { parseDate(value) } catch (e: Exception) { throw InvalidParamException(name) }
+    }
+}
+
+// JSON 요청 본문의 LocalDateTime (DateParams.parseDateTime 형식).
+class LenientLocalDateTimeDeserializer : JsonDeserializer<LocalDateTime?>() {
+    override fun deserialize(p: JsonParser, ctxt: DeserializationContext): LocalDateTime? {
+        val text = p.valueAsString ?: return null
+        if (text.isBlank()) return null
+        return try {
+            DateParams.parseDateTime(text)
+        } catch (e: Exception) {
+            ctxt.handleWeirdStringValue(LocalDateTime::class.java, text, "expected yyyy-MM-dd[ HH:mm:ss] or ISO-8601") as LocalDateTime?
+        }
+    }
+}
+
+// JSON 요청 본문의 LocalDate (DateParams.parseDate 형식).
+class LenientLocalDateDeserializer : JsonDeserializer<LocalDate?>() {
+    override fun deserialize(p: JsonParser, ctxt: DeserializationContext): LocalDate? {
+        val text = p.valueAsString ?: return null
+        if (text.isBlank()) return null
+        return try {
+            DateParams.parseDate(text)
+        } catch (e: Exception) {
+            ctxt.handleWeirdStringValue(LocalDate::class.java, text, "expected yyyy-MM-dd") as LocalDate?
+        }
+    }
+}
+`
 
 // newViews 는 ~/bin/buildtool/kotlin 템플릿과 헬퍼 함수를 준비한다.
 func newViews() *jet.Set {
@@ -598,16 +856,6 @@ func newViews() *jet.Set {
 
 	views.AddGlobal("lower", func(str string) string {
 		return strings.ToLower(str)
-	})
-
-	// Add helper function to find join by column name
-	views.AddGlobal("findJoinByColumn", func(columnDBName string, joins []KotlinJoin) *KotlinJoin {
-		for i := range joins {
-			if joins[i].Column == columnDBName {
-				return &joins[i]
-			}
-		}
-		return nil
 	})
 
 	return views

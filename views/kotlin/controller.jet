@@ -2,15 +2,16 @@ package {{.BasePackage}}.controller
 
 import {{.BasePackage}}.entity.{{.ModelName}}
 {{if not .IsView}}import {{.BasePackage}}.entity.{{.ModelName}}CreateRequest
-import {{.BasePackage}}.entity.{{.ModelName}}IdRequest
+{{if .HasIdRoutes}}import {{.BasePackage}}.entity.{{.ModelName}}IdRequest
 import {{.BasePackage}}.entity.{{.ModelName}}UpdateRequest
 import {{.BasePackage}}.entity.{{.ModelName}}PatchRequest
-{{end}}import {{.BasePackage}}.service.{{.ModelName}}Service
+{{end}}{{end}}import {{.BasePackage}}.service.{{.ModelName}}Service
 import {{.BasePackage}}.entity.{{.ModelName}}Response
-{{if len(.Sessions) > 0}}import {{.BasePackage}}.config.SessionProvider
-{{end}}{{base := .BasePackage}}{{range .Enums}}import {{base}}.enums.{{.EnumPackage}}.{{.Name}}
-{{end}}{{- allJoins := .Joins}}
-import jakarta.persistence.criteria.Predicate
+{{if .RequireLogin}}import {{.BasePackage}}.config.SessionProvider
+{{end}}{{if .HasDateFilter}}import {{.BasePackage}}.support.DateParams
+{{end}}import {{.BasePackage}}.support.InvalidParamException
+{{base := .BasePackage}}{{range .Enums}}{{if .ColumnField != ""}}import {{base}}.enums.{{.EnumPackage}}.{{.Name}}
+{{end}}{{end}}import jakarta.persistence.criteria.Predicate
 import org.slf4j.LoggerFactory
 {{if not .IsView}}import org.springframework.dao.DataIntegrityViolationException
 {{end}}import org.springframework.data.domain.PageRequest
@@ -19,21 +20,21 @@ import org.springframework.data.jpa.domain.Specification
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
-{{if .HasDateFilter}}import org.springframework.format.annotation.DateTimeFormat
-{{end}}{{if .HasDateTime}}import java.time.LocalDateTime
-{{end}}{{if .HasDate}}import java.time.LocalDate
-{{end}}{{if .HasDecimal}}import java.math.BigDecimal
+{{if .HasDecimal}}import java.math.BigDecimal
 {{end}}
+{{- sessions := .Sessions}}{{pk := .PK}}{{modelName := .ModelName}}{{login := .RequireLogin}}{{owner := len(.Sessions) > 0}}{{guard := len(.Sessions) > 0 || .SelfOnly}}
+// 지역 변수 / 매개변수는 _ 로 시작한다 (컬럼 프로퍼티 이름에는 _ 가 없어서 page, sort, order 같은 컬럼과 겹치지 않는다).
+// 쿼리 파라미터는 @RequestParam 에 이름을 적어 컬럼의 API 이름(JSON key)으로 받는다.
 @RestController
-@RequestMapping("/api/{{.ModelName|lower}}")
+@RequestMapping("/api/{{.UrlName}}")
 class {{.ModelName}}Controller(
-    private val {{.ModelName|lower}}Service: {{.ModelName}}Service{{if len(.Sessions) > 0}},
-    private val sessionProvider: SessionProvider{{end}}) {
-{{sessions := .Sessions}}{{modelVar := lower(.ModelName)}}{{pk := .PK}}{{dtIso := .DateTimeIso}}{{dIso := .DateIso}}{{modelName := .ModelName}}
-    companion object {
-        private val log = LoggerFactory.getLogger({{.ModelName}}Controller::class.java)
+    private val _service: {{.ModelName}}Service{{if login}},
+    private val _sessionProvider: SessionProvider{{end}}) {
 
-        // 한 페이지 최대 크기. 프론트엔드 findall 이 9999 를 보내므로 그보다 크게 둔다.
+    companion object {
+        private val LOG = LoggerFactory.getLogger({{.ModelName}}Controller::class.java)
+
+        // 한 번에 돌려주는 최대 행 수 (Go 백엔드와 같다).
         const val MAX_PAGE_SIZE = {{.MaxPageSize}}
 
         // 정렬에 쓸 수 있는 이름(소문자: 프로퍼티 / 요청 필드 / 컬럼 이름) → 엔티티 프로퍼티
@@ -41,210 +42,243 @@ class {{.ModelName}}Controller(
 {{range .Sorts}}            "{{.Key}}" to "{{.Prop}}",
 {{end}}        )
     }
-{{if len(sessions) > 0}}
-    // 로그인 여부: 소유권 검사에 쓰는 세션 값이 모두 있어야 한다.
+
+    // 해석하지 못한 요청 파라미터 (날짜 형식 등) 는 400.
+    @ExceptionHandler(InvalidParamException::class)
+    fun handleInvalidParam(e: InvalidParamException): ResponseEntity<Map<String, String>> {
+        return ResponseEntity.badRequest().body(mapOf("code" to "bad request", "error" to (e.message ?: "invalid parameter")))
+    }
+{{if login}}
+    // 로그인 여부 (auth=jwt): 현재 사용자와 소유권 검사에 쓰는 세션 값이 모두 있어야 한다.
     private fun isLoggedIn(): Boolean {
-{{range sessions}}        if (sessionProvider.currentValue("{{.Key}}") == null) return false
+        if (_sessionProvider.currentUserId() == null) return false
+{{range sessions}}        if (_sessionProvider.currentValue("{{.Key}}") == null) return false
 {{end}}        return true
     }
-
+{{end}}{{if owner}}
     // 소유권 검사: 행이 현재 세션 사용자 것인지 확인한다 (남의 행 조회/수정/삭제 방지).
-    private fun isOwned(entity: {{.ModelName}}): Boolean {
-{{range sessions}}        val {{.Key}}Value = sessionProvider.currentValue("{{.Key}}") ?: return false
-        if (entity.{{.Field|raw}} != {{.Key}}Value{{.Convert}}) return false
+    private fun isOwned(_entity: {{.ModelName}}): Boolean {
+{{range i, s := sessions}}        val _s{{i}} = _sessionProvider.currentValue("{{s.Key}}") ?: return false
+        if (_entity.{{s.Field|raw}} != _s{{i}}{{s.Convert}}) return false
 {{end}}        return true
     }
 
-    private fun ownedOrNull(id: {{pk.KotlinType}}): {{.ModelName}}? {
-        val entity = {{modelVar}}Service.findById(id) ?: return null
-        return if (isOwned(entity)) entity else null
+    // 현재 세션 사용자 소유 행만 (목록 / 개수 / 검색 조건)
+    private fun ownerSpec(): Specification<{{.ModelName}}> {
+        return Specification { _root, _, _cb ->
+            val _predicates = mutableListOf<Predicate>()
+{{range i, s := sessions}}            val _s{{i}} = _sessionProvider.currentValue("{{s.Key}}")
+            _predicates.add(if (_s{{i}} == null) _cb.disjunction() else _cb.equal(_root.get<Any>("{{s.Prop}}"), _s{{i}}{{s.Convert}}))
+{{end}}            _cb.and(*_predicates.toTypedArray())
+        }
     }
-{{end}}
-{{if len(sessions) > 0 && .ModelName != "User" && not .IsView}}
+{{end}}{{if .SelfOnly}}
+    // 회원 정보는 본인만 수정/삭제할 수 있다 (Go 와 같다).
+    private fun isSelf(_entity: {{.ModelName}}): Boolean {
+        val _uid = _sessionProvider.currentUserId() ?: return false
+        return _entity.{{pk.EntityField|raw}} == _uid{{.SelfConvert}}
+    }
+{{end}}{{if guard && not .IsView}}
+    // 수정/삭제할 수 있는 행인지 (소유권{{if .SelfOnly}}, 본인{{end}}).
+    private fun canWrite(_entity: {{.ModelName}}): Boolean {
+        return {{if owner && .SelfOnly}}isOwned(_entity) && isSelf(_entity){{else if owner}}isOwned(_entity){{else}}isSelf(_entity){{end}}
+    }
+{{end}}{{if owner && not .IsView && not .IsUser}}
     // 생성 요청의 세션 컬럼은 클라이언트 값 대신 세션 값으로 고정한다.
-    private fun withSession(request: {{.ModelName}}CreateRequest): {{.ModelName}}CreateRequest {
-        var ret = request
-{{range sessions}}{{if not .IsPrimaryKey}}        ret = ret.copy({{.RequestField|raw}} = sessionProvider.currentValue("{{.Key}}")!!{{.Convert}})
-{{end}}{{end}}        return ret
+    private fun withSession(_request: {{.ModelName}}CreateRequest): {{.ModelName}}CreateRequest {
+        var _ret = _request
+{{range sessions}}{{if not .IsPrimaryKey}}        _ret = _ret.copy({{.RequestField|raw}} = _sessionProvider.currentValue("{{.Key}}")!!{{.Convert}})
+{{end}}{{end}}        return _ret
     }
 {{end}}
-    private fun toResponse(entity: {{.ModelName}}): {{.ModelName}}Response {
-        return {{.ModelName}}Response.from(entity)
+    private fun toResponse(_entity: {{.ModelName}}): {{.ModelName}}Response {
+        return {{.ModelName}}Response.from(_entity)
     }
 
     // 목록/개수 조건. 필터와 소유권 검사를 DB 쿼리(where)로 실행한다.
     private fun buildSpec(
-{{range .Columns}}{{if .IsSearchable}}{{if .DateFormat != ""}}        {{.StartParam}}: {{.KotlinType}}?,
-        {{.EndParam}}: {{.KotlinType}}?,
+{{range .Columns}}{{if .IsSearchable}}{{if .DateFormat == "DATE_TIME"}}        {{.StartVar}}: java.time.LocalDateTime?,
+        {{.EndVar}}: java.time.LocalDateTime?,
+{{else if .DateFormat == "DATE"}}        {{.StartVar}}: java.time.LocalDate?,
+        {{.EndVar}}: java.time.LocalDate?,
 {{else}}        {{.Field|raw}}: {{if .IsEnum}}Int?{{else}}{{.KotlinType}}?{{end}},
 {{end}}{{end}}{{end}}    ): Specification<{{.ModelName}}> {
-        return Specification { root, _, cb ->
-            val predicates = mutableListOf<Predicate>()
-{{range .Columns}}{{if .IsSearchable}}{{if .DateFormat != ""}}            if ({{.StartParam}} != null) predicates.add(cb.greaterThanOrEqualTo(root.get<{{.KotlinType}}>("{{.Prop}}"), {{.StartParam}}))
-            if ({{.EndParam}} != null) predicates.add(cb.lessThanOrEqualTo(root.get<{{.KotlinType}}>("{{.Prop}}"), {{.EndParam}}))
+        val _filter = Specification<{{.ModelName}}> { _root, _, _cb ->
+            val _predicates = mutableListOf<Predicate>()
+{{range .Columns}}{{if .IsSearchable}}{{if .DateFormat != ""}}{{qt := .DateFormat == "DATE_TIME" ? "java.time.LocalDateTime" : "java.time.LocalDate"}}            if ({{.StartVar}} != null) _predicates.add(_cb.greaterThanOrEqualTo(_root.get<{{qt}}>("{{.Prop}}"), {{.StartVar}}))
+            if ({{.EndVar}} != null) _predicates.add(_cb.lessThanOrEqualTo(_root.get<{{qt}}>("{{.Prop}}"), {{.EndVar}}))
 {{else if .IsEnum}}            if ({{.Field|raw}} != null) {
                 // enum 은 코드(Int)로 받는다. 모르는 코드면 결과가 없다.
-                val value = {{.EnumType}}.fromCode({{.Field|raw}})
-                predicates.add(if (value == null) cb.disjunction() else cb.equal(root.get<{{.EnumType}}>("{{.Prop}}"), value))
+                val _value = {{.EnumType}}.fromCode({{.Field|raw}})
+                _predicates.add(if (_value == null) _cb.disjunction() else _cb.equal(_root.get<{{.EnumType}}>("{{.Prop}}"), _value))
             }
-{{else}}            if ({{.Field|raw}} != null) predicates.add(cb.equal(root.get<Any>("{{.Prop}}"), {{.Field|raw}}))
-{{end}}{{end}}{{end}}{{range i, s := sessions}}            // 현재 세션 사용자 소유 행만
-            val session{{i}} = sessionProvider.currentValue("{{s.Key}}")
-            predicates.add(if (session{{i}} == null) cb.disjunction() else cb.equal(root.get<Any>("{{s.Prop}}"), session{{i}}{{s.Convert}}))
-{{end}}            cb.and(*predicates.toTypedArray())
+{{else}}            if ({{.Field|raw}} != null) _predicates.add(_cb.equal(_root.get<Any>("{{.Prop}}"), {{.Field|raw}}))
+{{end}}{{end}}{{end}}            _cb.and(*_predicates.toTypedArray())
         }
+        return {{if owner}}_filter.and(ownerSpec()){{else}}_filter{{end}}
     }
 
     // 정렬: "createddate desc, name" 또는 "createddate,desc". 모르는 이름/방향이면 null (400).
     // 없으면 기본 키 내림차순.
-    private fun parseSort(sort: String?): Sort? {
-        if (sort.isNullOrBlank()) return Sort.by(Sort.Direction.DESC, "{{pk.Prop}}")
-        val orders = mutableListOf<Sort.Order>()
-        for (token in sort.split(",")) {
-            val parts = token.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
-            if (parts.isEmpty()) continue
+    private fun parseSort(_sort: String?): Sort? {
+        if (_sort.isNullOrBlank()) return Sort.by(Sort.Direction.DESC, "{{pk.Prop}}")
+        val _orders = mutableListOf<Sort.Order>()
+        for (_token in _sort.split(",")) {
+            val _parts = _token.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+            if (_parts.isEmpty()) continue
             // "field,desc" 형식: 앞 항목의 방향
-            if (parts.size == 1 && orders.isNotEmpty() && (parts[0].equals("asc", true) || parts[0].equals("desc", true))) {
-                val last = orders.removeAt(orders.size - 1)
-                orders.add(last.with(if (parts[0].equals("desc", true)) Sort.Direction.DESC else Sort.Direction.ASC))
+            if (_parts.size == 1 && _orders.isNotEmpty() && (_parts[0].equals("asc", true) || _parts[0].equals("desc", true))) {
+                val _last = _orders.removeAt(_orders.size - 1)
+                _orders.add(_last.with(if (_parts[0].equals("desc", true)) Sort.Direction.DESC else Sort.Direction.ASC))
                 continue
             }
-            if (parts.size > 2) return null
-            val prop = SORT_FIELDS[parts[0].lowercase()] ?: return null
-            orders.add(
-                when (parts.getOrNull(1)?.lowercase()) {
-                    null, "asc" -> Sort.Order.asc(prop)
-                    "desc" -> Sort.Order.desc(prop)
+            if (_parts.size > 2) return null
+            val _prop = SORT_FIELDS[_parts[0].lowercase()] ?: return null
+            _orders.add(
+                when (_parts.getOrNull(1)?.lowercase()) {
+                    null, "asc" -> Sort.Order.asc(_prop)
+                    "desc" -> Sort.Order.desc(_prop)
                     else -> return null
                 }
             )
         }
-        return if (orders.isEmpty()) Sort.by(Sort.Direction.DESC, "{{pk.Prop}}") else Sort.by(orders)
+        return if (_orders.isEmpty()) Sort.by(Sort.Direction.DESC, "{{pk.Prop}}") else Sort.by(_orders)
     }
 
-    // page 는 Go 백엔드와 같이 1 부터 (0 이하는 1), pagesize 는 1..MAX_PAGE_SIZE 로 맞춘다. 필터/정렬/소유권은 DB 에서 처리한다.
+    // page / pagesize 는 Go 백엔드와 같다: 둘 다 1 이상이면 그 페이지 (page 는 1 부터, pagesize 는 MAX_PAGE_SIZE 까지),
+    // 없거나 0 이면 전체 행 (최대 MAX_PAGE_SIZE, 더 있으면 X-Truncated: true 헤더). 음수는 400.
+    // 날짜 범위는 날짜만 보내면 그날 00:00:00 이다 (Go 와 같다).
     @GetMapping
     fun get{{.ModelName}}s(
-        @RequestParam(defaultValue = "1") page: Int,
-        @RequestParam(defaultValue = "{{.DefaultPageSize}}") pagesize: Int,
-        @RequestParam(required = false) sort: String?,
-        @RequestParam(required = false) orderby: String?,
-{{range .Columns}}{{if .IsSearchable}}{{if .DateFormat != ""}}        @RequestParam(required = false) {{if .DateFormat == "DATE_TIME"}}{{dtIso|raw}}{{else}}{{dIso|raw}}{{end}} {{.StartParam}}: {{.KotlinType}}?,
-        @RequestParam(required = false) {{if .DateFormat == "DATE_TIME"}}{{dtIso|raw}}{{else}}{{dIso|raw}}{{end}} {{.EndParam}}: {{.KotlinType}}?,
-{{else}}        @RequestParam(required = false) {{.Field|raw}}: {{if .IsEnum}}Int?{{else}}{{.KotlinType}}?{{end}},
+        @RequestParam("page", required = false) _page: Int?,
+        @RequestParam("pagesize", required = false) _pagesize: Int?,
+        @RequestParam("sort", required = false) _sort: String?,
+        @RequestParam("orderby", required = false) _orderby: String?,
+{{range .Columns}}{{if .IsSearchable}}{{if .DateFormat != ""}}        @RequestParam("{{.StartParam}}", required = false) {{.StartVar}}: String?,
+        @RequestParam("{{.EndParam}}", required = false) {{.EndVar}}: String?,
+{{else}}        @RequestParam("{{.ParamName}}", required = false) {{.Field|raw}}: {{if .IsEnum}}Int?{{else}}{{.KotlinType}}?{{end}},
 {{end}}{{end}}{{end}}    ): ResponseEntity<Map<String, Any>> {
-{{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
-{{end}}        val order = parseSort(sort ?: orderby) ?: return ResponseEntity.badRequest().build()
-        val safePage = page.coerceAtLeast(1)
-        val safeSize = pagesize.coerceIn(1, MAX_PAGE_SIZE)
-        val spec = buildSpec(
-{{range .Columns}}{{if .IsSearchable}}{{if .DateFormat != ""}}            {{.StartParam}}, {{.EndParam}},
+{{if login}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
+{{end}}        if ((_page ?: 0) < 0 || (_pagesize ?: 0) < 0) return ResponseEntity.badRequest().build()
+        val _order = parseSort(_sort ?: _orderby) ?: return ResponseEntity.badRequest().build()
+        val _paged = (_page ?: 0) > 0 && (_pagesize ?: 0) > 0
+        val _safePage = if (_paged) _page!! else 1
+        val _safeSize = if (_paged) _pagesize!!.coerceAtMost(MAX_PAGE_SIZE) else MAX_PAGE_SIZE
+        val _spec = buildSpec(
+{{range .Columns}}{{if .IsSearchable}}{{if .DateFormat == "DATE_TIME"}}            DateParams.dateTimeParam({{.StartVar}}, "{{.StartParam}}"), DateParams.dateTimeParam({{.EndVar}}, "{{.EndParam}}"),
+{{else if .DateFormat == "DATE"}}            DateParams.dateParam({{.StartVar}}, "{{.StartParam}}"), DateParams.dateParam({{.EndVar}}, "{{.EndParam}}"),
 {{else}}            {{.Field|raw}},
 {{end}}{{end}}{{end}}        )
-        val result = {{.ModelName|lower}}Service.findAll(spec, PageRequest.of(safePage - 1, safeSize, order))
+        val _result = _service.findAll(_spec, PageRequest.of(_safePage - 1, _safeSize, _order))
 
-        val response = mapOf(
-            "content" to result.content.map { toResponse(it) },
-            "page" to safePage,
-            "size" to safeSize,
+        val _body = mapOf(
+            "content" to _result.content.map { toResponse(it) },
+            "page" to _safePage,
+            "size" to _safeSize,
             // Go 백엔드 / TypeScript 타입과 같은 이름 (size 와 같은 값)
-            "pagesize" to safeSize,
-            "totalElements" to result.totalElements,
-            "totalPages" to result.totalPages,
-            "first" to result.isFirst,
-            "last" to result.isLast,
-            "empty" to result.isEmpty
+            "pagesize" to _safeSize,
+            "totalElements" to _result.totalElements,
+            "totalPages" to _result.totalPages,
+            "first" to _result.isFirst,
+            "last" to _result.isLast,
+            "empty" to _result.isEmpty
         )
-
-        return ResponseEntity.ok(response)
+        if (!_paged && _result.totalElements > _safeSize) {
+            LOG.warn("{{.ModelName}} list without paging truncated to {} of {} rows", _safeSize, _result.totalElements)
+            return ResponseEntity.ok().header("X-Truncated", "true").body(_body)
+        }
+        return ResponseEntity.ok(_body)
     }
-
+{{if .HasIdRoutes}}
     @GetMapping("/{id}")
-    fun get{{.ModelName}}(@PathVariable id: {{pk.KotlinType}}): ResponseEntity<{{.ModelName}}Response> {
-{{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
-        val res = ownedOrNull(id)
-{{else}}        val res = {{.ModelName|lower}}Service.findById(id)
-{{end}}        return if (res != null) {
-            ResponseEntity.ok(toResponse(res))
+    fun get{{.ModelName}}(@PathVariable("id") _id: {{pk.QualType}}): ResponseEntity<{{.ModelName}}Response> {
+{{if login}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
+{{end}}        val _res = _service.findById(_id){{if owner}}?.takeIf { isOwned(it) }{{end}}
+        return if (_res != null) {
+            ResponseEntity.ok(toResponse(_res))
         } else {
             ResponseEntity.notFound().build()
         }
     }
-
+{{end}}
 {{range .Columns}}{{if .IsSearchable}}
+    // 컬럼 값이 같은 행 목록 (Specification 의 = 조건{{if owner}}, 소유권 조건{{end}}).
     @GetMapping("/search/{{.SearchPath}}")
-    fun get{{modelName}}By{{.Name}}(@RequestParam {{if .DateFormat == "DATE_TIME"}}{{dtIso|raw}} {{else if .DateFormat == "DATE"}}{{dIso|raw}} {{end}}{{.Field|raw}}: {{if .IsEnum}}Int{{else}}{{.KotlinType}}{{end}}): ResponseEntity<List<{{modelName}}Response>> {
-{{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
+    fun get{{modelName}}By{{.Name}}(@RequestParam("{{.ParamName}}") _value: {{if .DateFormat != ""}}String{{else if .IsEnum}}Int{{else}}{{.KotlinType}}{{end}}): ResponseEntity<List<{{modelName}}Response>> {
+{{if login}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
 {{end}}{{if .IsEnum}}        // enum 은 코드(Int)로 받는다.
-        val value = {{.EnumType}}.fromCode({{.Field|raw}}) ?: return ResponseEntity.badRequest().build()
-{{end}}        val res = {{modelVar}}Service.findBy{{.Name}}({{if .IsEnum}}value{{else}}{{.Field|raw}}{{end}}){{if len(sessions) > 0}}.filter { isOwned(it) }{{end}}
-        return ResponseEntity.ok(res.map { toResponse(it) } )
+        val _v = {{.EnumType}}.fromCode(_value) ?: return ResponseEntity.badRequest().build()
+{{else if .DateFormat == "DATE_TIME"}}        val _v = DateParams.dateTimeParam(_value, "{{.ParamName}}") ?: return ResponseEntity.badRequest().build()
+{{else if .DateFormat == "DATE"}}        val _v = DateParams.dateParam(_value, "{{.ParamName}}") ?: return ResponseEntity.badRequest().build()
+{{else}}        val _v = _value
+{{end}}        val _spec = Specification<{{modelName}}> { _root, _, _cb -> _cb.equal(_root.get<Any>("{{.Prop}}"), _v) }
+        val _res = _service.findAll({{if owner}}_spec.and(ownerSpec()){{else}}_spec{{end}})
+        return ResponseEntity.ok(_res.map { toResponse(it) })
     }
 {{end}}{{end}}
-
     // 목록과 같은 필터/소유권 조건으로 센다.
     @GetMapping("/count")
     fun getCount(
-{{range .Columns}}{{if .IsSearchable}}{{if .DateFormat != ""}}        @RequestParam(required = false) {{if .DateFormat == "DATE_TIME"}}{{dtIso|raw}}{{else}}{{dIso|raw}}{{end}} {{.StartParam}}: {{.KotlinType}}?,
-        @RequestParam(required = false) {{if .DateFormat == "DATE_TIME"}}{{dtIso|raw}}{{else}}{{dIso|raw}}{{end}} {{.EndParam}}: {{.KotlinType}}?,
-{{else}}        @RequestParam(required = false) {{.Field|raw}}: {{if .IsEnum}}Int?{{else}}{{.KotlinType}}?{{end}},
+{{range .Columns}}{{if .IsSearchable}}{{if .DateFormat != ""}}        @RequestParam("{{.StartParam}}", required = false) {{.StartVar}}: String?,
+        @RequestParam("{{.EndParam}}", required = false) {{.EndVar}}: String?,
+{{else}}        @RequestParam("{{.ParamName}}", required = false) {{.Field|raw}}: {{if .IsEnum}}Int?{{else}}{{.KotlinType}}?{{end}},
 {{end}}{{end}}{{end}}    ): ResponseEntity<Map<String, Long>> {
-{{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
-{{end}}        val spec = buildSpec(
-{{range .Columns}}{{if .IsSearchable}}{{if .DateFormat != ""}}            {{.StartParam}}, {{.EndParam}},
+{{if login}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
+{{end}}        val _spec = buildSpec(
+{{range .Columns}}{{if .IsSearchable}}{{if .DateFormat == "DATE_TIME"}}            DateParams.dateTimeParam({{.StartVar}}, "{{.StartParam}}"), DateParams.dateTimeParam({{.EndVar}}, "{{.EndParam}}"),
+{{else if .DateFormat == "DATE"}}            DateParams.dateParam({{.StartVar}}, "{{.StartParam}}"), DateParams.dateParam({{.EndVar}}, "{{.EndParam}}"),
 {{else}}            {{.Field|raw}},
 {{end}}{{end}}{{end}}        )
-        val count = {{.ModelName|lower}}Service.count(spec)
-        return ResponseEntity.ok(mapOf("count" to count))
+        val _count = _service.count(_spec)
+        return ResponseEntity.ok(mapOf("count" to _count))
     }
 {{if not .IsView}}
-    // 실패하면 원인을 로그로 남기고 에러 내용을 돌려준다 (제약 조건 위반은 409).
+    // 실패하면 원인을 로그로 남기고 에러 내용을 돌려준다 (제약 조건 위반, 이미 있는 기본 키는 409).
     private fun createError(e: Exception): ResponseEntity<*> {
         return if (e is DataIntegrityViolationException) {
-            log.warn("create {{.ModelName}} failed: {}", e.mostSpecificCause.message)
+            LOG.warn("create {{.ModelName}} failed: {}", e.mostSpecificCause.message)
             ResponseEntity.status(HttpStatus.CONFLICT).body(mapOf("error" to "constraint violation"))
         } else {
-            log.error("create {{.ModelName}} failed", e)
+            LOG.error("create {{.ModelName}} failed", e)
             ResponseEntity.badRequest().body(mapOf("error" to "create failed", "reason" to e.javaClass.simpleName))
         }
     }
 
     @PostMapping
-    fun create{{.ModelName}}(@RequestBody request: {{.ModelName}}CreateRequest): ResponseEntity<*> {
-{{if len(sessions) > 0 && .ModelName != "User"}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build<Any>()
+    fun create{{.ModelName}}(@RequestBody _request: {{.ModelName}}CreateRequest): ResponseEntity<*> {
+{{if login && not .IsUser}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build<Any>()
 {{end}}        return try {
-            val res = {{.ModelName|lower}}Service.create({{if len(sessions) > 0 && .ModelName != "User"}}withSession(request){{else}}request{{end}})
-            ResponseEntity.ok(toResponse(res))
+            val _res = _service.create({{if owner && not .IsUser}}withSession(_request){{else}}_request{{end}})
+            ResponseEntity.ok(toResponse(_res))
         } catch (e: Exception) {
             createError(e)
         }
     }
 
     @PostMapping("/batch")
-    fun create{{.ModelName}}s(@RequestBody requests: List<{{.ModelName}}CreateRequest>): ResponseEntity<*> {
-{{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build<Any>()
+    fun create{{.ModelName}}s(@RequestBody _requests: List<{{.ModelName}}CreateRequest>): ResponseEntity<*> {
+{{if login}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build<Any>()
 {{end}}        return try {
-            val res = {{.ModelName|lower}}Service.createBatch({{if len(sessions) > 0 && .ModelName != "User"}}requests.map { withSession(it) }{{else}}requests{{end}})
-            ResponseEntity.ok(res.map { toResponse(it) } )
+            val _res = _service.createBatch({{if owner && not .IsUser}}_requests.map { withSession(it) }{{else}}_requests{{end}})
+            ResponseEntity.ok(_res.map { toResponse(it) })
         } catch (e: Exception) {
             createError(e)
         }
     }
-
+{{if .HasIdRoutes}}
     // PUT 도 PATCH 와 같이 보낸 필드만 바꾼다 (빠진/null 필드는 기존 값 유지, createddate 는 바꾸지 않는다).
     @PutMapping("/{id}")
     fun update{{.ModelName}}(
-        @PathVariable id: {{pk.KotlinType}},
-        @RequestBody request: {{.ModelName}}UpdateRequest
+        @PathVariable("id") _id: {{pk.QualType}},
+        @RequestBody _request: {{.ModelName}}UpdateRequest
     ): ResponseEntity<{{.ModelName}}Response> {
-{{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
-        if (ownedOrNull(id) == null) return ResponseEntity.notFound().build()
+{{if login}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
+{{end}}{{if guard}}        if (_service.findById(_id)?.takeIf { canWrite(it) } == null) return ResponseEntity.notFound().build()
         // 세션 컬럼은 클라이언트 값 대신 세션 값으로 고정한다.
-        val updatedRequest = request.copy({{pk.Field|raw}} = id{{range sessions}}{{if not .IsPrimaryKey}}, {{.RequestField|raw}} = sessionProvider.currentValue("{{.Key}}")!!{{.Convert}}{{end}}{{end}})
-{{else}}        val updatedRequest = request.copy({{pk.Field|raw}} = id)
-{{end}}        val res = {{.ModelName|lower}}Service.update(updatedRequest)
-        return if (res != null) {
-            ResponseEntity.ok(toResponse(res))
+{{end}}        val _updated = _request.copy({{pk.Field|raw}} = _id{{range sessions}}{{if not .IsPrimaryKey}}, {{.RequestField|raw}} = _sessionProvider.currentValue("{{.Key}}")!!{{.Convert}}{{end}}{{end}})
+        val _res = _service.update(_updated)
+        return if (_res != null) {
+            ResponseEntity.ok(toResponse(_res))
         } else {
             ResponseEntity.notFound().build()
         }
@@ -252,17 +286,16 @@ class {{.ModelName}}Controller(
 
     @PatchMapping("/{id}")
     fun patch{{.ModelName}}(
-        @PathVariable id: {{pk.KotlinType}},
-        @RequestBody request: {{.ModelName}}PatchRequest
+        @PathVariable("id") _id: {{pk.QualType}},
+        @RequestBody _request: {{.ModelName}}PatchRequest
     ): ResponseEntity<{{.ModelName}}Response> {
-{{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
-        if (ownedOrNull(id) == null) return ResponseEntity.notFound().build()
+{{if login}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
+{{end}}{{if guard}}        if (_service.findById(_id)?.takeIf { canWrite(it) } == null) return ResponseEntity.notFound().build()
         // 세션 컬럼은 클라이언트 값 대신 세션 값으로 고정한다.
-        val patchRequest = request.copy({{pk.Field|raw}} = id{{range sessions}}{{if not .IsPrimaryKey}}, {{.RequestField|raw}} = sessionProvider.currentValue("{{.Key}}")!!{{.Convert}}{{end}}{{end}})
-{{else}}        val patchRequest = request.copy({{pk.Field|raw}} = id)
-{{end}}        val res = {{.ModelName|lower}}Service.patch(patchRequest)
-        return if (res != null) {
-            ResponseEntity.ok(toResponse(res))
+{{end}}        val _patch = _request.copy({{pk.Field|raw}} = _id{{range sessions}}{{if not .IsPrimaryKey}}, {{.RequestField|raw}} = _sessionProvider.currentValue("{{.Key}}")!!{{.Convert}}{{end}}{{end}})
+        val _res = _service.patch(_patch)
+        return if (_res != null) {
+            ResponseEntity.ok(toResponse(_res))
         } else {
             ResponseEntity.notFound().build()
         }
@@ -270,23 +303,25 @@ class {{.ModelName}}Controller(
 
     // 없는 행이면 404.
     @DeleteMapping("/{id}")
-    fun delete{{.ModelName}}(@PathVariable id: {{pk.KotlinType}}): ResponseEntity<Map<String, Boolean>> {
-{{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
-        if (ownedOrNull(id) == null) return ResponseEntity.notFound().build()
-{{end}}        val success = {{.ModelName|lower}}Service.deleteById(id)
-        return if (success) ResponseEntity.ok(mapOf("success" to true)) else ResponseEntity.notFound().build()
+    fun delete{{.ModelName}}(@PathVariable("id") _id: {{pk.QualType}}): ResponseEntity<Map<String, Boolean>> {
+{{if login}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
+{{end}}{{if guard}}        if (_service.findById(_id)?.takeIf { canWrite(it) } == null) return ResponseEntity.notFound().build()
+{{end}}        val _success = _service.deleteById(_id)
+        return if (_success) ResponseEntity.ok(mapOf("success" to true)) else ResponseEntity.notFound().build()
     }
 
-    // 본문은 [{"id": 1}, ...] (Go 의 DELETE /{table}/batch 와 같은 모양). 없는 행은 건너뛴다.
-    @DeleteMapping("/batch")
-    fun delete{{.ModelName}}s(@RequestBody requests: List<{{.ModelName}}IdRequest>): ResponseEntity<Map<String, Boolean>> {
-{{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
-        // DB 에서 다시 읽은 본인 소유 행만 삭제한다. 하나라도 아니면 아무것도 지우지 않는다.
-        val owned = requests.map { ownedOrNull(it.{{pk.Field|raw}}) ?: return ResponseEntity.status(HttpStatus.FORBIDDEN).build() }
-        val success = {{.ModelName|lower}}Service.deleteBatch(owned)
-{{else}}        val found = requests.mapNotNull { {{.ModelName|lower}}Service.findById(it.{{pk.Field|raw}}) }
-        val success = {{.ModelName|lower}}Service.deleteBatch(found)
-{{end}}
-        return ResponseEntity.ok(mapOf("success" to success))
+    // 본문은 [{"{{pk.ParamName}}": 1}, ...] (Go 의 DELETE /{table}/batch 와 같은 모양). 없는 행은 건너뛴다.
+{{if guard}}    // DB 에서 다시 읽은 행이 하나라도 남의 것이면 아무것도 지우지 않는다 (403).
+{{end}}    @DeleteMapping("/batch")
+    fun delete{{.ModelName}}s(@RequestBody _requests: List<{{.ModelName}}IdRequest>): ResponseEntity<Map<String, Boolean>> {
+{{if login}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
+{{end}}        val _rows = mutableListOf<{{.ModelName}}>()
+        for (_r in _requests) {
+            val _row = _service.findById(_r.{{pk.Field|raw}}) ?: continue
+{{if guard}}            if (!canWrite(_row)) return ResponseEntity.status(HttpStatus.FORBIDDEN).build()
+{{end}}            _rows.add(_row)
+        }
+        val _success = _service.deleteBatch(_rows)
+        return ResponseEntity.ok(mapOf("success" to _success))
     }
-{{end}}}
+{{end}}{{end}}}

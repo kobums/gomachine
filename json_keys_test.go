@@ -124,8 +124,9 @@ func TestJSONKeysAgree(t *testing.T) {
 	if list == nil {
 		t.Fatalf("Spring list endpoint not found:\n%s", ctl)
 	}
+	// 매개변수 이름은 _page / {field}_start 처럼 컬럼과 겹치지 않는 이름이고, 쿼리 파라미터 이름은 @RequestParam("...") 이다.
 	springParams := make([]string, 0)
-	for _, p := range all(`@RequestParam\([^)]*\)(?: @DateTimeFormat\([^)]*\))? (\w+):`, list[1]) {
+	for _, p := range all(`@RequestParam\("(\w+)"`, list[1]) {
 		if p != "page" && p != "pagesize" && p != "sort" && p != "orderby" {
 			springParams = append(springParams, p)
 		}
@@ -168,4 +169,102 @@ func unique(list []string) []string {
 		}
 	}
 	return ret
+}
+
+// tinyint / bit 는 모든 언어에서 bool 이다 (Go bool, Kotlin Boolean, TypeScript boolean, Dart bool).
+func TestBoolTypesAgree(t *testing.T) {
+	for _, dbType := range []string{"tinyint", "bit"} {
+		raw := util.RawColumn{Name: "a_flag", DataType: dbType}
+		want := map[string]string{"go": "bool", "kotlin": "Boolean", "dart": "bool"}
+		for lang, w := range want {
+			if got := util.NewColumnFromRaw("acct_tb", raw, nil, config.ModelConfig{Language: lang}).Type; got != w {
+				t.Errorf("%s %s = %q, want %q", lang, dbType, got, w)
+			}
+		}
+		col := util.NewColumnFromRaw("acct_tb", raw, nil, config.ModelConfig{Language: "react"})
+		ts := reactcodegen.BuildTemplateData("testproj", "acct_tb", []util.Column{col}, nil)
+		if got := ts.Columns[0].TypeScriptType; got != "boolean" {
+			t.Errorf("typescript %s = %q, want boolean", dbType, got)
+		}
+	}
+}
+
+// 컬럼 이름이 생성 코드의 지역 변수 / 매개변수(page, sort, order, spec, result ...)와 같아도 Spring 컨트롤러 이름이 겹치지 않는지,
+// Kotlin / Spring 타입과 같은 테이블 이름에는 접미사가 붙는지 확인한다 (컴파일은 kotlinc 로 따로 확인했다).
+func TestKotlinReservedNames(t *testing.T) {
+	views, err := filepath.Abs("views")
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "bin"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(views, filepath.Join(home, "bin", "buildtool")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	out := t.TempDir()
+
+	names := []string{"id", "page", "pagesize", "sort", "orderby", "order", "spec", "result", "response", "value", "root", "cb", "predicates",
+		"log", "request", "count", "size", "e", "it", "start", "end", "extra", "success"}
+	raws := make([]util.RawColumn, 0)
+	for _, n := range names {
+		typ := "int"
+		if n == "id" {
+			typ = "bigint"
+		} else if n == "start" {
+			typ = "datetime"
+		}
+		raws = append(raws, util.RawColumn{Name: "l_" + n, DataType: typ})
+	}
+	gen := func(table string, raws []util.RawColumn, auth string) {
+		cnf := config.ModelConfig{Language: "kotlin", KotlinModelFilePath: out, Auth: auth}
+		cols := make([]util.Column, 0)
+		for _, r := range raws {
+			cols = append(cols, util.NewColumnFromRaw(table, r, nil, cnf))
+		}
+		kotlincodegen.ProcessKotlin("testproj", table, "l", cols, nil, nil, "1", auth, cnf)
+	}
+	gen("lst_tb", raws, "jwt")
+	gen("page_tb", raws[:2], "")
+
+	src, err := os.ReadFile(filepath.Join(out, "controller", "LstController.kt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctl := string(src)
+	list := regexp.MustCompile(`(?s)fun getLsts\((.*?)\): ResponseEntity`).FindStringSubmatch(ctl)
+	if list == nil {
+		t.Fatalf("list endpoint not found:\n%s", ctl)
+	}
+	// 매개변수 이름은 모두 다르다.
+	seen := map[string]bool{}
+	for _, p := range regexp.MustCompile(`\) (\w+): `).FindAllStringSubmatch(list[1], -1) {
+		if seen[p[1]] {
+			t.Errorf("duplicate parameter %s", p[1])
+		}
+		seen[p[1]] = true
+	}
+	for _, p := range []string{"_page", "_pagesize", "_sort", "_orderby", "page", "sort", "order", "start_start", "start_end"} {
+		if !seen[p] {
+			t.Errorf("parameter %s not found in %v", p, seen)
+		}
+	}
+	// 함수 안의 지역 변수는 _ 로 시작한다 (컬럼 매개변수와 겹치지 않는다).
+	for _, m := range regexp.MustCompile(`(?m)^ {8,}val (\w+)`).FindAllStringSubmatch(ctl, -1) {
+		if !strings.HasPrefix(m[1], "_") {
+			t.Errorf("local %s does not start with _", m[1])
+		}
+	}
+	// extra 컬럼은 extra2
+	if !strings.Contains(ctl, `@RequestParam("extra2", required = false) extra2: Int?`) {
+		t.Error("extra column should be extra2")
+	}
+	if _, err := os.Stat(filepath.Join(out, "entity", "PageEntity.kt")); err != nil {
+		t.Errorf("page_tb should generate PageEntity: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(out, "controller", "PageEntityController.kt")); !strings.Contains(string(b), `@RequestMapping("/api/page")`) {
+		t.Error("PageEntity URL should stay /api/page")
+	}
 }

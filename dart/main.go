@@ -134,8 +134,10 @@ func ProcessDart(packageName string, tableName string, prefix string, items []ut
 		v.Set("enums", make([]util.EnumData, 0))
 	} else {
 		joins := make([]config.GpaJoin, 0)
-		for _, join := range gpa.Join {
-			join.Prefix = util.TablePrefix(join.Name, cnf.Database, db)
+		// 백엔드와 같이 테이블 / 컬럼을 찾지 못한 조인은 건너뛴다.
+		for _, rj := range util.ResolveJoins(tableName, items, gpa.Join) {
+			join := rj.GpaJoin
+			join.Prefix = util.TablePrefixOf(rj.Table, cnf.Database, db)
 			joins = append(joins, join)
 		}
 
