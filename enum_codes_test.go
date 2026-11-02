@@ -5,6 +5,7 @@ import (
 	gocodegen "gomachine/go"
 	kotlincodegen "gomachine/kotlin"
 	reactcodegen "gomachine/react"
+	rustcodegen "gomachine/rust"
 	"gomachine/util"
 	"os"
 	"path/filepath"
@@ -63,6 +64,11 @@ func TestEnumCodesAgree(t *testing.T) {
 		t.Fatal(err)
 	}
 	ts := reactcodegen.BuildTemplateData("testproj", "evt_tb", columns("react"), gpa)
+	rustcodegen.ProcessRust("testproj", "evt_tb", "e", columns("rust"), nil, gpa, "1", "", config.ModelConfig{Language: "rust", RustModelFilePath: filepath.Join(out, "rust")})
+	rustSrc, err := os.ReadFile(filepath.Join(out, "rust", "src", "models", "evt.rs"))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	want := map[string]map[string]int{
 		"Status": {"Wait": 1, "Done": 3, "plain": 4},
@@ -106,7 +112,19 @@ func TestEnumCodesAgree(t *testing.T) {
 			}
 		}
 
-		for name, got := range map[string]map[string]int{"go": goCodes, "kotlin": ktCodes, "ts": tsCodes} {
+		// Rust: 연관 상수 pub const WAIT: Status = Status(1) 와 LABELS 배열
+		rustLabels := regexp.MustCompile(`(?s)impl ` + typeName + ` \{.*?pub const LABELS: &'static \[&'static str\] = &\[(.*?)\];`).FindStringSubmatch(string(rustSrc))
+		if rustLabels == nil {
+			t.Fatalf("Rust LABELS for %s not found:\n%s", typeName, rustSrc)
+		}
+		rustLabelList := regexp.MustCompile(`"((?:[^"\\]|\\.)*)"`).FindAllStringSubmatch(rustLabels[1], -1)
+		rustCodes := map[string]int{}
+		for _, m := range regexp.MustCompile(`(?m)^\s+pub const \w+: `+typeName+` = `+typeName+`\((\d+)\);$`).FindAllStringSubmatch(string(rustSrc), -1) {
+			code, _ := strconv.Atoi(m[1])
+			rustCodes[rustLabelList[code][1]] = code
+		}
+
+		for name, got := range map[string]map[string]int{"go": goCodes, "kotlin": ktCodes, "ts": tsCodes, "rust": rustCodes} {
 			if len(got) != len(codes) {
 				t.Errorf("%s %s codes = %v, want %v", name, typeName, got, codes)
 				continue
@@ -116,6 +134,14 @@ func TestEnumCodesAgree(t *testing.T) {
 					t.Errorf("%s %s %q = %d, want %d", name, typeName, label, got[label], code)
 				}
 			}
+		}
+	}
+
+	// Rust 는 enum 컬럼을 newtype(util.RustEnumType) 으로 쓴다. 코드는 다른 언어와 같은 util.EnumCode 다.
+	for _, c := range columns("rust") {
+		want := map[string]string{"e_id": "i64", "e_status": "Status", "e_kind": "Kind"}[c.Column]
+		if c.Type != want {
+			t.Errorf("rust %s type = %q, want %q", c.Column, c.Type, want)
 		}
 	}
 

@@ -16,7 +16,8 @@ func TestEnabledLanguages(t *testing.T) {
 		{"legacy comma list", ModelConfig{Language: "react, go"}, []string{"go", "react"}},
 		{"toggle map", ModelConfig{Languages: map[string]bool{"go": true, "react": true, "spring": false}}, []string{"go", "react"}},
 		{"map wins over language", ModelConfig{Language: "dart", Languages: map[string]bool{"go": true}}, []string{"go"}},
-		{"all", ModelConfig{Languages: map[string]bool{"all": true, "go": false}}, []string{"go", "kotlin", "dart", "react", "vue"}},
+		{"all", ModelConfig{Languages: map[string]bool{"all": true, "go": false}}, []string{"go", "kotlin", "dart", "react", "vue", "rust"}},
+		{"rust", ModelConfig{Languages: map[string]bool{"rust": true, "go": true}}, []string{"go", "rust"}},
 		{"vue", ModelConfig{Languages: map[string]bool{"vue": true, "react": true}}, []string{"react", "vue"}},
 		{"all off", ModelConfig{Languages: map[string]bool{"go": false}}, []string{}},
 		{"unsupported skipped", ModelConfig{Languages: map[string]bool{"svelte": true, "flutter": true}}, []string{"dart"}},
@@ -75,5 +76,15 @@ func TestParseStrict(t *testing.T) {
 func TestLoadMissing(t *testing.T) {
 	if _, _, err := Load(t.TempDir()); err == nil {
 		t.Error("missing model.json: want error")
+	}
+}
+
+func TestOutputPathRust(t *testing.T) {
+	cnf := ModelConfig{RustModelFilePath: "../proj/proj_rust"}
+	if got := cnf.OutputPath("rust"); got != "../proj/proj_rust" {
+		t.Errorf("rust output path = %q", got)
+	}
+	if got := NormalizeLanguage(" Rust "); got != "rust" {
+		t.Errorf("NormalizeLanguage(Rust) = %q", got)
 	}
 }

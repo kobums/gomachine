@@ -1,7 +1,9 @@
 package util
 
 import (
+	"fmt"
 	"gomachine/config"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -529,5 +531,224 @@ func TestReservedNames(t *testing.T) {
 	}
 	if got := KotlinTypeName("Item", "Enum", "Item"); got != "ItemEnum" {
 		t.Errorf("taken: %s", got)
+	}
+}
+
+// Rust 타입 표는 Go 표와 같은 MySQL 타입을 모두 다룬다 (새 타입을 한쪽에만 더하지 않게).
+func TestRustTypesCoverGo(t *testing.T) {
+	for k := range goTypes {
+		if _, ok := rustTypes[k]; !ok {
+			t.Errorf("rustTypes has no %q", k)
+		}
+	}
+	for k := range rustTypes {
+		if _, ok := goTypes[k]; !ok {
+			t.Errorf("goTypes has no %q (rust only)", k)
+		}
+	}
+	for k := range rustUnsignedTypes {
+		if _, ok := rustTypes[k]; !ok {
+			t.Errorf("unsigned %q is not in rustTypes", k)
+		}
+	}
+}
+
+func TestGetTypeRust(t *testing.T) {
+	cnf := config.ModelConfig{Language: "rust"}
+	cases := []struct {
+		db       string
+		unsigned bool
+		want     string
+	}{
+		{"tinyint", false, "bool"}, {"tinyint", true, "bool"}, {"bit", false, "bool"},
+		{"smallint", false, "i32"}, {"smallint", true, "u32"}, {"mediumint", true, "u32"},
+		{"int", false, "i32"}, {"INT", true, "u32"}, {"integer", false, "i32"}, {"year", false, "i32"},
+		{"bigint", false, "i64"}, {"bigint", true, "u64"},
+		{"float", false, "f64"}, {"double", true, "f64"}, {"decimal", false, "f64"}, {"numeric", false, "f64"},
+		{"varchar", false, "String"}, {"longtext", false, "String"}, {"enum", false, "String"}, {"json", false, "String"},
+		{"date", false, "String"}, {"datetime", false, "String"}, {"timestamp", false, "String"}, {"time", false, "String"},
+		{"blob", false, "Vec<u8>"}, {"varbinary", false, "Vec<u8>"},
+		{"geometry", false, "String"},
+	}
+	for _, c := range cases {
+		if got := GetTypeUnsigned("evt", "col", c.db, c.unsigned, nil, cnf); got != c.want {
+			t.Errorf("rust %s unsigned=%v = %q, want %q", c.db, c.unsigned, got, c.want)
+		}
+	}
+	// enum 은 newtype 이름 (unsigned 와 상관없다). 모델 struct 와 같은 이름이면 Enum 접미사.
+	gpa := &config.Gpa{Map: []config.GpaMap{{Name: "user_status"}, {Name: "value"}, {Name: "evt"}}}
+	for name, want := range map[string]string{"user_status": "UserStatus", "value": "ValueEnum", "evt": "EvtEnum"} {
+		if got := GetTypeUnsigned("evt", name, "int", true, gpa, cnf); got != want {
+			t.Errorf("rust enum %s = %q, want %q", name, got, want)
+		}
+	}
+	// Go / Kotlin 은 unsigned 를 무시한다.
+	if got := GetTypeUnsigned("evt", "col", "bigint", true, nil, config.ModelConfig{Language: "go"}); got != "int64" {
+		t.Errorf("go bigint unsigned = %q", got)
+	}
+}
+
+func TestColumnTypeUnsigned(t *testing.T) {
+	cases := map[string]bool{
+		"int(10) unsigned": true, "bigint unsigned zerofill": true, "INT UNSIGNED": true, "tinyint(1)": false,
+		"int(11)": false, "": false, "enum('unsigned','x')": false, "decimal(10,2) unsigned": true,
+	}
+	for in, want := range cases {
+		if got := IsUnsignedColumnType(in); got != want {
+			t.Errorf("IsUnsignedColumnType(%q) = %v, want %v", in, got, want)
+		}
+	}
+	rust := config.ModelConfig{Language: "rust"}
+	col := NewColumnFromRaw("evt_tb", RawColumn{Name: "e_count", DataType: "int", ColumnType: "int(10) unsigned"}, nil, rust)
+	if !col.Unsigned || col.ColumnType != "int(10) unsigned" || col.Type != "u32" {
+		t.Errorf("unsigned column = %+v", col)
+	}
+	// ColumnType 이 없는 RawColumn(StaticColumns)도 Unsigned 로 정할 수 있다.
+	if col := NewColumnFromRaw("evt_tb", RawColumn{Name: "e_id", DataType: "bigint", Unsigned: true}, nil, rust); col.Type != "u64" {
+		t.Errorf("Unsigned flag: %+v", col)
+	}
+	if col := NewColumnFromRaw("evt_tb", RawColumn{Name: "e_id", DataType: "bigint", ColumnType: "bigint unsigned"}, nil, config.ModelConfig{Language: "go"}); col.Type != "int64" || !col.Unsigned {
+		t.Errorf("go unsigned column: %+v", col)
+	}
+}
+
+func TestRustIdent(t *testing.T) {
+	cases := map[string]string{
+		"type": "type_", "self": "self_", "Self": "Self_", "super": "super_", "crate": "crate_", "async": "async_",
+		"gen": "gen_", "try": "try_", "union": "union_", "dyn": "dyn_", "status": "status", "_": "__", "": "v",
+		"1st": "v1st", "a-b": "a_b", "match": "match_", "r#type": "r_type",
+	}
+	for in, want := range cases {
+		if got := RustIdent(in); got != want {
+			t.Errorf("RustIdent(%q) = %q, want %q", in, got, want)
+		}
+	}
+	snake := map[string]string{"createdAt": "created_at", "userid": "userid", "displayName": "display_name", "userID": "user_id",
+		"HTTPServer": "http_server", "a2B": "a2_b", "createdat2": "createdat2", "id": "id"}
+	for in, want := range snake {
+		if got := RustSnake(in); got != want {
+			t.Errorf("RustSnake(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestRustFields(t *testing.T) {
+	cnf := config.ModelConfig{Language: "rust"}
+	raw := []string{"p_id", "p_created_at", "p_createdat", "p_userId", "p_type", "p_self", "p_extra", "p_a_b", "p_a-b"}
+	items := make([]Column, 0)
+	for _, r := range raw {
+		items = append(items, NewColumn("post_tb", r, "int", nil, cnf))
+	}
+	items = DedupeColumns("post_tb", items)
+	want := []string{"id", "created_at", "createdat2", "userid", "type_", "self_", "extra2", "a_b", "a_b_2"}
+	if got := RustFields(items); !reflect.DeepEqual(got, want) {
+		t.Errorf("RustFields = %v, want %v", got, want)
+	}
+	if got := RustField(items[1]); got != "created_at" {
+		t.Errorf("RustField = %q", got)
+	}
+}
+
+func TestRustTypeNames(t *testing.T) {
+	tableNameAlias = map[string]string{}
+	models := map[string]string{
+		"user_tb": "User", "user_role_tb": "UserRole", "result_tb": "ResultModel", "option_tb": "OptionModel",
+		"path_tb": "PathModel", "session_tb": "SessionModel", "value_tb": "ValueModel", "error_tb": "ErrorModel",
+		"self_tb": "SelfModel", "type_tb": "TypeModel", "order_tb": "Order", "1st_tb": "T1st",
+	}
+	for in, want := range models {
+		if got := RustModelName(in); got != want {
+			t.Errorf("RustModelName(%q) = %q, want %q", in, got, want)
+		}
+	}
+	enums := []struct{ name, taken, want string }{
+		{"status", "", "Status"}, {"user_status", "", "UserStatus"}, {"type", "", "TypeEnum"}, {"json", "", "JsonEnum"},
+		{"some", "", "SomeEnum"}, {"kind", "Kind", "KindEnum"}, {"kind", "User", "Kind"},
+	}
+	for _, c := range enums {
+		if got := RustEnumType(c.name, c.taken); got != c.want {
+			t.Errorf("RustEnumType(%q, %q) = %q, want %q", c.name, c.taken, got, c.want)
+		}
+	}
+	modules := map[string]string{
+		"user_tb": "user", "user_role_tb": "userrole", "type_tb": "type_", "mod_tb": "mod_", "support_tb": "support_",
+		"handlers_tb": "handlers_", "models_tb": "models_", "routes_tb": "routes_", "custom_tb": "custom_", "self_tb": "self_",
+		"main_tb": "main_", "1st_tb": "m1st", "order_tb": "order",
+	}
+	for in, want := range modules {
+		if got := RustModule(in); got != want {
+			t.Errorf("RustModule(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestWriteIfChangedAndMissing(t *testing.T) {
+	dir := t.TempDir()
+	gen := dir + "/a/gen.rs"
+	if w, err := WriteIfChanged(gen, "x"); !w || err != nil {
+		t.Fatalf("first WriteIfChanged = %v, %v", w, err)
+	}
+	if w, err := WriteIfChanged(gen, "x"); w || err != nil {
+		t.Errorf("same content WriteIfChanged = %v, %v, want false", w, err)
+	}
+	if w, _ := WriteIfChanged(gen, "y"); !w {
+		t.Errorf("changed content not written")
+	}
+
+	user := dir + "/b/user.rs"
+	if w, err := WriteIfMissing(user, "default"); !w || err != nil {
+		t.Fatalf("first WriteIfMissing = %v, %v", w, err)
+	}
+	if err := WriteFile(user, "mine"); err != nil {
+		t.Fatal(err)
+	}
+	if w, err := WriteIfMissing(user, "default"); w || err != nil {
+		t.Errorf("WriteIfMissing on existing file = %v, %v", w, err)
+	}
+	if b, _ := os.ReadFile(user); string(b) != "mine" {
+		t.Errorf("user file overwritten: %q", b)
+	}
+}
+
+func TestRustEnumItems(t *testing.T) {
+	items := RustEnumItems([]string{"wait-time:대기", "1st:First", "", "대기:Korean", "done", "Done:Again", "labels:L", "quote:a\"b"})
+	got := make([]string, 0)
+	for _, it := range items {
+		got = append(got, fmt.Sprintf("%s=%d", it.Ident, it.Code))
+	}
+	want := []string{"WAIT_TIME=0", "V1ST=1", "V3=3", "DONE=4", "DONE_2=5", "LABELS_2=6", "QUOTE=7"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("RustEnumItems = %v, want %v", got, want)
+	}
+	if items[6].Quote != `"a\"b"` {
+		t.Errorf("quote = %s", items[6].Quote)
+	}
+}
+
+func TestRustString(t *testing.T) {
+	cases := map[string]string{`a"b\c`: `"a\"b\\c"`, "줄\n탭\t": `"줄\n탭\t"`, "\x01": `"\u{1}"`, "$x {y}": `"$x {y}"`}
+	for in, want := range cases {
+		if got := RustString(in); got != want {
+			t.Errorf("RustString(%q) = %s, want %s", in, got, want)
+		}
+	}
+}
+
+func TestNonIntegerIdWarning(t *testing.T) {
+	for _, tc := range []struct {
+		name, typ string
+		warn      bool
+	}{
+		{"Id", "bigint", false}, {"Id", "INT", false}, {"Id", "tinyint", false},
+		{"Id", "varchar", true}, {"Id", "char", true}, {"Id", "decimal", true},
+		{"Name", "varchar", false},
+	} {
+		got := NonIntegerIdWarning("go", "t_tb", Column{Name: tc.name, Column: "t_id", OriginalType: tc.typ})
+		if (got != "") != tc.warn {
+			t.Errorf("%s %s: warning %q", tc.name, tc.typ, got)
+		}
+	}
+	if s := NonIntegerIdWarning("rust", "t_tb", Column{Name: "Id", Column: "t_id", OriginalType: "varchar"}); !strings.Contains(s, "rust: t_tb id column t_id is varchar") {
+		t.Errorf("message: %s", s)
 	}
 }

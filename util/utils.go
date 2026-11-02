@@ -6,6 +6,7 @@ import (
 	"gomachine/config"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode"
@@ -41,7 +42,9 @@ type Column struct {
 	HasDefault   bool   // column_default 가 있다 (NULL 이 아님)
 	Default      string // column_default 원문 (예: CURRENT_TIMESTAMP, 0, abc)
 	// Dup 은 _ / 대소문자만 다른 컬럼과 이름이 겹칠 때 Name 과 JSON key 뒤에 붙인 번호다 (DedupeColumns).
-	Dup string
+	Dup        string
+	ColumnType string // information_schema.columns.column_type 원문 (예: int(10) unsigned, tinyint(1))
+	Unsigned   bool   // unsigned 정수 컬럼 (Rust 는 u32 / u64)
 }
 
 // RawColumn 은 information_schema.columns 에서 읽은 컬럼 하나다.
@@ -51,12 +54,24 @@ type RawColumn struct {
 	Nullable   bool
 	HasDefault bool
 	Default    string
+	ColumnType string // column_type 원문 (예: int(10) unsigned)
+	Unsigned   bool   // ColumnType 에 unsigned 가 없어도 true 면 unsigned 로 본다 (테스트용)
+}
+
+// IsUnsignedColumnType 은 column_type(예: "int(10) unsigned", "bigint unsigned zerofill")이 unsigned 인지 확인한다.
+func IsUnsignedColumnType(columnType string) bool {
+	for _, f := range strings.Fields(strings.ToLower(columnType)) {
+		if f == "unsigned" {
+			return true
+		}
+	}
+	return false
 }
 
 // StaticColumns 는 DB 연결이 없을 때 QueryColumns 가 돌려줄 테이블별 컬럼이다 (테스트용).
 var StaticColumns = map[string][]RawColumn{}
 
-// QueryColumns 는 테이블의 컬럼을 ordinal_position 순서로 읽는다 (이름, 타입, null 허용, 기본값).
+// QueryColumns 는 테이블의 컬럼을 ordinal_position 순서로 읽는다 (이름, 타입, null 허용, 기본값, column_type).
 func QueryColumns(db *sql.DB, schema string, table string) ([]RawColumn, error) {
 	ret := make([]RawColumn, 0)
 	if db == nil {
@@ -66,7 +81,7 @@ func QueryColumns(db *sql.DB, schema string, table string) ([]RawColumn, error) 
 		}
 		return ret, nil
 	}
-	query := "select column_name, data_type, is_nullable, column_default from information_schema.columns where table_schema = ? and table_name = ? order by ordinal_position"
+	query := "select column_name, data_type, is_nullable, column_default, column_type from information_schema.columns where table_schema = ? and table_name = ? order by ordinal_position"
 	rows, err := db.Query(query, schema, table)
 	if err != nil {
 		return ret, err
@@ -74,20 +89,24 @@ func QueryColumns(db *sql.DB, schema string, table string) ([]RawColumn, error) 
 	defer rows.Close()
 
 	for rows.Next() {
-		var name, typeid, nullable string
+		var name, typeid, nullable, columnType string
 		var def sql.NullString
-		if err := rows.Scan(&name, &typeid, &nullable, &def); err != nil {
+		if err := rows.Scan(&name, &typeid, &nullable, &def, &columnType); err != nil {
 			log.Println(err)
 			continue
 		}
-		ret = append(ret, RawColumn{Name: name, DataType: typeid, Nullable: strings.EqualFold(nullable, "YES"), HasDefault: def.Valid, Default: def.String})
+		ret = append(ret, RawColumn{Name: name, DataType: typeid, Nullable: strings.EqualFold(nullable, "YES"), HasDefault: def.Valid, Default: def.String,
+			ColumnType: columnType, Unsigned: IsUnsignedColumnType(columnType)})
 	}
 	return ret, rows.Err()
 }
 
-// NewColumnFromRaw 는 RawColumn 으로 Column 을 만든다 (null 허용 / 기본값 포함).
+// NewColumnFromRaw 는 RawColumn 으로 Column 을 만든다 (null 허용 / 기본값 / unsigned 포함).
 func NewColumnFromRaw(tableName string, raw RawColumn, gpa *config.Gpa, cnf config.ModelConfig) Column {
-	col := NewColumn(tableName, raw.Name, raw.DataType, gpa, cnf)
+	unsigned := raw.Unsigned || IsUnsignedColumnType(raw.ColumnType)
+	col := newColumn(tableName, raw.Name, raw.DataType, unsigned, gpa, cnf)
+	col.ColumnType = raw.ColumnType
+	col.Unsigned = unsigned
 	col.Nullable = raw.Nullable
 	col.HasDefault = raw.HasDefault
 	col.Default = raw.Default
@@ -150,6 +169,41 @@ func CopyFile(src, dst string) {
 
 func WriteFile(filename string, content string) error {
 	return os.WriteFile(filename, []byte(content), 0644)
+}
+
+// WriteIfChanged 는 생성 파일을 쓴다 (디렉터리도 만든다). 내용이 같으면 쓰지 않고 false 를 돌려준다 (수정 시각 유지).
+func WriteIfChanged(filename string, content string) (bool, error) {
+	if old, err := os.ReadFile(filename); err == nil && string(old) == content {
+		return false, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(filename), 0755); err != nil {
+		return false, err
+	}
+	return true, WriteFile(filename, content)
+}
+
+// WriteIfMissing 은 사용자 파일을 없을 때만 만든다. 이미 있으면 (내용과 상관없이) 건드리지 않고 false 를 돌려준다.
+func WriteIfMissing(filename string, content string) (bool, error) {
+	if _, err := os.Lstat(filename); err == nil {
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(filename), 0755); err != nil {
+		return false, err
+	}
+	f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		if os.IsExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if _, err := f.WriteString(content); err != nil {
+		f.Close()
+		return false, err
+	}
+	return true, f.Close()
 }
 
 // tableNameAlias 는 이름이 겹치는 테이블(예: user_tb 와 user_vw)에 따로 붙인 기본 이름이다.
@@ -624,12 +678,16 @@ func IsRangeFilter(originalType string) bool {
 
 // NewColumn 은 information_schema 의 컬럼 하나를 생성기용 Column 으로 바꾼다.
 func NewColumn(tableName string, rawName string, dataType string, gpa *config.Gpa, cnf config.ModelConfig) Column {
+	return newColumn(tableName, rawName, dataType, false, gpa, cnf)
+}
+
+func newColumn(tableName string, rawName string, dataType string, unsigned bool, gpa *config.Gpa, cnf config.ModelConfig) Column {
 	key := GetName(rawName)
 	return Column{
 		Name:         CamelCase(key),
 		Column:       rawName,
 		Key:          key,
-		Type:         GetType(GetTableName(tableName), key, dataType, gpa, cnf),
+		Type:         GetTypeUnsigned(GetTableName(tableName), key, dataType, unsigned, gpa, cnf),
 		OriginalType: strings.ToLower(dataType),
 		Prefix:       GetPrefix(rawName),
 	}
@@ -727,8 +785,17 @@ func isLang(cnf config.ModelConfig, names ...string) bool {
 // GetType 은 MySQL data_type 을 언어별 타입으로 바꾼다. 모르는 타입은 경고를 찍고 문자열로 처리한다.
 // Go: decimal 은 float64 (예전 int 는 소수점이 잘리고 "12.50" Scan 이 실패했다), blob/binary/bit 는 []byte.
 func GetType(tableName string, name string, t string, gpa *config.Gpa, cnf config.ModelConfig) string {
+	return GetTypeUnsigned(tableName, name, t, false, gpa, cnf)
+}
+
+// GetTypeUnsigned 는 GetType 에 unsigned 여부를 더한 것이다. unsigned 는 Rust 에서만 쓴다 (int → u32, bigint → u64).
+// Rust enum(gpa.map) 컬럼은 RustEnumType 이름이다 (모델 struct 이름과 겹치지 않는다).
+func GetTypeUnsigned(tableName string, name string, t string, unsigned bool, gpa *config.Gpa, cnf config.ModelConfig) string {
 	if m := FindEnumMap(gpa, name); m != nil {
 		enumType := CamelCase(m.Name)
+		if isLang(cnf, "rust") {
+			return RustEnumType(m.Name, RustModelName(tableName))
+		}
 		if isLang(cnf, "dart", "flutter", "kotlin", "spring") {
 			return enumType
 		}
@@ -744,6 +811,12 @@ func GetType(tableName string, name string, t string, gpa *config.Gpa, cnf confi
 	} else if isLang(cnf, "kotlin", "spring") {
 		types = kotlinTypes
 		fallback = "String"
+	} else if isLang(cnf, "rust") {
+		types = rustTypes
+		fallback = "String"
+		if ret, ok := rustUnsignedTypes[t]; ok && unsigned {
+			return ret
+		}
 	} else {
 		types = goTypes
 	}
@@ -792,6 +865,25 @@ var dartTypes = map[string]string{
 	"enum": "String", "set": "String", "json": "String",
 	"datetime": "String", "date": "String", "timestamp": "String", "time": "String",
 	"binary": "String", "varbinary": "String", "tinyblob": "String", "blob": "String", "mediumblob": "String", "longblob": "String",
+}
+
+// rustTypes 는 sqlx 가 디코드하는 Rust 타입이다. i32 는 signed 정수 컬럼에서만 읽히므로 unsigned 는 rustUnsignedTypes 를 쓴다.
+// decimal 과 날짜/시간은 다음 단계에서 select 에 CAST / DATE_FORMAT 으로 문자열을 읽고, API 타입은 f64 / String 이다.
+var rustTypes = map[string]string{
+	"int": "i32", "integer": "i32", "mediumint": "i32", "smallint": "i32", "year": "i32",
+	"bigint":  "i64",
+	"tinyint": "bool", "bit": "bool",
+	"float": "f64", "double": "f64", "real": "f64", "decimal": "f64", "numeric": "f64",
+	"char": "String", "varchar": "String", "tinytext": "String", "text": "String", "mediumtext": "String", "longtext": "String",
+	"enum": "String", "set": "String", "json": "String",
+	"datetime": "String", "date": "String", "timestamp": "String", "time": "String",
+	"binary": "Vec<u8>", "varbinary": "Vec<u8>", "tinyblob": "Vec<u8>", "blob": "Vec<u8>", "mediumblob": "Vec<u8>", "longblob": "Vec<u8>",
+}
+
+// rustUnsignedTypes 는 unsigned 정수 컬럼의 Rust 타입이다 (tinyint unsigned 는 그대로 bool).
+var rustUnsignedTypes = map[string]string{
+	"int": "u32", "integer": "u32", "mediumint": "u32", "smallint": "u32", "year": "u32",
+	"bigint": "u64",
 }
 
 // TablePrefix 는 {str}_tb 테이블의 컬럼 접두사를 돌려준다 (첫 번째 컬럼 기준).
@@ -853,6 +945,30 @@ func PasswordColumn(items []Column) string {
 		}
 	}
 	return ""
+}
+
+// integerTypes 는 id 컬럼으로 쓸 수 있는 정수 MySQL 타입이다.
+var integerTypes = map[string]bool{"tinyint": true, "smallint": true, "mediumint": true, "int": true, "integer": true, "bigint": true}
+
+// NonIntegerIdWarning 은 id 컬럼이 정수 타입이 아니면 경고 문구를 돌려준다 (아니면 "").
+// 생성 코드(Go, Rust)는 id 를 정수(int64 / i64, unsigned 면 u64)로 가정한다: 경로 /{table}/{id}, Get / Update / Delete, 자동 증가 id.
+func NonIntegerIdWarning(lang string, tableName string, col Column) string {
+	if col.Name != "Id" || integerTypes[strings.ToLower(col.OriginalType)] {
+		return ""
+	}
+	return fmt.Sprintf("WARNING: %s: %s id column %s is %s, not an integer; the generated code assumes an integer id "+
+		"(id paths, Get/Update/Delete and insert ids fail for non-numeric values). Rename the column or use an integer id", lang, tableName, col.Column, col.OriginalType)
+}
+
+// PasswordColumns 는 비밀번호 컬럼(Passwd, Password)의 Name 목록이다 (컬럼 순서).
+func PasswordColumns(items []Column) []string {
+	ret := make([]string, 0)
+	for _, item := range items {
+		if IsPasswordColumn(item.Name) {
+			ret = append(ret, item.Name)
+		}
+	}
+	return ret
 }
 
 // ProtectedColumns 는 REST 입력으로 받지 않을 컬럼의 Name 목록을 돌려준다.

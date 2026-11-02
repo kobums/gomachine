@@ -86,11 +86,11 @@ func (c *{{name}}Controller) isAdmin() bool {
 
 // Parse{{name}}Filters 는 목록/개수의 조건이다. get 은 쿼리 파라미터를 읽는 함수다 (컨트롤러 Get, 라우터 fiber Query).
 // 파라미터 이름은 컬럼의 API 이름(JSON key)이고, 날짜 컬럼은 start/end 범위다.
-// 숫자/enum/bool 파라미터를 해석하지 못하면 두 번째 값으로 그 파라미터 이름을 돌려준다 (400). bool 은 1/0/true/false 를 받고, 보냈을 때만 거른다.
+// 숫자/enum/bool 파라미터를 해석하지 못하면 두 번째 값으로 그 파라미터 이름을 돌려준다 (400). bool 은 1/0/true/false 를 받고, 보냈을 때만 거른다.{* id, primary, 비밀번호, []byte 컬럼은 필터가 없다 (go/main.go isSearchColumn, Spring / TypeScript 와 같다) *}
 func Parse{{name}}Filters(get func(string) string) ([]interface{}, string) {
     var args []interface{}
     
-    {{range items}}{{if .Name != "Id" && .Name != "Passwd" && .Name != "Password" && .Type != "[]byte"}}{{if isRange(.)}}_start{{.Name|lower}} := get("{{startParam(.)}}")
+    {{range items}}{{if .Name != "Id" && !.Primary && .Name != "Passwd" && .Name != "Password" && .Type != "[]byte"}}{{if isRange(.)}}_start{{.Name|lower}} := get("{{startParam(.)}}")
     _end{{.Name|lower}} := get("{{endParam(.)}}")
     if _start{{.Name|lower}} != "" && _end{{.Name|lower}} != "" {        
         var v [2]string
@@ -320,15 +320,15 @@ func (c *{{name}}Controller) Count() {
         item.{{.}} = models.{{inputName}}{}.{{.}}
     }{{else}}item.{{.}} = models.{{inputName}}{}.{{.}}{{end}}
     {{end}}
-    {{if passwordColumn != ""}}
-    if item.{{passwordColumn}} != "" {
-        hashed, err := jwt.GeneratePasswd(item.{{passwordColumn}})
+    {{range pi, pw := passwordColumns}}
+    if item.{{pw}} != "" {
+        hashed, err := jwt.GeneratePasswd(item.{{pw}})
         if err != nil {
             c.Set("code", "error")
             c.Set("error", err)
             return
         }
-        item.{{passwordColumn}} = hashed
+        item.{{pw}} = hashed
     }
     {{end}}
 
@@ -390,15 +390,15 @@ func (c *{{name}}Controller) Insertbatch(item *[]models.{{inputName}}) {
             (*item)[i].{{.}} = models.{{inputName}}{}.{{.}}
         }{{else}}(*item)[i].{{.}} = models.{{inputName}}{}.{{.}}{{end}}
         {{end}}
-        {{if passwordColumn != ""}}
-        if (*item)[i].{{passwordColumn}} != "" {
-            hashed, err := jwt.GeneratePasswd((*item)[i].{{passwordColumn}})
+        {{range pi, pw := passwordColumns}}
+        if (*item)[i].{{pw}} != "" {
+            hashed, err := jwt.GeneratePasswd((*item)[i].{{pw}})
             if err != nil {
                 c.Set("code", "error")
                 c.Set("error", err)
                 return
             }
-            (*item)[i].{{passwordColumn}} = hashed
+            (*item)[i].{{pw}} = hashed
         }
         {{end}}
     }
@@ -494,20 +494,20 @@ func (c *{{name}}Controller) Update(item *models.{{inputName}}, body []byte) {
     }{{else}}merged.{{.}} = existing.{{.}}{{if nullableCol(.)}}
     nulls["{{.}}"] = dbNulls["{{.}}"]{{end}}{{end}}
     {{end}}
-    {{if passwordColumn != ""}}
+    {{range pi, pw := passwordColumns}}
     // 비밀번호를 보내지 않거나 비워 보내면 기존 해시를 유지한다.
-    if merged.{{passwordColumn}} == "" || merged.{{passwordColumn}} == existing.{{passwordColumn}} {
-        merged.{{passwordColumn}} = existing.{{passwordColumn}}{{if nullableCol(passwordColumn)}}
-        nulls["{{passwordColumn}}"] = dbNulls["{{passwordColumn}}"]{{end}}
+    if merged.{{pw}} == "" || merged.{{pw}} == existing.{{pw}} {
+        merged.{{pw}} = existing.{{pw}}{{if nullableCol(pw)}}
+        nulls["{{pw}}"] = dbNulls["{{pw}}"]{{end}}
     } else {
-        hashed, err := jwt.GeneratePasswd(merged.{{passwordColumn}})
+        hashed, err := jwt.GeneratePasswd(merged.{{pw}})
         if err != nil {
             c.Set("code", "error")
             c.Set("error", err)
             return
         }
-        merged.{{passwordColumn}} = hashed{{if nullableCol(passwordColumn)}}
-        delete(nulls, "{{passwordColumn}}"){{end}}
+        merged.{{pw}} = hashed{{if nullableCol(pw)}}
+        delete(nulls, "{{pw}}"){{end}}
     }
     {{end}}
 
@@ -700,7 +700,7 @@ func (c *{{name}}Controller) {{f.Name}}({{range i, v := f.Wheres}}{{if i > 0}} ,
     }
     {{end}}
     {{end}}
-    {{if qt == "Update"}}{{range i, v := f.Wheres}}{{if v.Compare == "column" && v.Column == passwordColumn}}
+    {{if qt == "Update"}}{{range i, v := f.Wheres}}{{if v.Compare == "column" && isPassword(v.Column)}}
     // 비밀번호는 REST Update 와 같이 해시해서 저장한다. 빈 비밀번호는 받지 않는다.
     if {{v.Param}} == "" {
         c.Result["code"] = "bad request"
