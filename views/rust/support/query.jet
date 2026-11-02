@@ -367,6 +367,21 @@ pub fn push_order_page(qb: &mut QueryBuilder<MySql>, page: &Page, default_column
     }
 }
 
+/// 고정 SQL(생성 코드의 상수)의 ? 자리마다 values 를 차례로 바인딩한 QueryBuilder. ? 개수와 values 개수는 같아야 한다.
+pub fn bound(sql: &str, values: &[Bind]) -> QueryBuilder<MySql> {
+    let marks = placeholders(sql);
+    debug_assert_eq!(marks.len(), values.len(), "{sql}");
+    let mut qb = QueryBuilder::<MySql>::new("");
+    let mut start = 0;
+    for (pos, value) in marks.into_iter().zip(values) {
+        qb.push(&sql[start..pos]);
+        value.push_bind(&mut qb);
+        start = pos + 1;
+    }
+    qb.push(&sql[start..]);
+    qb
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,6 +452,15 @@ mod tests {
         assert_eq!(build(|qb| push_custom(qb, &bad)), ("select * from t where 1=1 and 1=0".into(), 0));
         let escaped = Custom::new(r"u_a = 'it\'s ?' and u_b = ?", vec![1.into()]);
         assert_eq!(build(|qb| push_custom(qb, &escaped)).1, 1);
+    }
+
+    #[test]
+    fn bound_sql() {
+        let mut qb = bound("update t set a = ?, b = ? where id = ?", &["x".into(), Bind::Null, 3i64.into()]);
+        assert_eq!(qb.sql().as_str(), "update t set a = ?, b = ? where id = ?");
+        assert_eq!(qb.build().take_arguments().unwrap().map(|a| a.len()), Some(3));
+        let qb = bound("delete from t", &[]);
+        assert_eq!(qb.sql().as_str(), "delete from t");
     }
 
     #[test]

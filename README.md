@@ -2,7 +2,7 @@
 
 이 프로그램은 Go를 이용하여 귀찮고 반복되는 것들을 안하게 하기 위함이다.
 
-go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생성할 수 있다. rust(axum + sqlx) 백엔드는 작업 중이다 ([Rust](#rust-axum--sqlx)).
+go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생성할 수 있다. rust(axum + sqlx) 백엔드도 만든다 ([Rust](#rust-axum--sqlx)).
 
 ## 실행
 
@@ -411,8 +411,7 @@ React/Vue(그리고 Dart)가 두 백엔드 중 어느 것에도 붙을 수 있�
 
 ## Rust (axum + sqlx)
 
-작업 중이다. 지금은 설정, 이름 / 타입 규칙, 런타임 지원 모듈(`src/support`)까지 있고, 테이블 모델 / 핸들러는 아직 만들지 않는다
-(`rust` 를 켜면 테이블마다 "not implemented yet" 경고를 찍는다).
+Go 백엔드와 같은 REST API (경로, 파라미터, 응답 key, 권한 규칙, SQL)를 axum 0.8 + sqlx 0.9 (MySQL) 로 만든다.
 
 - `rustModelFilePath`: crate 루트 (`Cargo.toml` 이 있는 디렉터리). 생성 파일은 그 아래 `src/` 에 둔다. 모듈은 `crate::` 경로로 참조한다.
 - Go 와 같은 HTTP 계약(HTTP 200 + `code`, 파라미터 해석 실패만 400)이고, 같은 DB / 계정(bcrypt `$2a$` cost 10, 같은 JWT)을 쓴다.
@@ -439,7 +438,10 @@ React/Vue(그리고 Dart)가 두 백엔드 중 어느 것에도 붙을 수 있�
 | `src/support/row.rs` | 생성 | 날짜 자리표시 값 → `""`, DECIMAL 문자열 → `f64` |
 | `src/support/serde_ext.rs` | 생성 | 너그러운 bool, base64 바이트, `double_option` |
 | `src/support/error.rs` | 생성 | `Error` (응답은 HTTP 200 `{"code":"error"}`), `log_sql` |
-| `src/models/mod.rs`, `src/handlers/mod.rs`, `src/routes.rs` | 생성 | 테이블 모듈 목록과 `routes::routes()` (지금은 비어 있다) |
+| `src/support/params.rs` | 생성 | 요청 파라미터 해석 (Go `c.Query` / `strconv` / 본문 map 규칙), 거부(rejection)를 400 으로 바꾸는 인자 타입 |
+| `src/models/{module}.rs` | 생성 | 테이블 모델 struct, enum newtype, SQL (Go `models/{x}.go`) |
+| `src/handlers/{module}.rs` | 생성 | 핸들러와 `routes()` (Go `controllers/rest/{x}.go` + `router/routers/{x}.go`) |
+| `src/models/mod.rs`, `src/handlers/mod.rs`, `src/routes.rs` | 생성 | 테이블 모듈 목록과 `routes::routes()` (모든 테이블 경로를 merge) |
 | `src/support/auth.rs` | **사용자** | JWT → `Session`. Go 백엔드의 토큰 형식에 맞게 고치는 곳 |
 | `src/main.rs` | **사용자** | `src/main.rs` 와 `src/lib.rs` 가 모두 없을 때만 만든다 |
 
@@ -451,6 +453,54 @@ React/Vue(그리고 Dart)가 두 백엔드 중 어느 것에도 붙을 수 있�
   `routes::routes()` 를 `/api` 아래에 붙이고, `PORT`(기본 8080)에서 연다. CORS 는 `CORS_ORIGINS`(쉼표 구분)가 있으면 그 origin 만,
   없으면 모든 origin 을 허용한다 (credentials 없음).
 - 지원 파일에는 `#[cfg(test)]` 단위 테스트가 들어 있다 (`cargo test`).
+
+### 모델 / 핸들러
+
+Go 생성기(`go/main.go`, `views/go/{model,rest}.jet`, 라우터)가 기준이다. 같은 `util` 규칙(JSON key, 필터 / 검색 이름, enum 코드,
+커스텀 메서드 해석, 보호 컬럼, 조인 해석, 세션 컬럼 검사)을 쓴다.
+
+- 모델 (`impl {Model}`): `get` (조인 포함) / `get_raw` (이 테이블만, 소유권 검사 / 수정용) / `find` / `count` / `insert` (LAST_INSERT_ID) /
+  `update` (Go `UpdateNulls`, id 를 뺀 모든 컬럼) / `delete`, 커스텀 `get_by_x` / `find_by_x` / `count_by_x` (`_args` 가 조건 목록) /
+  `delete_by_x` / `update_x_by_y`, `parse_order`, `from_body` / `list_from_body` / `merge`. SQL 은 `*_query` 함수가 `QueryBuilder` 로
+  돌려준다 (테스트에서 `qb.sql()` 로 확인). Sum / GroupBy / UpdateWhere / Truncate / DeleteAll 등 REST 가 쓰지 않는 메서드는 없다.
+- 읽기: 날짜(`date` / `datetime` / `timestamp`)는 `DATE_FORMAT(...)` 으로 `yyyy-MM-dd HH:mm:ss` (date 는 `yyyy-MM-dd`) 문자열을 읽고
+  Go 의 자리표시 값은 `""` (null 허용이면 `null`), `time` / `json` 은 `CAST(... AS CHAR)`, `decimal` 은 `CAST(... AS CHAR)` → `f64`,
+  `bit` 는 `(col+0)` → `bool`, `year` (와 unsigned enum) 는 `CAST(... AS SIGNED)`. 조인은 Go 와 같은 `left join` / 별칭 `j_{변수}` /
+  자기 조인 한정이고, 조인 행은 `extra[변수]` 에 조인 테이블 모델과 같은 JSON (비밀번호 제외, `extra` 는 enum 표시 이름)으로 넣는다 (없으면 `null`).
+- 쓰기: Go 와 같다. `createddate`(문자열)는 Insert 에서 서버 현재 시각(`clock::now()`, `timezone`), NOT NULL 날짜의 빈 값은
+  기본값(현재 시각 / 고정 값 / 자리표시 값), null 허용 날짜 / 시간 / year 의 빈 값은 NULL. REST Insert 는 id 를 무시한다.
+- enum: `pub struct Status(pub i32)` (JSON 은 숫자, 모르는 코드도 담는다), 연관 상수 `Status::WAIT` (key 대문자, `util.RustEnumItems`),
+  `Status::LABELS`, `label()` (Go `GetStatus`), `find(label)` (Go `FindStatus`, 없으면 `None`), `HAS_ZERO`.
+- 경로: Go 라우터가 등록하는 모든 경로 (아래 표, `{t}` = Go 파일 이름). 같은 모양의 경로가 또 나오면(같은 커스텀 메서드 두 번 등)
+  axum 이 시작할 때 panic 하므로 경고를 찍고 건너뛴다.
+
+  | 테이블 | 경로 |
+  |---|---|
+  | 모두 | `GET /{t}`, `GET\|POST /{t}/count`, `GET /{t}/search/{field}` (검색 컬럼마다), 커스텀 `GET /{t}/{get,find,count}/{by}/{값}...` |
+  | id 있음 | `GET /{t}/{id}` |
+  | view 아님 | `POST /{t}`, `POST /{t}/batch`, 커스텀 `PUT /{t}/{x}/{y}` (JSON 본문), `DELETE /{t}/delete/{by}/{값}` (like 조건 제외) |
+  | view 아님 + id 있음 | `PUT /{t}` (본문 id), `PUT\|PATCH\|DELETE /{t}/{id}`, `DELETE /{t}` (본문 id), `DELETE /{t}/batch` |
+
+  axum 0.8 경로 문법(`/{id}`)이고 정적 경로(`/count`, `/batch`, `/search/x`)가 경로 변수보다 먼저 맞는다. 응답 / 파라미터 해석은 Go 라우터와 같다
+  (page / pagesize 가 숫자가 아니거나 음수, 필터 / 경로 / 본문 값을 해석하지 못하면 400).
+- 응답 / 권한: Go `rest.jet` 과 같다 (세션 없음 → Read / Index / Count / Search / 커스텀은 `auth error`, Insert / Insertbatch / Update /
+  Delete / Deletebatch 는 `error`; 세션 조건, 소유권 검사(`GetRaw`, NULL 소유자 거부, 커스텀 Update / Delete 의
+  `(owner <> ? or owner is null)` 개수 검사), User 본인 규칙, 보호 컬럼 / 관리자(`adminLevel`), 비밀번호 해시 / 유지, Deletebatch 의
+  전체 검사 후 삭제). 세션 값은 `Session::value(key)` (id / level 밖의 key 는 `auth.rs` 가 `values` 에 넣는다).
+- 본문: Go json 과 같이 key 의 대소문자를 가리지 않고, NOT NULL 필드의 `null` 은 보내지 않은 것으로 본다 (Insert 는 0 값, 부분 수정은
+  기존 값). 타입이 맞지 않으면 400. 커스텀 `UpdateXByY` 본문 key 는 Go 와 같이 `LowerCamel(컬럼)` 이고 정확히 맞아야 한다.
+- 상태: 핸들러는 `State<MySqlPool>` 만 꺼낸다. `routes::routes::<S>()` 는 `MySqlPool: FromRef<S>` 인 어떤 상태든 된다.
+
+Go 와 일부러 다른 점:
+
+- 빈 목록은 `items: []` 다 (Go 는 `null`).
+- null 허용 컬럼은 `Option` 이라 응답에서 `null` 이다 (Go 는 0 값). TypeScript / Dart 타입은 이미 `null` 을 받는다.
+  NULL 인 enum 의 `extra` 표시 이름은 `""` 다. 보호 컬럼이 null 허용이면 Insert 는 NULL 을 넣는다 (Go 는 0 값).
+- DB 에러는 모든 핸들러에서 `code: "error"` 다 (Go Index / Count / Search / 커스텀 조회는 에러를 무시하고 빈 결과를 `ok` 로 돌려줬다).
+  Go 처럼 읽지 못한 행만 건너뛰지 않고 요청 전체가 `error` 다. 에러 내용(`error` key)은 응답에 넣지 않고 로그로만 남긴다.
+- Update 는 `createddate` 가 비어 있으면(자리표시 값으로 읽힌 경우) 다른 NOT NULL 날짜처럼 기본값을 넣는다 (Go 는 `""` 를 저장해 strict 모드에서 실패).
+- 정수 파라미터: 경로 값은 컬럼 타입(`i32` 등) 범위를 넘으면 400, 세션 값이 세션 컬럼 타입(`i32` 등)에 맞지 않으면 그 핸들러의 세션 에러다
+  (Go 는 잘라서 비교한다).
 
 ### Cargo.toml
 
@@ -494,14 +544,15 @@ chrono-tz = "0.10"
     (offset = (page-1)*pagesize), 아니면 `order by {order 또는 default}`. Ordering 은 SQL 에 그대로 들어가므로 검증한 값만 넘긴다.
   - `valid_column(name)` (Go `ValidColumn`).
   - sqlx 0.9 의 `query()` 는 `&'static str` 이나 `AssertSqlSafe(String)` 만 받는다. 생성 코드는 `QueryBuilder<MySql>` 를 쓴다.
-- 응답 (`response`): `ApiResult::ok() / error() / auth_error() / with_code(code)`, `.set(key, value)`, `.code(code)`, `.insert(..)`,
+- 응답 (`response`): `Reply` (= `Result<Response, Error>`, 핸들러 반환 타입), `ApiResult::ok() / error() / auth_error() / with_code(code)`, `.set(key, value)`, `.code(code)`, `.insert(..)`,
   `IntoResponse` 는 항상 HTTP 200 JSON 객체. `bad_request()` 는 HTTP 400 `{"code":"bad request"}` (라우터 파라미터 해석 실패).
 - 세션 (`session`): `Session { id: i64, level: Option<i64>, values: HashMap<String, i64> }`, `session.value(key)` 는 model.json
   `session` key 의 값 (없으면 0 → Go 와 같이 `auth error`). 핸들러는 `Option<Session>` 으로 받는다 (토큰이 없거나 잘못되면 `None`,
   Go 의 nil Session). `is_admin(Option<&Session>, admin_level: Option<i64>)` 은 level ≥ adminLevel.
 - 인증 (`auth.rs`, 사용자 파일): 기본은 `Authorization: Bearer <token>`, HS256, 비밀 키 `JWT_SECRET` 환경변수(없으면 모두 비로그인 +
-  경고), claim `{"id", "level"?, "exp"}` (exp 필수). Go 백엔드의 JWT 형식은 대상 프로젝트마다 다르므로 이 파일의 `Claims` /
+  경고), claim `{"id", "level"?, "exp"?}`. Go 백엔드의 JWT 형식은 대상 프로젝트마다 다르므로 이 파일의 `Claims` /
   `session_from_parts` 를 맞춘다. 추출기는 `support::auth::session_from_parts(&Parts) -> Option<Session>` (async) 만 부른다.
+  `exp` 는 있으면 만료를 검증하고 없어도 된다 (Go 토큰에 exp 가 없을 수 있다. 예전 기본값은 exp 필수였다, 이미 있는 auth.rs 는 바뀌지 않는다).
 - 상태 (`state`): `AppState { pool: MySqlPool }`. 생성 경로는 `Router<S>` (where `MySqlPool: FromRef<S>`) 라서 상태를 직접 만들 때는
   `FromRef<내 상태> for MySqlPool` 만 구현하면 된다.
 - 비밀번호 (`password`): `generate_passwd(&str) -> Result<String, Error>` 는 `$2a$10$...` (Go `bcrypt.GenerateFromPassword(pw, 10)` 과

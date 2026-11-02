@@ -2,6 +2,7 @@
 // 에러와 SQL 로그.
 
 use axum::response::{IntoResponse, Response};
+use sqlx::{MySql, QueryBuilder};
 
 use super::response::ApiResult;
 
@@ -28,4 +29,9 @@ impl IntoResponse for Error {
 /// 실행할 SQL 을 로그로 남긴다 (Go config.Log.Database). target "sql" 의 debug 라서 RUST_LOG=sql=debug 일 때만 찍힌다.
 pub fn log_sql(sql: &str, params: usize) {
     tracing::debug!(target: "sql", params, "{sql}");
+}
+
+/// 실행할 QueryBuilder 의 SQL 을 로그로 남긴다 (log_sql 과 같은 target "sql" debug).
+pub fn log_query(qb: &QueryBuilder<MySql>) {
+    tracing::debug!(target: "sql", "{}", qb.sql().as_str());
 }

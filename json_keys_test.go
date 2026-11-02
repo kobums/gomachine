@@ -6,6 +6,7 @@ import (
 	gocodegen "gomachine/go"
 	kotlincodegen "gomachine/kotlin"
 	reactcodegen "gomachine/react"
+	rustcodegen "gomachine/rust"
 	"gomachine/util"
 	"os"
 	"path/filepath"
@@ -62,6 +63,7 @@ func TestJSONKeysAgree(t *testing.T) {
 	kotlincodegen.ProcessKotlin("testproj", "acct_tb", "a", columns("kotlin"), nil, gpa, "1", "", config.ModelConfig{Language: "kotlin", KotlinModelFilePath: filepath.Join(out, "kt")})
 	dartcodegen.ProcessDart("testproj", "acct_tb", "a", columns("dart"), nil, gpa, "1", "", config.ModelConfig{Language: "dart", DartModelFilePath: filepath.Join(out, "dart") + "/"})
 	ts := reactcodegen.BuildTemplateData("testproj", "acct_tb", columns("react"), gpa)
+	rustcodegen.ProcessRust("testproj", "acct_tb", "a", columns("rust"), nil, gpa, "1", "", config.ModelConfig{Language: "rust", RustModelFilePath: filepath.Join(out, "rust")})
 
 	read := func(path ...string) string {
 		b, err := os.ReadFile(filepath.Join(append([]string{out}, path...)...))
@@ -110,6 +112,14 @@ func TestJSONKeysAgree(t *testing.T) {
 	}
 	check("ts keys", tsKeys, want)
 
+	// Rust: struct 필드의 serde rename (extra 는 rename 없음)
+	rustModel := read("rust", "src", "models", "acct.rs")
+	rustStruct := regexp.MustCompile(`(?s)pub struct Acct \{(.*?)\n\}`).FindStringSubmatch(rustModel)
+	if rustStruct == nil {
+		t.Fatalf("Rust struct not found:\n%s", rustModel)
+	}
+	check("rust serde rename", all(`#\[serde\(rename = "(\w+)"`, rustStruct[1]), want)
+
 	dart := read("dart", "acct.dart")
 	check("dart fromJson keys", unique(all(`json\['(\w+)'\]`, strings.Split(dart, "factory")[1][:strings.Index(strings.Split(dart, "factory")[1], "extra:")])), want)
 
@@ -125,9 +135,14 @@ func TestJSONKeysAgree(t *testing.T) {
 	goSearch := all(`group\.Get\("/acct/search/(\w+)"`, router)
 	springSearch := all(`@GetMapping\("/search/(\w+)"\)`, ctl)
 	check("go search paths", goSearch, springSearch)
+	rustHandler := read("rust", "src", "handlers", "acct.rs")
+	check("rust search paths", all(`\.route\("/acct/search/(\w+)"`, rustHandler), goSearch)
 	for _, key := range []string{"displayName", "userid", "createdAt"} {
 		if !strings.Contains(router, `c.Query("`+key+`")`) {
 			t.Errorf("Go search does not read query %q", key)
+		}
+		if !strings.Contains(rustHandler, `q.get("`+key+`")`) {
+			t.Errorf("Rust search does not read query %q", key)
 		}
 	}
 }
@@ -157,6 +172,14 @@ var filterLangs = map[string]func(t *testing.T, out string, model string, ts rea
 			}
 		}
 		return ret
+	},
+	"rust": func(t *testing.T, out string, model string, ts reactcodegen.ReactTemplateData) []string {
+		src := readOut(t, out, "rust", "src", "handlers", strings.ToLower(model)+".rs")
+		filters := regexp.MustCompile(`(?s)pub fn parse_filters\(.*?\n}`).FindString(src)
+		if filters == "" {
+			t.Fatalf("Rust parse_filters not found:\n%s", src)
+		}
+		return submatches(`q\.get\("(\w+)"\)`, filters)
 	},
 	"ts": func(t *testing.T, out string, model string, ts reactcodegen.ReactTemplateData) []string {
 		ret := make([]string, 0)
@@ -223,6 +246,7 @@ func TestPrimaryFilterAgree(t *testing.T) {
 	gocodegen.ProcessGo("testproj", "code_tb", "c", columns("go"), nil, gpa, "1", "", config.ModelConfig{Language: "go", GoModelFilePath: out + "/"})
 	kotlincodegen.ProcessKotlin("testproj", "code_tb", "c", columns("kotlin"), nil, gpa, "1", "", config.ModelConfig{Language: "kotlin", KotlinModelFilePath: filepath.Join(out, "kt")})
 	ts := reactcodegen.BuildTemplateData("testproj", "code_tb", columns("react"), gpa)
+	rustcodegen.ProcessRust("testproj", "code_tb", "c", columns("rust"), nil, gpa, "1", "", config.ModelConfig{Language: "rust", RustModelFilePath: filepath.Join(out, "rust")})
 
 	want := "name,startcreatedat,endcreatedat"
 	for lang, got := range listFilters(t, out, "code_tb", gpa, ts) {

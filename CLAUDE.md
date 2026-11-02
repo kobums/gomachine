@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 "gomachine" is a Go code generator. It reads a MySQL schema (`information_schema`) plus a `model.json` and generates, per table:
 Go (fiber REST: models, controllers, routers, enum constants), Kotlin/Spring Boot (JPA entity, repository, service, controller),
-Dart/Flutter models, React / Vue 3 TypeScript clients, and (in progress) a Rust backend (axum 0.8 + sqlx 0.9) mirroring the Go one. Templates use CloudyKit Jet. README.md (Korean) is the detailed spec of
+Dart/Flutter models, React / Vue 3 TypeScript clients, and a Rust backend (axum 0.8 + sqlx 0.9) mirroring the Go one. Templates use CloudyKit Jet. README.md (Korean) is the detailed spec of
 the generated behavior; keep it in sync when behavior changes.
 
 ## Key Commands
@@ -41,7 +41,7 @@ buildtool-model [ignored] [languages] [package_name]
 
 - **Go** (under `goModelFilePath`): `models/{name}.go`, `models/{name}/{name}.go` (enum constants), `controllers/rest/{name}.go`, `router/routers/{name}.go`
 - **Kotlin/Spring** (under `kotlinModelFilePath`, which must be the directory of `kotlinPackage`, default package `com.gowoobro.gymspring`): `entity/`, `repository/`, `service/`, `controller/`, `enums/{name}/Enums.kt`, `support/DateParams.kt` (always regenerated), `config/SessionProvider.kt` (auth=jwt, created once, never overwritten)
-- **Rust** (under `rustModelFilePath` = crate root, files go in `src/`; modules use `crate::` paths): runtime support module only so far. `rustcodegen.Prepare` (once per run, before tables) renders `views/rust/support/*.jet` to `src/support/*.rs` (regenerated, written only when content changed via `util.WriteIfChanged`; `support/auth.rs` JWT→Session is user-owned, `util.WriteIfMissing`), `src/main.rs` if neither main.rs nor lib.rs exists (user-owned), and warns about missing Cargo.toml deps; `rustcodegen.Finish` (after all tables) rewrites `src/models/mod.rs`, `src/handlers/mod.rs`, `src/routes.rs`. Per-table models/handlers are not implemented yet (`ProcessRust` only warns). The support files carry `#[cfg(test)]` Rust tests
+- **Rust** (under `rustModelFilePath` = crate root, files go in `src/`; modules use `crate::` paths): `rustcodegen.Prepare` (once per run, before tables) renders `views/rust/support/*.jet` to `src/support/*.rs` (regenerated, written only when content changed via `util.WriteIfChanged`; `support/auth.rs` JWT→Session is user-owned, `util.WriteIfMissing`), `src/main.rs` if neither main.rs nor lib.rs exists (user-owned), and warns about missing Cargo.toml deps; `rustcodegen.Finish` (after all tables) rewrites `src/models/mod.rs`, `src/handlers/mod.rs`, `src/routes.rs`. `ProcessRust` (per table, `rust/table.go` builds the data with the same rules as `go/main.go`) renders `views/rust/model.jet` → `src/models/{module}.rs` and `views/rust/handler.jet` (handler bodies built in `rust/handler.go`) → `src/handlers/{module}.rs` with the Go router's routes/params/auth rules; routes with the same shape are deduped (axum panics on conflicts). The support files carry `#[cfg(test)]` Rust tests
 - **Dart** (under `dartModelFilePath`): `{table}.dart`
 - **React / Vue** (under `reactModelFilePath` / `vueModelFilePath`): `src/models/{name}.ts`, `src/models/contract.ts`, `src/types/{name}.ts`, Vue also `src/composables/use{Model}.ts`
 - Non-Go languages without an output path are skipped with a warning

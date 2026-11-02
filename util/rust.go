@@ -1,6 +1,8 @@
 package util
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -31,8 +33,11 @@ var rustReservedTypes = toSet(
 	"Pool", "MySql", "MySqlPool", "MySqlRow", "Row", "FromRow", "QueryBuilder", "Type", "Encode", "Decode", "Transaction",
 	// serde
 	"Serialize", "Deserialize", "Serializer", "Deserializer", "Value",
+	// axum 추출 / 거부, serde_json
+	"FromRef", "Bytes", "QueryRejection", "PathRejection", "BytesRejection", "Map",
 	// 생성 코드 (support / 인증)
-	"Error", "Session", "Claims", "AppState",
+	"Error", "Session", "Claims", "AppState", "ApiResult", "Reply", "Bind", "Arg", "Where", "Custom", "Page", "Compare",
+	"QueryParams", "PathValue", "BodyValue", "QueryArg", "PathArg", "IdArg", "BodyArg",
 )
 
 // rustReservedModules 는 crate 최상위 모듈 / 파일 이름이다. 테이블 모듈 이름이 이것과 같으면 뒤에 _ 를 붙인다.
@@ -122,4 +127,69 @@ func RustModule(tableName string) string {
 		return name + "_"
 	}
 	return name
+}
+
+// rustEnumReserved 는 enum newtype 의 연관 상수 / 함수와 겹치는 상수 이름이다.
+var rustEnumReserved = []string{"LABELS", "HAS_ZERO"}
+
+// RustEnumItems 는 Rust enum newtype 의 연관 상수(pub const WAIT: Status = Status(1))를 만든다. 빈 항목은 건너뛴다.
+// 이름은 key 를 ASCII 대문자로 바꾸고 그 밖의 문자는 _ 로 바꾼다 (wait-time → WAIT_TIME). 남는 글자가 없거나 숫자로 시작하면
+// V{코드} / V 접두사를 쓰고, 겹치면 뒤에 _2, _3 ... 을 붙인다. 코드는 EnumCode (data 위치).
+func RustEnumItems(data []string) []EnumItem {
+	ret := make([]EnumItem, 0)
+	used := map[string]bool{}
+	for _, r := range rustEnumReserved {
+		used[r] = true
+	}
+	for i, d := range data {
+		if d == "" {
+			continue
+		}
+		key := EnumKey(d)
+		var b strings.Builder
+		for _, r := range strings.ToUpper(key) {
+			if r < 0x80 && (r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)) {
+				b.WriteRune(r)
+			} else {
+				b.WriteRune('_')
+			}
+		}
+		ident := b.String()
+		if strings.Trim(ident, "_") == "" {
+			ident = "V" + strconv.Itoa(EnumCode(i))
+		} else if unicode.IsDigit(rune(ident[0])) {
+			ident = "V" + ident
+		}
+		ident = dedupe(ident, used)
+		ret = append(ret, EnumItem{Index: i, Code: EnumCode(i), Raw: key, Ident: ident, Label: EnumLabel(d), Quote: RustString(EnumLabel(d))})
+	}
+	return ret
+}
+
+// RustString 은 Rust 문자열 리터럴이다 (\, " 와 제어 문자를 이스케이프한다).
+func RustString(str string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range str {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if unicode.IsControl(r) || r == 0x2028 || r == 0x2029 {
+				fmt.Fprintf(&b, `\u{%x}`, r)
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }

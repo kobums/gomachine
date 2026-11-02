@@ -33,6 +33,7 @@ var supportFiles = []supportFile{
 	{"support/mod.jet", "src/support/mod.rs", false},
 	{"support/clock.jet", "src/support/clock.rs", false},
 	{"support/error.jet", "src/support/error.rs", false},
+	{"support/params.jet", "src/support/params.rs", false},
 	{"support/password.jet", "src/support/password.rs", false},
 	{"support/query.jet", "src/support/query.rs", false},
 	{"support/response.jet", "src/support/response.rs", false},
@@ -89,10 +90,41 @@ func Prepare(cnf config.ModelConfig) {
 	}
 }
 
-// ProcessRust 는 Rust(axum + sqlx) 모델 / 핸들러를 생성한다. 아직 템플릿이 없어서 경고만 찍는다 (다음 단계에서 구현).
-// 구현하면 util.RustModule(tableName) 을 modules 에 더한다.
+// ProcessRust 는 테이블 하나의 Rust(axum + sqlx) 모델 src/models/{module}.rs 와 핸들러 src/handlers/{module}.rs 를 만든다.
+// Go 생성기와 같은 SQL / 경로 / 권한 규칙이다. 모듈 이름은 Finish 가 mod.rs / routes.rs 에 쓴다.
 func ProcessRust(packageName string, tableName string, prefix string, items []util.Column, db *sql.DB, gpa *config.Gpa, version string, auth string, cnf config.ModelConfig) {
-	log.Printf("WARNING: rust model/handler generation not implemented yet, %s skipped", tableName)
+	if len(items) == 0 {
+		log.Printf("WARNING: rust: %s has no columns, skipped", tableName)
+		return
+	}
+	t := buildTable(tableName, prefix, items, db, gpa, auth, cnf)
+	views := newViews()
+	root := cnf.RustModelFilePath
+
+	model, err := render(views, "model.jet", modelVars(t))
+	if err != nil {
+		log.Printf("ERROR: rust model template failed for %s: %v", tableName, err)
+		return
+	}
+	body, routes := buildHandlers(t)
+	imports := []string{t.Model}
+	for _, e := range t.Enums {
+		imports = append(imports, e.Type)
+	}
+	handler, err := render(views, "handler.jet", map[string]interface{}{"t": t, "body": body, "routes": routes, "imports": strings.Join(imports, ", ")})
+	if err != nil {
+		log.Printf("ERROR: rust handler template failed for %s: %v", tableName, err)
+		return
+	}
+	write(filepath.Join(root, "src", "models", t.Module+".rs"), model, false)
+	write(filepath.Join(root, "src", "handlers", t.Module+".rs"), handler, false)
+	for _, m := range modules {
+		if m == t.Module {
+			log.Printf("WARNING: rust: module %s generated twice (%s)", t.Module, tableName)
+			return
+		}
+	}
+	modules = append(modules, t.Module)
 }
 
 // Finish 는 실행마다 한 번 src/models/mod.rs, src/handlers/mod.rs, src/routes.rs 를 이번에 생성한 모듈 목록으로 다시 쓴다.
@@ -329,6 +361,8 @@ func render(views *jet.Set, name string, data interface{}) (string, error) {
 		return "", err
 	}
 	vars := make(jet.VarMap)
+	vars.Set("rs", util.RustString)
+	vars.Set("camel", util.CamelCase)
 	switch d := data.(type) {
 	case ClockVars:
 		vars.Set("timezoneLabel", d.TimezoneLabel)

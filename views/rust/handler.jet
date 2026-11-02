@@ -1,0 +1,34 @@
+// buildtool 이 만드는 파일이다 (다시 생성하면 덮어쓴다).
+// {{t.TableName}} REST 핸들러: Go controllers/rest/{{t.Domain}}.go 와 router/routers/{{t.Domain}}.go 의 경로 / 파라미터 / 권한 / 응답과 같다.
+// 응답은 HTTP 200 {"code": ...}, 라우터 파라미터(경로 / 쿼리 / 본문)를 해석하지 못하면 HTTP 400 {"code": "bad request"}.
+// 빈 목록은 items: [] 다 (Go 는 null).
+#![allow(unused_imports, clippy::too_many_arguments)]
+
+use axum::Router;
+use axum::extract::{FromRef, State};
+use axum::routing::{delete, get, patch, post, put};
+use sqlx::MySqlPool;
+
+use crate::models::{{t.Module}}::{{"{"}}{{imports}}};
+use crate::support::params::{self, BodyArg, IdArg, PathArg, QueryArg, QueryParams};
+use crate::support::password;
+use crate::support::query::{Arg, Bind, Custom, Where};
+use crate::support::response::{ApiResult, CODE_BAD_REQUEST, Reply, bad_request};
+use crate::support::session::{Session, is_admin};
+{{if t.AdminCheck}}
+/// 보호 컬럼을 바꿀 수 있는 관리자 level (model.json adminLevel)
+const ADMIN_LEVEL: i64 = {{t.AdminLevel}};
+{{end}}
+/// {{t.TableName}} 경로. routes.rs 가 합친다.
+pub fn routes<S>() -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+    MySqlPool: FromRef<S>,
+{
+    Router::new()
+{{- range _, r := routes}}
+        .route({{rs(r.Path)|raw}}, {{r.Chain}})
+{{- end}}
+}
+
+{{body|raw}}

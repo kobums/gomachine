@@ -2,6 +2,7 @@ package rustcodegen
 
 import (
 	"gomachine/config"
+	"gomachine/util"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -201,5 +202,71 @@ func TestMissingModDecls(t *testing.T) {
 	want := []string{"mod models;", "mod handlers;", "mod routes;"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("MissingModDecls = %v, want %v", got, want)
+	}
+}
+
+// ProcessRust 는 테이블마다 모델 / 핸들러를 만들고, Finish 가 모듈 목록과 경로를 쓴다.
+func TestProcessRustModulesAndRoutes(t *testing.T) {
+	setupHome(t)
+	root := t.TempDir()
+	cnf := config.ModelConfig{RustModelFilePath: root, Language: "rust", Auth: "jwt", AdminLevel: "3"}
+	Prepare(cnf)
+	gen := func(table, prefix string, raws []util.RawColumn, gpa *config.Gpa) {
+		cols := make([]util.Column, 0)
+		for _, r := range raws {
+			cols = append(cols, util.NewColumnFromRaw(table, r, gpa, cnf))
+		}
+		ProcessRust("testproj", table, prefix, cols, nil, gpa, "1", "jwt", cnf)
+	}
+	gen("type_tb", "t", []util.RawColumn{{Name: "t_id", DataType: "bigint"}, {Name: "t_user", DataType: "bigint"}, {Name: "t_name", DataType: "varchar"}},
+		&config.Gpa{Name: "type", Method: []string{"FindByName", "FindByName", "DeleteByNamelike"}, Session: []config.SessionPair{{Key: "id", Column: "user"}}})
+	gen("stat_vw", "s", []util.RawColumn{{Name: "s_id", DataType: "bigint"}, {Name: "s_cnt", DataType: "int"}}, nil)
+	Finish(cnf)
+
+	if s := readFile(t, filepath.Join(root, "src/models/mod.rs")); !strings.Contains(s, "pub mod stat;\npub mod type_;") {
+		t.Errorf("models/mod.rs:\n%s", s)
+	}
+	if s := readFile(t, filepath.Join(root, "src/routes.rs")); !strings.Contains(s, ".merge(crate::handlers::stat::routes())") || !strings.Contains(s, ".merge(crate::handlers::type_::routes())") {
+		t.Errorf("routes.rs:\n%s", s)
+	}
+	h := readFile(t, filepath.Join(root, "src/handlers/type_.rs"))
+	for _, want := range []string{
+		`.route("/type", get(index).post(insert).put(update_body).delete(delete_body))`,
+		`.route("/type/{id}", get(read).put(update_path).patch(update_path).delete(delete_path))`,
+		`.route("/type/batch", post(insert_batch).delete(delete_batch))`,
+		`.route("/type/count", post(count).get(count))`,
+		`.route("/type/find/name/{name}", get(find_by_name))`,
+	} {
+		if !strings.Contains(h, want) {
+			t.Errorf("type_ handler missing %s:\n%s", want, h)
+		}
+	}
+	// 같은 메서드는 한 번만, like 로 지우는 경로는 없다
+	if strings.Count(h, `.route("/type/find/name/`) != 1 || strings.Contains(h, `.route("/type/delete/`) {
+		t.Errorf("duplicate / like delete routes:\n%s", h)
+	}
+	v := readFile(t, filepath.Join(root, "src/handlers/stat.rs"))
+	if strings.Contains(v, "fn insert") || strings.Contains(v, "put(") || strings.Contains(v, "delete(") || !strings.Contains(v, `.route("/stat/count", post(count).get(count))`) {
+		t.Errorf("view must be read-only:\n%s", v)
+	}
+	m := readFile(t, filepath.Join(root, "src/models/type_.rs"))
+	if !strings.Contains(m, "pub struct TypeModel {") || !strings.Contains(m, "fn merge") {
+		t.Errorf("type_ model:\n%s", m)
+	}
+}
+
+func TestGroupRoutes(t *testing.T) {
+	got := groupRoutes("t", []route{
+		{"get", "/t", "index"}, {"post", "/t", "insert"}, {"get", "/t/{id}", "read"}, {"put", "/t/{id}", "update"},
+		{"get", "/t/find/ab/{a}/{b}", "f1"}, {"get", "/t/find/ab/{x}/{y}", "f2"}, {"get", "/t", "again"},
+	})
+	want := []string{"/t get(index).post(insert)", "/t/{id} get(read).put(update)", "/t/find/ab/{a}/{b} get(f1)"}
+	if len(got) != len(want) {
+		t.Fatalf("groupRoutes = %v", got)
+	}
+	for i, g := range got {
+		if g.Path+" "+g.Chain != want[i] {
+			t.Errorf("group %d = %s %s, want %s", i, g.Path, g.Chain, want[i])
+		}
 	}
 }

@@ -33,6 +33,11 @@ pub fn decimal_opt(v: Option<String>) -> Option<f64> {
     v.and_then(|s| s.trim().parse().ok())
 }
 
+/// enum 코드의 표시 이름 (labels[code], 모르는 코드면 "". Go Get{Enum}).
+pub fn label(labels: &[&'static str], code: i32) -> &'static str {
+    usize::try_from(code).ok().and_then(|i| labels.get(i)).copied().unwrap_or("")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -47,6 +52,12 @@ mod tests {
         assert_eq!(date(Some("2024-01-02 03:04:05".into())), "2024-01-02 03:04:05");
         assert_eq!(date_opt(Some("2024-01-02".into())), Some("2024-01-02".into()));
         assert_eq!(date_opt(None), None);
+    }
+
+    #[test]
+    fn labels() {
+        let labels = ["", "Use", "Stop"];
+        assert_eq!((label(&labels, 1), label(&labels, 0), label(&labels, 3), label(&labels, -1)), ("Use", "", "", ""));
     }
 
     #[test]

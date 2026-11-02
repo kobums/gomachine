@@ -1,7 +1,7 @@
 // buildtool 이 한 번만 만드는 사용자 파일이다 (있으면 덮어쓰지 않는다).
 // 요청에서 로그인 세션을 꺼낸다. Go 백엔드와 같은 JWT 를 쓰려면 **이 파일만** Go 의 토큰 형식(서명 방식, 비밀 키, claim 이름,
 // 헤더 / 쿠키 위치)에 맞게 고친다. 기본값: Authorization: Bearer <token>, HS256, 비밀 키는 환경변수 JWT_SECRET,
-// claim {"id": 1, "level": 9, "exp": ...} (exp 필수, level 은 없어도 된다).
+// claim {"id": 1, "level": 9, "exp": ...} (exp 는 있으면 검증하고 없어도 된다, level 은 없어도 된다).
 
 use std::sync::OnceLock;
 
@@ -42,7 +42,10 @@ fn bearer(parts: &Parts) -> Option<&str> {
 
 /// 토큰을 검증하고 세션으로 바꾼다. 잘못된 토큰이면 None.
 pub fn session_from_token(token: &str, key: &DecodingKey) -> Option<Session> {
-    let data = decode::<Claims>(token, key, &Validation::new(Algorithm::HS256)).ok()?;
+    let mut validation = Validation::new(Algorithm::HS256);
+    // Go 백엔드 토큰은 exp 가 없을 수 있다: exp 는 필수가 아니고, 있으면 만료를 검증한다.
+    validation.required_spec_claims.clear();
+    let data = decode::<Claims>(token, key, &validation).ok()?;
     Some(Session { id: data.claims.id, level: data.claims.level, ..Default::default() })
 }
 
@@ -72,7 +75,9 @@ mod tests {
         assert_eq!((s.id, s.level), (8, None));
         assert!(session_from_token(&token(json!({"id": 7, "exp": exp}), b"other"), &key).is_none());
         assert!(session_from_token(&token(json!({"id": 7, "exp": 1}), b"secret"), &key).is_none());
-        assert!(session_from_token(&token(json!({"id": 7}), b"secret"), &key).is_none());
+        // exp 가 없는 토큰도 받는다 (Go 토큰 호환), 서명은 검증한다
+        assert_eq!(session_from_token(&token(json!({"id": 7}), b"secret"), &key).map(|s| s.id), Some(7));
+        assert!(session_from_token(&token(json!({"id": 7}), b"other"), &key).is_none());
         assert!(session_from_token("garbage", &key).is_none());
     }
 

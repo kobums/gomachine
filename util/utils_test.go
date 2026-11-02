@@ -1,6 +1,7 @@
 package util
 
 import (
+	"fmt"
 	"gomachine/config"
 	"os"
 	"reflect"
@@ -706,5 +707,29 @@ func TestWriteIfChangedAndMissing(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(user); string(b) != "mine" {
 		t.Errorf("user file overwritten: %q", b)
+	}
+}
+
+func TestRustEnumItems(t *testing.T) {
+	items := RustEnumItems([]string{"wait-time:대기", "1st:First", "", "대기:Korean", "done", "Done:Again", "labels:L", "quote:a\"b"})
+	got := make([]string, 0)
+	for _, it := range items {
+		got = append(got, fmt.Sprintf("%s=%d", it.Ident, it.Code))
+	}
+	want := []string{"WAIT_TIME=0", "V1ST=1", "V3=3", "DONE=4", "DONE_2=5", "LABELS_2=6", "QUOTE=7"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("RustEnumItems = %v, want %v", got, want)
+	}
+	if items[6].Quote != `"a\"b"` {
+		t.Errorf("quote = %s", items[6].Quote)
+	}
+}
+
+func TestRustString(t *testing.T) {
+	cases := map[string]string{`a"b\c`: `"a\"b\\c"`, "줄\n탭\t": `"줄\n탭\t"`, "\x01": `"\u{1}"`, "$x {y}": `"$x {y}"`}
+	for in, want := range cases {
+		if got := RustString(in); got != want {
+			t.Errorf("RustString(%q) = %s, want %s", in, got, want)
+		}
 	}
 }

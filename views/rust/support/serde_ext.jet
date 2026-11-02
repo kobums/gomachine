@@ -103,6 +103,11 @@ impl<'de> Deserialize<'de> for Base64Bytes {
     }
 }
 
+/// 바이트를 Go []byte JSON 과 같은 표준 base64 문자열로.
+pub fn b64(v: &[u8]) -> String {
+    STANDARD.encode(v)
+}
+
 /// Vec<u8> 필드. null 은 빈 값이다 (Go 의 nil []byte).
 pub mod bytes_b64 {
     use super::*;

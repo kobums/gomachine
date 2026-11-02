@@ -7,6 +7,11 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+use super::error::Error;
+
+/// 핸들러 반환 타입. Err 는 로그를 남기고 HTTP 200 {"code": "error"} 다.
+pub type Reply = Result<Response, Error>;
+
 pub const CODE_OK: &str = "ok";
 pub const CODE_ERROR: &str = "error";
 pub const CODE_AUTH_ERROR: &str = "auth error";
@@ -90,6 +95,12 @@ impl ApiResult {
 impl IntoResponse for ApiResult {
     fn into_response(self) -> Response {
         (StatusCode::OK, Json(Value::Object(self.0))).into_response()
+    }
+}
+
+impl From<ApiResult> for Response {
+    fn from(r: ApiResult) -> Self {
+        r.into_response()
     }
 }
 
