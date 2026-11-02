@@ -67,6 +67,7 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 
 	// 컬럼의 API 이름 (json 태그, 목록 필터 파라미터). 모든 언어가 util.JSONKey 를 쓴다.
 	views.AddGlobal("jsonKey", func(col util.Column) string { return util.JSONKey(col) })
+	views.AddGlobal("isPassword", util.IsPasswordColumn)
 	views.AddGlobal("startParam", func(col util.Column) string { s, _ := util.RangeParams(col); return s })
 	views.AddGlobal("endParam", func(col util.Column) string { _, e := util.RangeParams(col); return e })
 	views.AddGlobal("isRange", func(col util.Column) bool { return util.IsRangeFilter(col.OriginalType) })
@@ -142,6 +143,9 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 		if item.Name == "Id" {
 			hasId = true
 			orderKey = item.Key
+			if msg := util.NonIntegerIdWarning("go", tableName, item); msg != "" {
+				log.Print(msg)
+			}
 		}
 	}
 	if orderKey == "" && len(items) > 0 {
@@ -195,6 +199,8 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 
 	v.Set("inputName", inputModelName(modelName, items))
 	v.Set("passwordColumn", passwordColumn)
+	// 비밀번호 컬럼(Passwd, Password 모두): 응답에서 숨기고 저장할 때 해시한다.
+	v.Set("passwordColumns", util.PasswordColumns(items))
 	v.Set("createdColumn", createdColumn)
 	v.Set("createdDefault", createdDefault)
 	v.Set("protects", protects)
@@ -350,7 +356,7 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 	orderColumns := make([]OrderColumn, 0)
 	orderSeen := map[string]bool{}
 	for _, item := range items {
-		if item.Name == passwordColumn {
+		if util.IsPasswordColumn(item.Name) {
 			continue
 		}
 		for _, k := range []string{strings.ToLower(item.Name), strings.ToLower(item.Key), strings.ToLower(item.Column)} {
@@ -596,6 +602,12 @@ func inputModelName(modelName string, items []util.Column) string {
 	return modelName
 }
 
+// MaxPage 는 목록 page 의 최댓값이다 (넘으면 400). Rust 생성기와 같은 규칙.
+const MaxPage = 1000000000
+
+// MaxBatch 는 Insertbatch / Deletebatch 한 번에 받는 최대 행 수다 (넘으면 400).
+const MaxBatch = 1000
+
 const badRequest = "return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{\"code\": \"bad request\"})"
 
 func bodyParam(model string, slice bool) string {
@@ -604,6 +616,11 @@ func bodyParam(model string, slice bool) string {
 		decl = fmt.Sprintf("\t\titem_ := &[]models.%s{}\n\t\terr := c.BodyParser(item_)\n", model)
 	}
 	return decl + "\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t    " + badRequest + "\n\t\t}"
+}
+
+// batchLimit 는 batch 본문(*[]T 변수)이 MaxBatch 행을 넘으면 400 을 돌려주는 코드다.
+func batchLimit(v string) string {
+	return fmt.Sprintf("\n\t\tif %[1]s != nil && len(*%[1]s) > %[2]d {\n\t\t\t%[3]s\n\t\t}", v, MaxBatch, badRequest)
 }
 
 func generateDomainRouter(views *jet.Set, packageName string, tableName string, items []util.Column, funcs []util.Func, hasId bool, isView bool, constPkg string, constImport string, cnf config.ModelConfig) {
@@ -623,9 +640,14 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 	filterCode := fmt.Sprintf("\t\tif _, bad := rest.Parse%sFilters(func(key string) string { return c.Query(key) }); bad != \"\" {\n\t\t\t%s\n\t\t}", modelName, badRequest)
 
 	// GET /domain - Index. page/pagesize 가 숫자가 아니거나 음수면 400 (없으면 0: 전체 행).
+	// page 가 MaxPage 를 넘어도 400 (offset 계산이 넘치지 않게).
 	pageCode := ""
 	for _, name := range []string{"page", "pagesize"} {
-		pageCode += fmt.Sprintf("\t\t%[1]s_ := 0\n\t\tif s := c.Query(%[1]q); s != \"\" {\n\t\t\tv, err := strconv.Atoi(s)\n\t\t\tif err != nil || v < 0 {\n\t\t\t\t%[2]s\n\t\t\t}\n\t\t\t%[1]s_ = v\n\t\t}\n", name, badRequest)
+		limit := ""
+		if name == "page" {
+			limit = fmt.Sprintf(" || v > %d", MaxPage)
+		}
+		pageCode += fmt.Sprintf("\t\t%[1]s_ := 0\n\t\tif s := c.Query(%[1]q); s != \"\" {\n\t\t\tv, err := strconv.Atoi(s)\n\t\t\tif err != nil || v < 0%[3]s {\n\t\t\t\t%[2]s\n\t\t\t}\n\t\t\t%[1]s_ = v\n\t\t}\n", name, badRequest, limit)
 	}
 	route("Get", "/"+domainName, "Index", pageCode+filterCode, "page_, pagesize_")
 
@@ -638,7 +660,7 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 	if !isView {
 		route("Post", "/"+domainName, "Insert", bodyParam(modelNameForUpdate, false), "item_")
 
-		batch := fmt.Sprintf("\t\tvar items_ *[]models.%s\n\t\titems__ref := &items_\n\t\terr := c.BodyParser(items__ref)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t    %s\n\t\t}", modelNameForUpdate, badRequest)
+		batch := fmt.Sprintf("\t\tvar items_ *[]models.%s\n\t\titems__ref := &items_\n\t\terr := c.BodyParser(items__ref)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t    %s\n\t\t}", modelNameForUpdate, badRequest) + batchLimit("items_")
 		route("Post", "/"+domainName+"/batch", "Insertbatch", batch, "items_")
 	}
 
@@ -664,7 +686,7 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 		route("Put", "/"+domainName+"/:id", "Update", byId, "item_, c.Body()")
 		route("Patch", "/"+domainName+"/:id", "Update", byId, "item_, c.Body()")
 		route("Delete", "/"+domainName, "Delete", bodyParam(modelName, false), "item_")
-		route("Delete", "/"+domainName+"/batch", "Deletebatch", bodyParam(modelName, true), "item_")
+		route("Delete", "/"+domainName+"/batch", "Deletebatch", bodyParam(modelName, true)+batchLimit("item_"), "item_")
 		route("Delete", "/"+domainName+"/:id", "Delete", idCode+"\n\t\titem_ := &models."+modelName+"{Id: id_}", "item_")
 	}
 

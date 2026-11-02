@@ -733,3 +733,22 @@ func TestRustString(t *testing.T) {
 		}
 	}
 }
+
+func TestNonIntegerIdWarning(t *testing.T) {
+	for _, tc := range []struct {
+		name, typ string
+		warn      bool
+	}{
+		{"Id", "bigint", false}, {"Id", "INT", false}, {"Id", "tinyint", false},
+		{"Id", "varchar", true}, {"Id", "char", true}, {"Id", "decimal", true},
+		{"Name", "varchar", false},
+	} {
+		got := NonIntegerIdWarning("go", "t_tb", Column{Name: tc.name, Column: "t_id", OriginalType: tc.typ})
+		if (got != "") != tc.warn {
+			t.Errorf("%s %s: warning %q", tc.name, tc.typ, got)
+		}
+	}
+	if s := NonIntegerIdWarning("rust", "t_tb", Column{Name: "Id", Column: "t_id", OriginalType: "varchar"}); !strings.Contains(s, "rust: t_tb id column t_id is varchar") {
+		t.Errorf("message: %s", s)
+	}
+}

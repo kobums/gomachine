@@ -320,15 +320,15 @@ func (c *{{name}}Controller) Count() {
         item.{{.}} = models.{{inputName}}{}.{{.}}
     }{{else}}item.{{.}} = models.{{inputName}}{}.{{.}}{{end}}
     {{end}}
-    {{if passwordColumn != ""}}
-    if item.{{passwordColumn}} != "" {
-        hashed, err := jwt.GeneratePasswd(item.{{passwordColumn}})
+    {{range pi, pw := passwordColumns}}
+    if item.{{pw}} != "" {
+        hashed, err := jwt.GeneratePasswd(item.{{pw}})
         if err != nil {
             c.Set("code", "error")
             c.Set("error", err)
             return
         }
-        item.{{passwordColumn}} = hashed
+        item.{{pw}} = hashed
     }
     {{end}}
 
@@ -390,15 +390,15 @@ func (c *{{name}}Controller) Insertbatch(item *[]models.{{inputName}}) {
             (*item)[i].{{.}} = models.{{inputName}}{}.{{.}}
         }{{else}}(*item)[i].{{.}} = models.{{inputName}}{}.{{.}}{{end}}
         {{end}}
-        {{if passwordColumn != ""}}
-        if (*item)[i].{{passwordColumn}} != "" {
-            hashed, err := jwt.GeneratePasswd((*item)[i].{{passwordColumn}})
+        {{range pi, pw := passwordColumns}}
+        if (*item)[i].{{pw}} != "" {
+            hashed, err := jwt.GeneratePasswd((*item)[i].{{pw}})
             if err != nil {
                 c.Set("code", "error")
                 c.Set("error", err)
                 return
             }
-            (*item)[i].{{passwordColumn}} = hashed
+            (*item)[i].{{pw}} = hashed
         }
         {{end}}
     }
@@ -494,20 +494,20 @@ func (c *{{name}}Controller) Update(item *models.{{inputName}}, body []byte) {
     }{{else}}merged.{{.}} = existing.{{.}}{{if nullableCol(.)}}
     nulls["{{.}}"] = dbNulls["{{.}}"]{{end}}{{end}}
     {{end}}
-    {{if passwordColumn != ""}}
+    {{range pi, pw := passwordColumns}}
     // 비밀번호를 보내지 않거나 비워 보내면 기존 해시를 유지한다.
-    if merged.{{passwordColumn}} == "" || merged.{{passwordColumn}} == existing.{{passwordColumn}} {
-        merged.{{passwordColumn}} = existing.{{passwordColumn}}{{if nullableCol(passwordColumn)}}
-        nulls["{{passwordColumn}}"] = dbNulls["{{passwordColumn}}"]{{end}}
+    if merged.{{pw}} == "" || merged.{{pw}} == existing.{{pw}} {
+        merged.{{pw}} = existing.{{pw}}{{if nullableCol(pw)}}
+        nulls["{{pw}}"] = dbNulls["{{pw}}"]{{end}}
     } else {
-        hashed, err := jwt.GeneratePasswd(merged.{{passwordColumn}})
+        hashed, err := jwt.GeneratePasswd(merged.{{pw}})
         if err != nil {
             c.Set("code", "error")
             c.Set("error", err)
             return
         }
-        merged.{{passwordColumn}} = hashed{{if nullableCol(passwordColumn)}}
-        delete(nulls, "{{passwordColumn}}"){{end}}
+        merged.{{pw}} = hashed{{if nullableCol(pw)}}
+        delete(nulls, "{{pw}}"){{end}}
     }
     {{end}}
 
@@ -700,7 +700,7 @@ func (c *{{name}}Controller) {{f.Name}}({{range i, v := f.Wheres}}{{if i > 0}} ,
     }
     {{end}}
     {{end}}
-    {{if qt == "Update"}}{{range i, v := f.Wheres}}{{if v.Compare == "column" && v.Column == passwordColumn}}
+    {{if qt == "Update"}}{{range i, v := f.Wheres}}{{if v.Compare == "column" && isPassword(v.Column)}}
     // 비밀번호는 REST Update 와 같이 해시해서 저장한다. 빈 비밀번호는 받지 않는다.
     if {{v.Param}} == "" {
         c.Result["code"] = "bad request"

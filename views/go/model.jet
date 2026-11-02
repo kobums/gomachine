@@ -19,7 +19,7 @@ import (
 
 type {{name}} struct {
     {{range items}}        
-    {{.Name}}                {{if .Name == "Id"}}int64{{else}}{{.Type}}{{end}} `json:{{if .Name == passwordColumn}}"-"{{else}}"{{jsonKey(.)}}"{{end}}` {{end}}
+    {{.Name}}                {{if .Name == "Id"}}int64{{else}}{{.Type}}{{end}} `json:{{if isPassword(.Name)}}"-"{{else}}"{{jsonKey(.)}}"{{end}}` {{end}}
     
     Extra                    map[string]interface{} `json:"extra"`
 }

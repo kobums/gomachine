@@ -947,6 +947,30 @@ func PasswordColumn(items []Column) string {
 	return ""
 }
 
+// integerTypes 는 id 컬럼으로 쓸 수 있는 정수 MySQL 타입이다.
+var integerTypes = map[string]bool{"tinyint": true, "smallint": true, "mediumint": true, "int": true, "integer": true, "bigint": true}
+
+// NonIntegerIdWarning 은 id 컬럼이 정수 타입이 아니면 경고 문구를 돌려준다 (아니면 "").
+// 생성 코드(Go, Rust)는 id 를 정수(int64 / i64, unsigned 면 u64)로 가정한다: 경로 /{table}/{id}, Get / Update / Delete, 자동 증가 id.
+func NonIntegerIdWarning(lang string, tableName string, col Column) string {
+	if col.Name != "Id" || integerTypes[strings.ToLower(col.OriginalType)] {
+		return ""
+	}
+	return fmt.Sprintf("WARNING: %s: %s id column %s is %s, not an integer; the generated code assumes an integer id "+
+		"(id paths, Get/Update/Delete and insert ids fail for non-numeric values). Rename the column or use an integer id", lang, tableName, col.Column, col.OriginalType)
+}
+
+// PasswordColumns 는 비밀번호 컬럼(Passwd, Password)의 Name 목록이다 (컬럼 순서).
+func PasswordColumns(items []Column) []string {
+	ret := make([]string, 0)
+	for _, item := range items {
+		if IsPasswordColumn(item.Name) {
+			ret = append(ret, item.Name)
+		}
+	}
+	return ret
+}
+
 // ProtectedColumns 는 REST 입력으로 받지 않을 컬럼의 Name 목록을 돌려준다.
 // User 테이블의 Level 컬럼은 항상 보호하고 (protect 를 설정해도 빠지지 않는다), gpa.protect 컬럼을 더한다.
 // id 와 session 컬럼은 따로 처리(자동 증가 / 세션 값으로 고정)하므로 제외한다.

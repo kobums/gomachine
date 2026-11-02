@@ -254,7 +254,8 @@ func (g *hgen) index() {
 	g.w("    let Some(q) = params::query_params(query) else {")
 	g.w("        %s", badReq)
 	g.w("    };")
-	g.w("    let (Some(page), Some(pagesize)) = (params::parse_page(q.get(\"page\")), params::parse_page(q.get(\"pagesize\"))) else {")
+	g.w("    // page 는 params::MAX_PAGE 까지 (넘으면 400, Go 와 같다).")
+	g.w("    let (Some(page), Some(pagesize)) = (params::parse_page(q.get(\"page\")).filter(|p| *p <= params::MAX_PAGE), params::parse_page(q.get(\"pagesize\"))) else {")
 	g.w("        %s", badReq)
 	g.w("    };")
 	g.w("    let Ok(mut args) = parse_filters(&q) else {")
@@ -434,7 +435,7 @@ func (g *hgen) prepareInsert(item string, indent string, admin string) {
 		}
 	}
 	g.protectInsert(item, indent, admin)
-	if p := t.Password; p != nil {
+	for _, p := range t.Passwords {
 		g.w("%s// 비밀번호는 해시해서 저장한다 (Go jwt.GeneratePasswd 와 같은 bcrypt).", indent)
 		if p.Nullable {
 			g.w("%sif let Some(pw) = %s.%s.clone().filter(|pw| !pw.is_empty()) {", indent, item, p.Field)
@@ -449,7 +450,7 @@ func (g *hgen) prepareInsert(item string, indent string, admin string) {
 
 func (g *hgen) needsPrepare() bool {
 	t := g.t
-	return t.HasId || t.CreatedNow || len(t.Protects) > 0 || t.Password != nil
+	return t.HasId || t.CreatedNow || len(t.Protects) > 0 || len(t.Passwords) > 0
 }
 
 func (g *hgen) insert() {
@@ -489,7 +490,8 @@ func (g *hgen) insertBatch() {
 	g.w("")
 	g.w("/// POST /%s/batch: 여러 행 추가 (Go Insertbatch). 모든 행을 준비(해시 등)한 다음 저장한다 (트랜잭션은 아니다).", t.Domain)
 	g.w("async fn insert_batch(%s%s, body: BodyArg) -> Reply {", stateParam, g.sessionParam())
-	g.w("    let Some(mut items) = params::body_bytes(body).and_then(|b| %s::list_from_body(&b)) else {", t.Model)
+	g.w("    // 한 번에 params::MAX_BATCH 행까지 (넘으면 400, Go 와 같다).")
+	g.w("    let Some(mut items) = params::body_bytes(body).and_then(|b| %s::list_from_body(&b)).filter(|v| v.len() <= params::MAX_BATCH) else {", t.Model)
 	g.w("        %s", badReq)
 	g.w("    };")
 	g.w("    if items.is_empty() {")
@@ -539,7 +541,7 @@ func (g *hgen) update() {
 	owned := t.Jwt && len(t.Sessions) > 0
 	user := t.Jwt && t.isUser()
 	adminUsed := t.AdminCheck
-	existingUsed := t.Created != nil || len(t.Protects) > 0 || t.Password != nil
+	existingUsed := t.Created != nil || len(t.Protects) > 0 || len(t.Passwords) > 0
 	g.w("")
 	g.w("/// 본문에 있는 key 만 기존 행(GetRaw)에 덮어쓴다 (Go Update): 없는 key 는 DB 값 유지, null 허용 필드의 null 은 NULL 로 지운다.")
 	g.w("/// 그다음 id, 세션 컬럼, createddate, 보호 컬럼, 비밀번호 규칙을 다시 적용하고 id 를 뺀 모든 컬럼을 저장한다.")
@@ -603,7 +605,7 @@ func (g *hgen) update() {
 			g.w("    }")
 		}
 	}
-	if p := t.Password; p != nil {
+	for _, p := range t.Passwords {
 		g.w("    // 비밀번호를 보내지 않거나 비워 보내거나 기존 해시와 같으면 기존 해시를 유지한다.")
 		if p.Nullable {
 			g.w("    match merged.%s.clone().filter(|pw| !pw.is_empty() && Some(pw) != existing.%s.as_ref()) {", p.Field, p.Field)
@@ -689,7 +691,8 @@ func (g *hgen) deleteBatch() {
 	g.w("/// DELETE /%s/batch: 본문 [{\"id\": 1}, ...] 삭제 (Go Deletebatch). 모든 행의 권한을 먼저 검사하고 (없는 행은 건너뛴다),", t.Domain)
 	g.w("/// 남의 행이 하나라도 있으면 아무것도 지우지 않는다. 삭제는 트랜잭션이 아니다.")
 	g.w("async fn delete_batch(%s%s, body: BodyArg) -> Reply {", stateParam, g.sessionParam())
-	g.w("    let Some(items) = params::body_bytes(body).and_then(|b| %s::list_from_body(&b)) else {", t.Model)
+	g.w("    // 한 번에 params::MAX_BATCH 행까지 (넘으면 400, Go 와 같다).")
+	g.w("    let Some(items) = params::body_bytes(body).and_then(|b| %s::list_from_body(&b)).filter(|v| v.len() <= params::MAX_BATCH) else {", t.Model)
 	g.w("        %s", badReq)
 	g.w("    };")
 	g.guard(failError, false, false, owned, user)
@@ -844,7 +847,7 @@ func (g *hgen) custom(f rustFunc) {
 			g.w("    }")
 		} else {
 			mut := ""
-			if f.Kind == "Update" && t.Password != nil && w.Compare == "column" && w.Column == t.Password.Col.Name {
+			if f.Kind == "Update" && w.Compare == "column" && isPasswordCol(t, w.Column) {
 				mut = "mut "
 			}
 			g.w("    let Some(%s%s) = %s else {", mut, w.Param, expr)
@@ -928,9 +931,9 @@ func (g *hgen) custom(f rustFunc) {
 		g.w("        %s", ret(failAuth))
 		g.w("    }")
 	}
-	if f.Kind == "Update" && t.Password != nil {
+	if f.Kind == "Update" {
 		for _, w := range f.Wheres {
-			if w.Compare == "column" && w.Column == t.Password.Col.Name {
+			if w.Compare == "column" && isPasswordCol(t, w.Column) {
 				g.w("    // 비밀번호는 해시해서 저장한다. 빈 비밀번호는 받지 않는다.")
 				g.w("    if %s.is_empty() {", w.Param)
 				g.w("        return Ok(ApiResult::with_code(CODE_BAD_REQUEST).into());")
@@ -942,6 +945,16 @@ func (g *hgen) custom(f rustFunc) {
 	g.w("    %s::%s(&pool, %s).await?;", t.Model, f.Fn, strings.Join(args, ", "))
 	g.w("    Ok(ApiResult::ok().into())")
 	g.w("}")
+}
+
+// isPasswordCol 은 이 테이블의 비밀번호 컬럼(Go 이름)인지 확인한다.
+func isPasswordCol(t *table, name string) bool {
+	for _, p := range t.Passwords {
+		if p.Col.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // buildHandlers 는 핸들러 본문과 경로 묶음이다.

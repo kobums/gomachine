@@ -9,7 +9,6 @@ mod support;
 
 use axum::Router;
 use axum::http::{HeaderValue, Method};
-use sqlx::mysql::MySqlPoolOptions;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing_subscriber::EnvFilter;
 
@@ -22,7 +21,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let url = std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL is not set")?;
-    let pool = MySqlPoolOptions::new().max_connections(20).connect(&url).await?;
+    // support::state::connect 는 세션 time_zone 을 바꾸지 않는다 (TIMESTAMP 를 Go 와 같은 서버 시간대로 읽는다).
+    let pool = support::state::connect(&url, 20).await?;
 
     let app = Router::new()
         .nest("/api", routes::routes())

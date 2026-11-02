@@ -270,3 +270,150 @@ func TestGroupRoutes(t *testing.T) {
 		}
 	}
 }
+
+// 같은 모듈 이름(zeta_tb, zeta_vw → zeta)이 다시 나오면 먼저 만든 파일을 덮어쓰지 않고 건너뛴다.
+func TestModuleCollisionKeepsFirst(t *testing.T) {
+	setupHome(t)
+	root := t.TempDir()
+	cnf := config.ModelConfig{RustModelFilePath: root, Language: "rust"}
+	Prepare(cnf)
+	gen := func(table string, raws []util.RawColumn) {
+		cols := make([]util.Column, 0)
+		for _, r := range raws {
+			cols = append(cols, util.NewColumnFromRaw(table, r, nil, cnf))
+		}
+		ProcessRust("testproj", table, "z", cols, nil, nil, "1", "", cnf)
+	}
+	gen("zeta_tb", []util.RawColumn{{Name: "z_id", DataType: "bigint"}, {Name: "z_first", DataType: "varchar"}})
+	gen("zeta_vw", []util.RawColumn{{Name: "z_id", DataType: "bigint"}, {Name: "z_second", DataType: "varchar"}})
+	Finish(cnf)
+
+	m := readFile(t, filepath.Join(root, "src/models/zeta.rs"))
+	if !strings.Contains(m, "zeta_tb") || strings.Contains(m, "zeta_vw") || strings.Contains(m, "z_second") {
+		t.Errorf("first module must be kept:\n%s", m)
+	}
+	h := readFile(t, filepath.Join(root, "src/handlers/zeta.rs"))
+	if !strings.Contains(h, "fn insert") {
+		t.Errorf("handler of the table (not the view) must be kept:\n%s", h)
+	}
+	if s := readFile(t, filepath.Join(root, "src/models/mod.rs")); strings.Count(s, "pub mod zeta;") != 1 {
+		t.Errorf("models/mod.rs:\n%s", s)
+	}
+}
+
+// 다시 생성하는 파일은 GeneratedHeader 로 시작하고, 사용자 파일(main.rs, auth.rs)은 아니다.
+func TestGeneratedHeader(t *testing.T) {
+	setupHome(t)
+	root := t.TempDir()
+	cnf := config.ModelConfig{RustModelFilePath: root, Language: "rust"}
+	Prepare(cnf)
+	cols := []util.Column{util.NewColumnFromRaw("item_tb", util.RawColumn{Name: "i_id", DataType: "bigint"}, nil, cnf)}
+	ProcessRust("testproj", "item_tb", "i", cols, nil, nil, "1", "", cnf)
+	Finish(cnf)
+	generated := []string{"src/models/item.rs", "src/handlers/item.rs", "src/models/mod.rs", "src/handlers/mod.rs", "src/routes.rs"}
+	for _, f := range supportFiles {
+		if !f.UserOwned {
+			generated = append(generated, f.Path)
+		}
+	}
+	for _, p := range generated {
+		if !isGenerated(filepath.Join(root, p)) {
+			t.Errorf("%s does not start with %q", p, GeneratedHeader)
+		}
+	}
+	for _, p := range []string{"src/main.rs", "src/support/auth.rs"} {
+		if isGenerated(filepath.Join(root, p)) {
+			t.Errorf("user file %s must not carry the generated header", p)
+		}
+	}
+}
+
+// Finish 는 이번에 만들지 않은 예전 생성 파일(테이블 삭제 / 이름 변경)만 지운다. 머리줄이 없는 파일, mod.rs, 하위 디렉터리는 남긴다.
+func TestRemoveStaleGeneratedFiles(t *testing.T) {
+	setupHome(t)
+	root := t.TempDir()
+	cnf := config.ModelConfig{RustModelFilePath: root, Language: "rust"}
+	gen := func(tables ...string) {
+		Prepare(cnf)
+		for _, table := range tables {
+			cols := []util.Column{util.NewColumnFromRaw(table, util.RawColumn{Name: "x_id", DataType: "bigint"}, nil, cnf)}
+			ProcessRust("testproj", table, "x", cols, nil, nil, "1", "", cnf)
+		}
+		Finish(cnf)
+	}
+	gen("alpha_tb", "beta_tb")
+	for _, p := range []string{"src/models/alpha.rs", "src/models/beta.rs", "src/handlers/alpha.rs", "src/handlers/beta.rs"} {
+		readFile(t, filepath.Join(root, p))
+	}
+	// 사용자 파일 (머리줄 없음 / 머리줄이 첫 줄이 아님), 하위 디렉터리, .rs 가 아닌 파일
+	user := filepath.Join(root, "src/models/custom.rs")
+	writeFile(t, user, "// my code\npub fn f() {}\n")
+	notFirst := filepath.Join(root, "src/handlers/extra.rs")
+	writeFile(t, notFirst, "// mine\n"+GeneratedHeader+"\n")
+	nested := filepath.Join(root, "src/models/sub/old.rs")
+	writeFile(t, nested, GeneratedHeader+"\n")
+	other := filepath.Join(root, "src/models/notes.txt")
+	writeFile(t, other, GeneratedHeader+"\n")
+	crlf := filepath.Join(root, "src/models/gamma.rs")
+	writeFile(t, crlf, GeneratedHeader+"\r\n// old\r\n")
+
+	gen("alpha_tb") // beta_tb 가 없어졌다
+	for _, p := range []string{"src/models/beta.rs", "src/handlers/beta.rs", "src/models/gamma.rs"} {
+		if _, err := os.Stat(filepath.Join(root, p)); !os.IsNotExist(err) {
+			t.Errorf("stale %s must be removed (err=%v)", p, err)
+		}
+	}
+	for _, p := range []string{"src/models/alpha.rs", "src/handlers/alpha.rs", "src/models/mod.rs", "src/handlers/mod.rs", user, notFirst, nested, other} {
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(root, p)
+		}
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s must be kept: %v", p, err)
+		}
+	}
+	if s := readFile(t, filepath.Join(root, "src/models/mod.rs")); strings.Contains(s, "beta") {
+		t.Errorf("models/mod.rs still lists beta:\n%s", s)
+	}
+	if got := RemoveStale(root, []string{"alpha"}); len(got) != 0 {
+		t.Errorf("second cleanup removed %v", got)
+	}
+	// 디렉터리가 없어도 된다
+	if got := RemoveStale(t.TempDir(), nil); len(got) != 0 {
+		t.Errorf("empty root removed %v", got)
+	}
+}
+
+// select 식: bit 는 <>0, float / double / real 은 텍스트(CAST AS CHAR → f64), 부호 있는 정수가 아닌 enum 은 CAST AS SIGNED.
+func TestSelectExpr(t *testing.T) {
+	col := func(typ string, unsigned bool) util.Column {
+		return util.Column{OriginalType: typ, Unsigned: unsigned}
+	}
+	for _, tc := range []struct {
+		col        util.Column
+		base       string
+		enum       bool
+		want, kind string
+	}{
+		{col("bit", false), "bool", false, "(x<>0)", ""},
+		{col("float", false), "f64", false, "CAST(x AS CHAR)", "decimal"},
+		{col("double", false), "f64", false, "CAST(x AS CHAR)", "decimal"},
+		{col("real", false), "f64", false, "CAST(x AS CHAR)", "decimal"},
+		{col("decimal", false), "f64", false, "CAST(x AS CHAR)", "decimal"},
+		{col("year", false), "i32", false, "CAST(x AS SIGNED)", ""},
+		{col("year", true), "u32", false, "CAST(x AS UNSIGNED)", ""},
+		{col("int", false), "Status", true, "x", ""},
+		{col("tinyint", false), "Status", true, "x", ""},
+		{col("bigint", false), "Status", true, "x", ""},
+		{col("int", true), "Status", true, "CAST(x AS SIGNED)", ""},
+		{col("varchar", false), "Status", true, "CAST(x AS SIGNED)", ""},
+		{col("bit", false), "Status", true, "CAST(x AS SIGNED)", ""},
+		{col("year", false), "Status", true, "CAST(x AS SIGNED)", ""},
+		{col("int", true), "u32", false, "x", ""},
+		{col("varchar", false), "String", false, "x", ""},
+	} {
+		got, kind := selectExpr(tc.col, tc.base, tc.enum, "x")
+		if got != tc.want || kind != tc.kind {
+			t.Errorf("%s unsigned=%v enum=%v: (%s, %s), want (%s, %s)", tc.col.OriginalType, tc.col.Unsigned, tc.enum, got, kind, tc.want, tc.kind)
+		}
+	}
+}

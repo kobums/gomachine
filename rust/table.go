@@ -115,7 +115,7 @@ type table struct {
 	Sessions   []rustSession
 	Funcs      []rustFunc
 	Protects   []rustCol
-	Password   *rustCol
+	Passwords  []rustCol // 비밀번호 컬럼 (Passwd, Password 모두)
 	Created    *rustCol
 	CreatedNow bool // Insert 가 createddate 를 현재 시각으로 넣는다 (문자열 컬럼)
 	AdminCheck bool
@@ -152,19 +152,29 @@ var rustIntTypes = map[string]bool{"i32": true, "i64": true, "u32": true, "u64":
 // plainStrings 는 select 에서 그대로 String 으로 읽는 MySQL 타입이다. 그 밖의 문자열 타입(json, 모르는 타입)은 CAST AS CHAR.
 var plainStrings = map[string]bool{"char": true, "varchar": true, "tinytext": true, "text": true, "mediumtext": true, "longtext": true, "enum": true, "set": true}
 
+// signedInts 는 sqlx 가 i32 / i64 로 바로 읽는 (부호 있는) 정수 타입이다.
+var signedInts = map[string]bool{"tinyint": true, "smallint": true, "mediumint": true, "int": true, "integer": true, "bigint": true}
+
 // selectExpr 는 컬럼의 select 식과 읽기 변환(decode 의 kind: "" 그대로, date, decimal)이다.
 func selectExpr(col util.Column, base string, isEnum bool, expr string) (string, string) {
 	t := strings.ToLower(col.OriginalType)
 	switch {
+	case isEnum && (col.Unsigned || !signedInts[t]):
+		// enum 은 i32 로 읽는다. 부호 있는 정수 컬럼이 아니면 (varchar, bit, year, unsigned ...) 정수로 바꾼다.
+		return "CAST(" + expr + " AS SIGNED)", ""
 	case t == "bit":
-		return "(" + expr + "+0)", ""
+		// BIT(n) 은 0 이 아니면 true (NULL 은 NULL). (x+0) 은 128 이상 값이 bool 로 읽히지 않는다.
+		return "(" + expr + "<>0)", ""
 	case t == "date":
 		return "DATE_FORMAT(" + expr + ", '%Y-%m-%d')", "date"
 	case t == "datetime" || t == "timestamp":
 		return "DATE_FORMAT(" + expr + ", '%Y-%m-%d %H:%i:%s')", "date"
 	case t == "decimal" || t == "numeric":
 		return "CAST(" + expr + " AS CHAR)", "decimal"
-	case t == "year" || (isEnum && col.Unsigned):
+	case t == "float" || t == "double" || t == "real":
+		// MySQL 이 텍스트로 보내는 값 (Go 와 같다: FLOAT 0.1 은 0.1, f64 로 바로 읽으면 0.10000000149011612)
+		return "CAST(" + expr + " AS CHAR)", "decimal"
+	case t == "year":
 		if base == "u32" || base == "u64" {
 			return "CAST(" + expr + " AS UNSIGNED)", ""
 		}
@@ -365,7 +375,6 @@ func buildTable(tableName string, prefix string, items []util.Column, db *sql.DB
 
 	// 컬럼
 	fields := util.RustFields(items)
-	passwordName := util.PasswordColumn(items)
 	enumOf := map[string]*config.GpaMap{}
 	for i, item := range items {
 		c := rustCol{Col: item, Field: fields[i], JSON: util.JSONKey(item), Base: item.Type, Nullable: item.Nullable}
@@ -376,8 +385,8 @@ func buildTable(tableName string, prefix string, items []util.Column, db *sql.DB
 			if item.Unsigned {
 				c.Base = "u64"
 			}
-			if !rustIntTypes[item.Type] {
-				log.Printf("WARNING: rust: %s id column %s is not an integer (%s), read as %s", tableName, item.Column, item.OriginalType, c.Base)
+			if msg := util.NonIntegerIdWarning("rust", tableName, item); msg != "" {
+				log.Print(msg)
 			}
 		}
 		if m := util.FindEnumMap(gpa, item.Key); m != nil {
@@ -389,7 +398,7 @@ func buildTable(tableName string, prefix string, items []util.Column, db *sql.DB
 		if c.Nullable {
 			c.Type = "Option<" + c.Base + ">"
 		}
-		c.Password = item.Name == passwordName && passwordName != ""
+		c.Password = util.IsPasswordColumn(item.Name)
 		c.Serde = serdeAttr(c)
 		if c.Base == "String" && util.IsDateType(item.OriginalType) && !c.Nullable {
 			c.Fill = dateFill(item)
@@ -402,7 +411,7 @@ func buildTable(tableName string, prefix string, items []util.Column, db *sql.DB
 			t.NonId = append(t.NonId, *c)
 		}
 		if c.Password {
-			t.Password = c
+			t.Passwords = append(t.Passwords, *c)
 		}
 		if c.Col.Name == "Createddate" {
 			t.Created = c
@@ -483,7 +492,6 @@ func buildTable(tableName string, prefix string, items []util.Column, db *sql.DB
 		j := rustJoin{Var: rj.Var, Fn: "join_" + util.RustIdent(strings.ToLower(util.SanitizeIdent(rj.Var, "j"))), Offset: offset}
 		jcols := joinColumns(rj.Table, db, cnf)
 		joinGpa := util.FindTableConfig(cnf.Gpa, rj.Table)
-		joinPassword := util.PasswordColumn(jcols)
 		for _, col := range jcols {
 			jc := rustJoinCol{JSON: util.JSONKey(col), Base: col.Type, Nullable: col.Nullable, IsId: col.Key == "id"}
 			if col.Name == "Id" {
@@ -501,7 +509,7 @@ func buildTable(tableName string, prefix string, items []util.Column, db *sql.DB
 				}
 				jc.Labels = "&[" + strings.Join(labels, ", ") + "]"
 			}
-			jc.Hidden = joinPassword != "" && col.Name == joinPassword
+			jc.Hidden = util.IsPasswordColumn(col.Name)
 			jc.Select, jc.Kind = selectExpr(col, jc.Base, jc.EnumKey != "", ref+"."+col.Column)
 			selects = append(selects, jc.Select)
 			j.Cols = append(j.Cols, jc)
