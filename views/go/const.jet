@@ -14,34 +14,37 @@ type Params struct {
 }
 
 {{range consts}}
+// {{.Name}} 의 코드는 model.json map data 배열 안의 위치다 (Kotlin / TypeScript / Dart 와 같은 값). 빈 항목은 자리만 차지한다.
 type {{.Name}} int
 
 const (
-    _ {{.Name}}  = iota
-{{range .Items}}    {{.Ident}}
+{{e := .}}{{range .Items}}    {{.Ident}} {{e.Name}} = {{.Code}}
 {{end}})
 
+// {{.Name}}s 는 코드로 찾는 표시 이름이다 (빈 항목은 "").
 var {{.Name}}s = []string{ {{range i, v := .Labels}}{{if i > 0}}, {{end}}{{v|raw}}{{end}} }
 {{end}}
 
 {{range consts}}
+// Get{{.Name}} 은 코드의 표시 이름이다. 모르는 코드면 "".
 func Get{{.Name}}(value {{.Name}}) string {
     i := int(value)
-    if i <= 0 || i >= len({{.Name}}s) {
+    if i < 0 || i >= len({{.Name}}s) {
         return ""
     }
 
     return {{.Name}}s[i]
 }
 
+// Find{{.Name}} 은 표시 이름의 코드다. 없으면 {{if .HasZero}}-1 (코드 0 이 실제 값이다){{else}}0{{end}}.
 func Find{{.Name}}(value string) {{.Name}} {
-    for i := 1; i < len({{.Name}}s); i++ {
-        if {{.Name}}s[i] == value {
+    for i := 0; i < len({{.Name}}s); i++ {
+        if {{.Name}}s[i] != "" && {{.Name}}s[i] == value {
             return {{.Name}}(i)
         }
     }
 
-    return 0
+    return {{if .HasZero}}-1{{else}}0{{end}}
 }
 
 func Convert{{.Name}}(value []int) []{{.Name}} {

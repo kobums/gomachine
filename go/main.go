@@ -28,8 +28,10 @@ type GoEnum struct {
 	Name   string          // 타입 이름 (Status)
 	Key    string          // InitExtra 의 Extra 키 (예전과 같이 map name 소문자)
 	Field  string          // 이 enum 을 쓰는 모델 필드 이름. 컬럼이 없으면 ""
-	Items  []util.EnumItem // 상수 (빈 항목 제외, iota 순서)
-	Labels []string        // 표시 이름 문자열 리터럴 (data 순서 그대로)
+	Items  []util.EnumItem // 상수 (빈 항목 제외, 값은 data 위치)
+	Labels []string        // 표시 이름 문자열 리터럴 (data 순서 그대로, 코드로 찾는다)
+	// HasZero 는 코드 0 이 실제 값인지 (data[0] 이 비어 있지 않음). 그러면 0 을 "조건 없음"으로 보지 않는다.
+	HasZero bool
 }
 
 // GoSession 은 세션 값과 모델 컬럼의 매핑이다.
@@ -77,36 +79,27 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 		return "="
 	})
 
-	// 조인 테이블 컬럼 (ordinal_position 순서)
-	views.AddGlobal("columns", func(str string) []util.Column {
-		columns := make([]util.Column, 0)
-		if db == nil {
-			return columns
+	// 조인 테이블 컬럼 (ordinal_position 순서). 테이블마다 한 번만 읽는다.
+	joinColumnCache := map[string][]util.Column{}
+	joinColumns := func(str string) []util.Column {
+		if cols, ok := joinColumnCache[str]; ok {
+			return cols
 		}
-		query := "select column_name as column_name, data_type as data_type from information_schema.columns where table_schema = '" + packageName + "' and table_name = '" + strings.ToLower(str) + "_tb' order by ordinal_position"
-
-		rows, err := db.Query(query)
+		columns := make([]util.Column, 0)
+		joinTable := strings.ToLower(str) + "_tb"
+		raws, err := util.QueryColumns(db, cnf.Database, joinTable)
 		if err != nil {
 			log.Println(err)
-			return columns
 		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var name string
-			var typeid string
-
-			err := rows.Scan(&name, &typeid)
-			if err != nil {
-				log.Println(err)
-				continue
-			}
-
-			columns = append(columns, util.NewColumn(str+"_tb", name, typeid, gpa, cnf))
+		// 조인 모델의 필드 타입(enum 등)은 조인 테이블 자신의 gpa 로 정해진다.
+		joinGpa := findGpa(cnf, joinTable)
+		for _, raw := range raws {
+			columns = append(columns, util.NewColumnFromRaw(joinTable, raw, joinGpa, cnf))
 		}
-
+		joinColumnCache[str] = columns
 		return columns
-	})
+	}
+	views.AddGlobal("columns", joinColumns)
 
 	modelName := util.ModelName(tableName)
 	fileName := util.FileName(tableName)
@@ -207,6 +200,7 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 		for _, m := range gpa.Map {
 			e := GoEnum{Name: util.CamelCase(m.Name), Key: strings.ToLower(m.Name)}
 			e.Items = util.GoEnumItems(e.Name, m.Data)
+			e.HasZero = util.EnumHasZero(m.Data)
 			for _, d := range m.Data {
 				e.Labels = append(e.Labels, strconv.Quote(util.EnumLabel(d)))
 			}
@@ -220,7 +214,7 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 		}
 
 		for _, join := range gpa.Join {
-			join.Prefix = util.TablePrefix(join.Name, packageName, db)
+			join.Prefix = util.TablePrefix(join.Name, cnf.Database, db)
 			joins = append(joins, join)
 		}
 		compares = append(compares, gpa.Compare...)
@@ -248,6 +242,10 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 					w.Param += "_"
 				}
 				w.Check = zeroCheck(w.Type, w.Param)
+				// 코드 0 이 실제 값인 enum 은 0 도 조건으로 쓴다.
+				if m := util.FindEnumMap(gpa, w.Key); m != nil && util.EnumHasZero(m.Data) {
+					w.Check = ""
+				}
 			}
 			funcs = append(funcs, fn)
 		}
@@ -269,6 +267,86 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 			modelUsesConst = true
 		}
 	}
+
+	// 정렬에 쓸 수 있는 컬럼 (API 이름 / 접두사 뺀 이름 / 전체 이름 → SQL 컬럼). 비밀번호 컬럼은 뺀다.
+	orderColumns := make([]OrderColumn, 0)
+	orderSeen := map[string]bool{}
+	for _, item := range items {
+		if item.Name == passwordColumn {
+			continue
+		}
+		for _, k := range []string{strings.ToLower(item.Name), strings.ToLower(item.Key), strings.ToLower(item.Column)} {
+			if k != "" && !orderSeen[k] {
+				orderSeen[k] = true
+				orderColumns = append(orderColumns, OrderColumn{Key: k, Column: item.Column})
+			}
+		}
+	}
+
+	// 코드 0 이 실제 값인 enum 필드 (목록 필터에서 0 도 조건으로 쓴다)
+	enumZero := map[string]bool{}
+	for _, e := range consts {
+		if e.Field != "" && e.HasZero {
+			enumZero[e.Field] = true
+		}
+	}
+
+	// null 허용 컬럼은 sql.Null* 로 Scan 해서 0 값으로 바꾼다 (NULL 이 있는 행이 Scan 실패로 빠지지 않게).
+	scan := newScanCode()
+	for _, item := range items {
+		scan.add("item", "n_"+item.Name, item, constPkg)
+	}
+	for _, join := range joins {
+		jv := joinVarName(join)
+		for _, col := range joinColumns(join.Name) {
+			scan.add("_"+jv, "n_"+jv+"_"+col.Name, col, "")
+		}
+	}
+
+	// 비어 있는 날짜 값을 저장할 때 넣을 값 (NOT NULL 컬럼만). null 허용 컬럼은 NULL 을 저장한다.
+	dateFill := map[string]string{}
+	needsTime := createdDefault
+	for _, item := range items {
+		if item.Type != "string" || !util.IsDateType(item.OriginalType) || item.Nullable {
+			continue
+		}
+		// createddate 는 Insert 앞부분에서 현재 시각을 넣는다.
+		if item.Name == createdColumn && createdDefault {
+			continue
+		}
+		if fill := dateFillExpr(item); fill != "" {
+			dateFill[item.Name] = fill
+			if strings.Contains(fill, "time.") {
+				needsTime = true
+			}
+		}
+	}
+	// 빈 값을 NULL 로 바꾸는 건 null 허용 날짜/시간 컬럼만이다.
+	// 숫자 0, false, 빈 문자열은 실제 값이므로 그대로 저장한다.
+	nullable := map[string]bool{}
+	for _, item := range items {
+		if item.Nullable && isDateLikeType(item.OriginalType) {
+			nullable[item.Name] = true
+		}
+	}
+	views.AddGlobal("dateFill", func(name string) string { return dateFill[name] })
+	views.AddGlobal("isNullable", func(name string) bool { return nullable[name] })
+	views.AddGlobal("enumZero", func(name string) bool { return enumZero[name] })
+	// writeParam 은 Insert/Update 에 넘기는 값이다. null 허용 날짜/시간 컬럼은 빈 값이면 NULL 로 저장한다.
+	views.AddGlobal("writeParam", func(name string, expr string) string {
+		if nullable[name] {
+			return "p.nullIfZero(" + expr + ")"
+		}
+		return expr
+	})
+
+	v.Set("orderColumns", orderColumns)
+	v.Set("scanDecls", scan.decls.String())
+	v.Set("scanTargets", strings.Join(scan.targets, ", "))
+	v.Set("scanAssigns", scan.assigns.String())
+	v.Set("needsTime", needsTime && !isView)
+	v.Set("hasNullable", len(nullable) > 0 && !isView)
+	v.Set("restNeedsStrconv", len(enumZero) > 0)
 
 	v.Set("consts", consts)
 	v.Set("joins", joins)
@@ -413,7 +491,8 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 	route("Post", "/"+domainName+"/count", "Count", "", "")
 
 	if !isView && hasId {
-		route("Put", "/"+domainName, "Update", bodyParam(modelNameForUpdate, false), "item_")
+		// 본문 원문도 넘겨서 보낸 필드만 기존 행에 덮어쓴다 (부분 수정).
+		route("Put", "/"+domainName, "Update", bodyParam(modelNameForUpdate, false), "item_, c.Body()")
 		route("Delete", "/"+domainName, "Delete", bodyParam(modelName, false), "item_")
 		route("Delete", "/"+domainName+"/batch", "Deletebatch", bodyParam(modelName, true), "item_")
 	}
@@ -545,7 +624,8 @@ func pathParamCode(v string, name string, typeName string) string {
 // bodyParamCode 는 JSON 본문(results)의 key 값을 typeName 으로 꺼내 변수 v 에 담는 코드다. 타입이 맞지 않으면 400.
 func bodyParamCode(v string, key string, typeName string) string {
 	extract := func(assertType string, convert string) string {
-		return fmt.Sprintf("\t\tvar %[1]s %[2]s\n\t\tif v, flag := results[%[3]q]; flag {\n\t\t\t%[1]s_, ok := v.(%[4]s)\n\t\t\tif !ok {\n\t\t\t\t%[5]s\n\t\t\t}\n\t\t\t%[1]s = %[6]s\n\t\t}\n",
+		// key 가 없으면 0 값으로 덮어쓰지 않도록 400 을 돌려준다.
+		return fmt.Sprintf("\t\tvar %[1]s %[2]s\n\t\tif v, flag := results[%[3]q]; flag {\n\t\t\t%[1]s_, ok := v.(%[4]s)\n\t\t\tif !ok {\n\t\t\t\t%[5]s\n\t\t\t}\n\t\t\t%[1]s = %[6]s\n\t\t} else {\n\t\t\t%[5]s\n\t\t}\n",
 			v, typeName, key, assertType, badRequest, fmt.Sprintf(convert, v+"_"))
 	}
 
@@ -563,4 +643,110 @@ func bodyParamCode(v string, key string, typeName string) string {
 	default:
 		return extract("string", "%s")
 	}
+}
+
+// OrderColumn 은 정렬 이름(소문자) 과 SQL 컬럼의 매핑이다.
+type OrderColumn struct {
+	Key    string
+	Column string
+}
+
+// findGpa 는 model.json table 설정 중 tableName 에 해당하는 것을 찾는다.
+func findGpa(cnf config.ModelConfig, tableName string) *config.Gpa {
+	for i := range cnf.Gpa {
+		if util.MatchTableName(cnf.Gpa[i].Name, tableName) {
+			return &cnf.Gpa[i]
+		}
+	}
+	return nil
+}
+
+func joinVarName(join config.GpaJoin) string {
+	if join.Alias != "" {
+		return strings.ToLower(join.Alias)
+	}
+	return strings.ToLower(join.Name)
+}
+
+// scanCode 는 ReadRow/ReadRows 의 Scan 코드다. null 허용 컬럼은 sql.Null* 임시 변수로 읽고 0 값으로 바꾼다.
+type scanCode struct {
+	decls   strings.Builder
+	targets []string
+	assigns strings.Builder
+}
+
+func newScanCode() *scanCode {
+	return &scanCode{targets: make([]string, 0)}
+}
+
+// add 는 owner.{col.Name} 에 읽을 Scan 대상을 추가한다. constPkg 가 있으면 Id 는 int64 로 본다 (모델 구조체와 같게).
+func (s *scanCode) add(owner string, tmp string, col util.Column, constPkg string) {
+	field := owner + "." + col.Name
+	typeName := col.Type
+	if col.Name == "Id" {
+		typeName = "int64"
+	}
+	// []byte 는 NULL 을 nil 로 읽으므로 그대로 둔다.
+	// 조인 테이블의 enum 은 그 상수 패키지를 import 하지 않으므로 그대로 읽는다 (NULL 이면 Scan 에러로 로그가 남는다).
+	if !col.Nullable || typeName == "[]byte" || (constPkg == "" && strings.Contains(typeName, ".")) {
+		s.targets = append(s.targets, "&"+field)
+		return
+	}
+
+	nullType, convert := "sql.NullString", "%s.String"
+	switch {
+	case typeName == "int":
+		nullType, convert = "sql.NullInt64", "int(%s.Int64)"
+	case typeName == "int64":
+		nullType, convert = "sql.NullInt64", "%s.Int64"
+	case typeName == "float64":
+		nullType, convert = "sql.NullFloat64", "%s.Float64"
+	case typeName == "bool":
+		nullType, convert = "sql.NullBool", "%s.Bool"
+	case strings.Contains(typeName, "."):
+		// enum (상수 패키지의 int 기반 타입)
+		nullType, convert = "sql.NullInt64", typeName+"(%s.Int64)"
+	}
+	fmt.Fprintf(&s.decls, "var %s %s\n", tmp, nullType)
+	s.targets = append(s.targets, "&"+tmp)
+	fmt.Fprintf(&s.assigns, "%s = %s\n", field, fmt.Sprintf(convert, tmp))
+}
+
+// dateFillExpr 는 NOT NULL 날짜 컬럼에 빈 값을 저장할 때 넣을 Go 식이다.
+// 기본값이 현재 시각이면 현재 시각, 고정 값이면 그 값, 기본값이 없으면 예전과 같은 자리표시 값 (timestamp 는 범위 밖이라 현재 시각).
+func dateFillExpr(item util.Column) string {
+	layout := "2006-01-02 15:04:05"
+	sentinel := "1000-01-01 00:00:00"
+	switch strings.ToLower(item.OriginalType) {
+	case "date":
+		layout, sentinel = "2006-01-02", "1000-01-01"
+	case "time":
+		layout, sentinel = "15:04:05", "00:00:00"
+	case "timestamp":
+		sentinel = ""
+	}
+	now := "time.Now().Format(\"" + layout + "\")"
+
+	if item.HasDefault {
+		if util.IsNowDefault(item.Default) {
+			return now
+		}
+		def := strings.Trim(item.Default, "'")
+		if def != "" {
+			return strconv.Quote(def)
+		}
+	}
+	if sentinel == "" {
+		return now
+	}
+	return strconv.Quote(sentinel)
+}
+
+// isDateLikeType 은 빈 문자열을 저장할 수 없는 날짜/시간 타입인지 확인한다.
+func isDateLikeType(t string) bool {
+	switch strings.ToLower(t) {
+	case "date", "datetime", "timestamp", "time", "year":
+		return true
+	}
+	return false
 }

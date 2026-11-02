@@ -4,7 +4,9 @@ import {{.BasePackage}}.entity.{{.ModelName}}
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.Pageable
 {{if len(.Joins) > 0 }}import org.springframework.data.jpa.repository.EntityGraph{{end}}
+import org.springframework.data.jpa.domain.Specification
 import org.springframework.data.jpa.repository.JpaRepository
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor
 import org.springframework.stereotype.Repository
 {{if .HasDateTime}}import java.time.LocalDateTime
 {{end}}{{if .HasDate}}import java.time.LocalDate
@@ -14,11 +16,17 @@ import org.springframework.stereotype.Repository
 {{allJoins := .Joins}}
 {{entityGraphPaths := .EntityGraphPaths}}
 @Repository
-interface {{.ModelName}}Repository : JpaRepository<{{.ModelName}}, {{.PK.KotlinType}}> {
+interface {{.ModelName}}Repository : JpaRepository<{{.ModelName}}, {{.PK.KotlinType}}>, JpaSpecificationExecutor<{{.ModelName}}> {
 {{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
 {{range entityGraphPaths}}{{if .IsLast}}        "{{.Path}}"{{else}}        "{{.Path}}",{{end}}
 {{end}}    ])
 {{end}}    override fun findAll(pageable: Pageable): Page<{{.ModelName}}>
+
+    // 목록 API 는 Specification(필터/소유권) + 페이지/정렬로 조회한다.
+{{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
+{{range entityGraphPaths}}{{if .IsLast}}        "{{.Path}}"{{else}}        "{{.Path}}",{{end}}
+{{end}}    ])
+{{end}}    override fun findAll(spec: Specification<{{.ModelName}}>?, pageable: Pageable): Page<{{.ModelName}}>
 
 {{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
 {{range entityGraphPaths}}{{if .IsLast}}        "{{.Path}}"{{else}}        "{{.Path}}",{{end}}

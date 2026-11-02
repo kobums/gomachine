@@ -1,20 +1,28 @@
 package {{.BasePackage}}.entity
 
 import jakarta.persistence.*
-{{if .HasDateTime}}import java.time.LocalDateTime
+{{if .HasJsonDate}}import com.fasterxml.jackson.annotation.JsonFormat
+{{end}}{{if .HasDateTime}}import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 {{end}}{{if .HasDate}}import java.time.LocalDate
 {{end}}{{if .HasDecimal}}import java.math.BigDecimal
 {{end}}{{base := .BasePackage}}{{range .Enums}}import {{base}}.enums.{{.EnumPackage}}.{{.Name}}
+import {{base}}.enums.{{.EnumPackage}}.{{.Name}}Converter
 {{end}}
 
-{{- allJoins := .Joins}}{{modelVar := .ModelVar}}
+{{- allJoins := .Joins}}{{modelVar := .ModelVar}}{{jsonDate := .JsonDateTime}}
+{{if .HasDateTime}}
+// 응답 날짜 형식 (Go 백엔드와 같다). 요청은 "yyyy-MM-dd HH:mm:ss" 와 ISO "yyyy-MM-ddTHH:mm:ss" 를 모두 받는다.
+private val DATE_TIME_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("{{.DateTimeOut}}")
+{{end}}
 @Entity
 @Table(name = "{{.TableName}}")
 data class {{.ModelName}}(
 {{range .Columns}}{{if .IsPrimaryKey}}    @Id
 {{if .IsGenerated}}    @GeneratedValue(strategy = GenerationType.IDENTITY)
-{{end}}{{end}}{{joinData := findJoinByColumn(.DBName, allJoins)}}    @Column(name = "{{.DBName}}")
-    val {{if joinData}}{{joinData.ColumnName}}Id{{else}}{{.Field|raw}}{{end}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
+{{end}}{{end}}{{if .IsEnum}}    @Convert(converter = {{.EnumType}}Converter::class)
+{{end}}    @Column(name = "{{.DBName}}")
+    val {{.EntityField|raw}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
 {{end}}) {{if len(.Joins) > 0}}{
 {{range .Joins}}    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "{{.Column}}", insertable = false, updatable = false)
@@ -23,17 +31,22 @@ data class {{.ModelName}}(
 
 // 보호 컬럼(protect)은 요청으로 받지 않는다. id 는 자동 증가 값을 쓴다.
 data class {{.ModelName}}CreateRequest(
-{{range .Columns}}{{if not .IsPrimaryKey}}{{if not .IsProtected}}    val {{.Field|raw}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
+{{range .Columns}}{{if not .IsPrimaryKey}}{{if not .IsProtected}}{{if .KotlinType == "LocalDateTime"}}    {{jsonDate|raw}}
+{{end}}    val {{.Field|raw}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
 {{end}}{{end}}{{end}})
 
-// id 는 경로 변수로 덮어쓴다.
+// PUT 은 PATCH 와 같이 보낸 필드만 바꾼다 (null / 빠진 필드는 기존 값 유지). id 는 경로 변수로 덮어쓴다.
+// 보호 컬럼과 createddate 는 바꿀 수 없다.
 data class {{.ModelName}}UpdateRequest(
-{{range .Columns}}{{if not .IsProtected}}    val {{.Field|raw}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
+{{range .Columns}}{{if .IsPrimaryKey}}    val {{.Field|raw}}: {{.KotlinType}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
+{{else if not .IsProtected && not .IsCreated}}{{if .KotlinType == "LocalDateTime"}}    {{jsonDate|raw}}
+{{end}}    val {{.Field|raw}}: {{.KotlinType}}? = null,
 {{end}}{{end}})
 
 data class {{.ModelName}}PatchRequest(
 {{range .Columns}}{{if .IsPrimaryKey}}    val {{.Field|raw}}: {{.KotlinType}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
-{{else if not .IsProtected}}    val {{.Field|raw}}: {{.KotlinType}}? = null,
+{{else if not .IsProtected && not .IsCreated}}{{if .KotlinType == "LocalDateTime"}}    {{jsonDate|raw}}
+{{end}}    val {{.Field|raw}}: {{.KotlinType}}? = null,
 {{end}}{{end}})
 
 {{if len(.Enums) > 0 || len(.Joins) > 0}}data class {{.ModelName}}ExtraInfo(
@@ -43,22 +56,24 @@ data class {{.ModelName}}PatchRequest(
 {{end}})
 {{end}}
 
+// 날짜는 "{{.DateTimeOut}}" (date 는 yyyy-MM-dd) 문자열, enum 은 코드(Int), null 허용 컬럼은 null 일 수 있다.
 data class {{.ModelName}}Response(
-{{range .Columns}}{{if not .IsPassword}}    val {{.Field|raw}}: {{.DBType}}{{if .IsNullable}}?{{end}},
+{{range .Columns}}{{if not .IsPassword}}    val {{.Field|raw}}: {{.RespType}},
 {{end}}{{end}}
     val extra: {{if len(.Enums) > 0 || len(.Joins) > 0}}{{.ModelName}}ExtraInfo{{else}}Map<String, Any?> = emptyMap(){{end}}
 ){
     companion object {
-        fun from({{modelVar|raw}}: {{.ModelName}}): {{.ModelName}}Response {
-            {{range .Joins}}val {{.Alias|lower}}Response = {{modelVar|raw}}.{{.Alias|lower}}?.let { {{.ModelName}}Response.from(it) }
+        // 조인은 한 단계만 매핑한다 (depth > 0 이면 조인을 읽지 않는다). 서로 참조하는 조인에서 끝없이 이어지거나
+        // 지연 로딩으로 쿼리가 계속 나가는 것을 막는다.
+        fun from({{modelVar|raw}}: {{.ModelName}}, depth: Int = 0): {{.ModelName}}Response {
+            {{range .Joins}}val {{.Alias|lower}}Response = if (depth == 0) {{modelVar|raw}}.{{.Alias|lower}}?.let { {{.ModelName}}Response.from(it, depth + 1) } else null
             {{end}}return {{.ModelName}}Response(
-{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if not joinData}}{{if not .IsPassword}}                {{.Field|raw}} = {{if .IsEnum}}{{modelVar|raw}}.{{.Field|raw}}.ordinal{{else if .DBType == "String" && .KotlinType != "String"}}{{if .IsNullable}}{{modelVar|raw}}.{{.Field|raw}}?.toString()?.replace("T", " ") ?: ""{{else}}{{modelVar|raw}}.{{.Field|raw}}.toString().replace("T", " "){{end}}{{else}}{{modelVar|raw}}.{{.Field|raw}}{{end}},
-{{end}}{{end}}{{if joinData}}                {{.Field|raw}} = {{modelVar|raw}}.{{joinData.ColumnName}}Id,
+{{range .Columns}}{{if not .IsPassword}}                {{.Field|raw}} = {{if .IsEnum}}{{modelVar|raw}}.{{.EntityField|raw}}{{if .IsNullable}}?{{end}}.code{{else if .KotlinType == "LocalDateTime"}}{{modelVar|raw}}.{{.EntityField|raw}}{{if .IsNullable}}?{{end}}.format(DATE_TIME_FORMATTER){{else if .KotlinType == "LocalDate"}}{{modelVar|raw}}.{{.EntityField|raw}}{{if .IsNullable}}?{{end}}.toString(){{else}}{{modelVar|raw}}.{{.EntityField|raw}}{{end}},
 {{end}}{{end}}
                 extra = {{if len(.Enums) > 0 || len(.Joins) > 0}}{{.ModelName}}ExtraInfo(
                     {{- if len(.Enums) > 0}}
                     {{range .Enums}}{{if .ColumnField != ""}}{{.ExtraField|raw}} = {{.Name}}.getDisplayName({{modelVar|raw}}.{{.ColumnField|raw}}),{{end}}{{end}}{{end}}
-                    {{range .Joins}}{{if .Columns}}{{.Alias|lower}} = {{.Alias|lower}}Response,{{end}}{{end}})
+                    {{range .Joins}}{{.Alias|lower}} = {{.Alias|lower}}Response,{{end}})
                 {{else}} emptyMap(){{end}}
             )
         }

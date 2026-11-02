@@ -22,6 +22,22 @@ func ProcessDart(packageName string, tableName string, prefix string, items []ut
 		return strings.Title(str)
 	})
 
+	// dartString 은 Dart 작은따옴표 문자열 리터럴이다 (\, ', $ 이스케이프).
+	views.AddGlobal("dartString", func(str string) string {
+		r := strings.NewReplacer("\\", "\\\\", "'", "\\'", "$", "\\$", "\n", "\\n", "\r", "\\r")
+		return "'" + r.Replace(str) + "'"
+	})
+
+	// enumZero 는 코드 0 인 값 이름이다 (NOT NULL enum 필드 기본값).
+	views.AddGlobal("enumZero", func(typeName string, enums []util.EnumData) string {
+		for _, e := range enums {
+			if e.Name == typeName {
+				return e.Zero
+			}
+		}
+		return ""
+	})
+
 	views.AddGlobal("isEnum", func(typeName string, enums []util.EnumData) bool {
 		for _, e := range enums {
 			if e.Name == typeName {
@@ -34,29 +50,14 @@ func ProcessDart(packageName string, tableName string, prefix string, items []ut
 	// 조인 테이블 컬럼 (ordinal_position 순서)
 	views.AddGlobal("columns", func(str string) []util.Column {
 		columns := make([]util.Column, 0)
-		if db == nil {
-			return columns
-		}
-		query := "select column_name as column_name, data_type as data_type from information_schema.columns where table_schema = '" + packageName + "' and table_name = '" + strings.ToLower(str) + "_tb' order by ordinal_position"
-		rows, err := db.Query(query)
+		raws, err := util.QueryColumns(db, cnf.Database, strings.ToLower(str)+"_tb")
 		if err != nil {
 			log.Println(err)
 			return columns
 		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var name string
-			var typeid string
-
-			if err := rows.Scan(&name, &typeid); err != nil {
-				log.Println(err)
-				continue
-			}
-
-			columns = append(columns, util.NewColumn(str+"_tb", name, typeid, gpa, cnf))
+		for _, raw := range raws {
+			columns = append(columns, util.NewColumnFromRaw(str+"_tb", raw, gpa, cnf))
 		}
-
 		return columns
 	})
 
@@ -95,7 +96,7 @@ func ProcessDart(packageName string, tableName string, prefix string, items []ut
 	} else {
 		joins := make([]config.GpaJoin, 0)
 		for _, join := range gpa.Join {
-			join.Prefix = util.TablePrefix(join.Name, packageName, db)
+			join.Prefix = util.TablePrefix(join.Name, cnf.Database, db)
 			joins = append(joins, join)
 		}
 
@@ -107,21 +108,26 @@ func ProcessDart(packageName string, tableName string, prefix string, items []ut
 				Data: make([]util.EnumValue, 0),
 			}
 			// Dart enum 값 이름: 식별자로 못 쓰는 key 는 바꾸고, 합성 값 none 과 겹치면 번호를 붙인다.
+			// 코드는 data 위치 (Go / Kotlin / TypeScript 와 같다). none(0) 은 data[0] 이 비어 있을 때만 만든다.
 			used := map[string]bool{"none": true}
+			enumData.HasNone = len(mapItem.Data) > 0 && mapItem.Data[0] == ""
+			if enumData.HasNone {
+				enumData.Zero = "none"
+			}
 
 			for idx, dataStr := range mapItem.Data {
 				if dataStr == "" {
 					continue
 				}
-				parts := strings.Split(dataStr, ":")
-				if len(parts) == 2 {
-					enumValue := util.EnumValue{
-						Key:   util.DedupeIdent(util.SanitizeIdent(parts[0], "v"), used),
-						Code:  idx,
-						Label: parts[1],
-					}
-					enumData.Data = append(enumData.Data, enumValue)
+				enumValue := util.EnumValue{
+					Key:   util.DedupeIdent(util.SanitizeIdent(util.EnumKey(dataStr), "v"), used),
+					Code:  util.EnumCode(idx),
+					Label: util.EnumLabel(dataStr),
 				}
+				if idx == 0 {
+					enumData.Zero = enumValue.Key
+				}
+				enumData.Data = append(enumData.Data, enumValue)
 			}
 
 			if len(enumData.Data) > 0 {

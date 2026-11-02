@@ -2,9 +2,10 @@ import 'package:app/config/http.dart';
 {{range items}}{{if .Type != "double" && .Type != "String" && .Type != "int" && .Type != "bool" && !isEnum(.Type, enums)}}import 'package:gym/models/{{.Type|lower}}.dart';
 {{end}}{{end}}
 {{range enums}}
+// 코드(code)는 model.json map data 배열 안의 위치다 (Go / Kotlin / TypeScript 와 같은 값).
 enum {{name}}{{.Name}} {
-  none(0, ''),
-{{range .Data}}  {{.Key}}({{.Code}}, '{{.Label}}'),
+{{if .HasNone}}  none(0, ''),
+{{end}}{{range .Data}}  {{.Key}}({{.Code}}, {{dartString(.Label)|raw}}),
 {{end}};
 
   const {{name}}{{.Name}}(this.code, this.label);
@@ -16,29 +17,29 @@ enum {{name}}{{.Name}} {
   String toString() => label;
 
   static {{name}}{{.Name}} fromCode(int code) {
-    return {{name}}{{.Name}}.values.firstWhere((e) => e.code == code, orElse: () => {{name}}{{.Name}}.none);
+    return {{name}}{{.Name}}.values.firstWhere((e) => e.code == code, orElse: () => {{name}}{{.Name}}.{{.Zero}});
   }
 }
 {{end}}
 class {{name}} {
-{{range items}}  {{if .Type == "double" || .Type == "String" || .Type == "int" || .Type == "bool"}}{{.Type}} {{.Name|lower}};{{else if isEnum(.Type, enums)}}{{name}}{{.Type}} {{.Name|lower}};{{else}}{{.Type}} {{.Name|lower}};{{end}}
+{{range items}}  {{if isEnum(.Type, enums)}}{{name}}{{.Type}}{{else}}{{.Type}}{{end}}{{if .Nullable}}?{{end}} {{.Name|lower}};
 {{end}}
   Map<String, dynamic> extra;
 
   {{name}}({
-{{range items}}    this.{{.Name|lower}} = {{if .Type == "int"}}0{{else if .Type == "double"}}0.0{{else if .Type == "bool"}}false{{else if .Type == "String"}}''{{else if isEnum(.Type, enums)}}{{name}}{{.Type}}.none{{else}}{{if .Type}}{{.Type}}(){{else}}null{{end}}{{end}},
+{{range items}}    this.{{.Name|lower}}{{if !.Nullable}} = {{if .Type == "int"}}0{{else if .Type == "double"}}0.0{{else if .Type == "bool"}}false{{else if .Type == "String"}}''{{else if isEnum(.Type, enums)}}{{name}}{{.Type}}.{{enumZero(.Type, enums)}}{{else}}{{if .Type}}{{.Type}}(){{else}}null{{end}}{{end}}{{end}},
 {{end}}    this.extra = const {},
   });
 
   factory {{name}}.fromJson(Map<String, dynamic> json) {
     return {{name}}(
-{{range items}}      {{.Name|lower}}: {{if .Type == "double" || .Type == "String" || .Type == "int" || .Type == "bool"}}json['{{.Name|lower}}'] as {{.Type}}{{else if isEnum(.Type, enums)}}{{name}}{{.Type}}.fromCode(json['{{.Name|lower}}'] as int){{else}}{{.Type}}.fromJson(json['{{.Name|lower}}']){{end}},
+{{range items}}      {{.Name|lower}}: {{if .Type == "double"}}(json['{{.Name|lower}}'] as num{{if .Nullable}}?{{end}}){{if .Nullable}}?{{end}}.toDouble(){{else if .Type == "String" || .Type == "int" || .Type == "bool"}}json['{{.Name|lower}}'] as {{.Type}}{{if .Nullable}}?{{end}}{{else if isEnum(.Type, enums)}}{{if .Nullable}}json['{{.Name|lower}}'] == null ? null : {{end}}{{name}}{{.Type}}.fromCode(json['{{.Name|lower}}'] as int){{else}}{{.Type}}.fromJson(json['{{.Name|lower}}']){{end}},
 {{end}}      extra: json['extra'] == null ? <String, dynamic>{} : json['extra'] as Map<String, dynamic>,
     );
   }
 
   Map<String, dynamic> toJson() => {
-{{range items}}    '{{.Name|lower}}': {{if .Type == "double" || .Type == "String" || .Type == "int" || .Type == "bool"}}{{.Name|lower}}{{else if isEnum(.Type, enums)}}{{.Name|lower}}.code{{else}}{{.Name|lower}}.toJson(){{end}},
+{{range items}}    '{{.Name|lower}}': {{if .Type == "double" || .Type == "String" || .Type == "int" || .Type == "bool"}}{{.Name|lower}}{{else if isEnum(.Type, enums)}}{{.Name|lower}}{{if .Nullable}}?{{end}}.code{{else}}{{.Name|lower}}{{if .Nullable}}?{{end}}.toJson(){{end}},
 {{end}}  };
 
   {{name}} clone() {

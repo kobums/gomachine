@@ -8,6 +8,7 @@ import (
 	"gomachine/util"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -23,8 +24,10 @@ type ReactEnumData struct {
 
 type ReactEnumItem struct {
 	Index int
+	Code  int    // 코드 (util.EnumCode: data 위치, Go/Kotlin/Dart 와 같다)
 	Key   string // TypeScript 객체 key 로 쓸 수 있게 바꾼 이름 (대문자). 빈 항목은 ""
 	Label string
+	Quote string // Label 의 문자열 리터럴 (따옴표 포함)
 }
 
 type ReactSearchMethod struct {
@@ -115,8 +118,10 @@ func BuildTemplateData(packageName string, tableName string, items []util.Column
 				}
 				enumItems = append(enumItems, ReactEnumItem{
 					Index: idx,
+					Code:  util.EnumCode(idx),
 					Key:   key,
 					Label: label,
+					Quote: strconv.Quote(label),
 				})
 				// Collect non-empty indices for type union
 				if key != "" {
@@ -192,7 +197,7 @@ func BuildTemplateData(packageName string, tableName string, items []util.Column
 			Name:           col.Name,
 			TypeScriptType: mapMySQLTypeToTypeScript(col.OriginalType),
 			OriginalType:   originalTypeLower,
-			IsNullable:     false, // 나중에 확장 가능
+			IsNullable:     col.Nullable && !col.Primary,
 			IsPrimaryKey:   col.Primary,
 			IsOptional:     col.Primary, // ID는 생성 시 선택적
 			IsDateType:     isDateType,

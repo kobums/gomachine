@@ -265,3 +265,30 @@ func TestProtectedColumnsSnake(t *testing.T) {
 		t.Errorf("ProtectedColumns = %v", got)
 	}
 }
+
+func TestEnumCodeHelpers(t *testing.T) {
+	if !EnumHasZero([]string{"a:A"}) || EnumHasZero([]string{"", "a:A"}) || EnumHasZero(nil) {
+		t.Fatal("EnumHasZero")
+	}
+	items := GoEnumItems("Status", []string{"", "wait:Wait", "", "done:Done"})
+	if len(items) != 2 || items[0].Code != 1 || items[1].Code != 3 {
+		t.Fatalf("GoEnumItems codes: %+v", items)
+	}
+	kitems := KotlinEnumItems([]string{"", "wait:Wait", "", "done:Done"})
+	if len(kitems) != 2 || kitems[0].Code != 1 || kitems[1].Code != 3 {
+		t.Fatalf("KotlinEnumItems codes: %+v", kitems)
+	}
+}
+
+func TestIsNowDefault(t *testing.T) {
+	for _, d := range []string{"CURRENT_TIMESTAMP", "current_timestamp(3)", "now()", "CURRENT_DATE", "curdate()"} {
+		if !IsNowDefault(d) {
+			t.Errorf("%s should be now", d)
+		}
+	}
+	for _, d := range []string{"", "2000-01-01", "0"} {
+		if IsNowDefault(d) {
+			t.Errorf("%s should not be now", d)
+		}
+	}
+}

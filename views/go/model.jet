@@ -7,7 +7,8 @@ import (
     {{if !isView}}"errors"{{end}}
     "fmt"
     "strings"
-    {{if createdDefault && !isView}}"time"{{end}}
+    {{if needsTime}}"time"{{end}}
+    {{if hasNullable}}"reflect"{{end}}
 
     log "{{packageName}}/global/log"
     _ "github.com/go-sql-driver/mysql"
@@ -40,6 +41,8 @@ type {{name}}Manager struct {
     GroupQuery string
     SelectLog bool
     Log bool
+    // LastError 는 마지막 조회(Get/Find/Count)의 DB 에러다. nil 결과가 "없음"인지 "에러"인지 구분할 때 쓴다.
+    LastError error
 }
 {{if inputName != name}}func (c *{{name}}) ConvertUpdate() *{{name}}Update {    
     item := &{{name}}Update{}
@@ -118,6 +121,58 @@ func (p *{{name}}Manager) Query(query string, params ...interface{}) (*sql.Rows,
     return p.Conn.Query(query, params...)
 }
 
+// orderColumns{{name}} 은 정렬에 쓸 수 있는 이름(API 이름, 접두사 뺀 이름, 전체 이름. 소문자)과 SQL 컬럼이다.
+var orderColumns{{name}} = map[string]string{
+{{range orderColumns}}    "{{.Key}}": "{{.Column}}",
+{{end}}}
+
+// OrderColumn 은 정렬 이름에 해당하는 SQL 컬럼이다. 모르는 이름이면 "".
+func (p *{{name}}Manager) OrderColumn(name string) string {
+    return orderColumns{{name}}[strings.ToLower(strings.TrimSpace(name))]
+}
+
+// FixOrder 는 코드에서 넘긴 정렬 문자열의 각 항목 중 알려진 컬럼 이름만 SQL 컬럼으로 바꾼다.
+// 이미 SQL 컬럼인 이름, 조인 테이블 컬럼, rand() 같은 식은 그대로 둔다.
+func (p *{{name}}Manager) FixOrder(orderby string) string {
+    parts := strings.Split(orderby, ",")
+    for i, part := range parts {
+        fields := strings.Fields(part)
+        if len(fields) == 0 {
+            continue
+        }
+        if col := p.OrderColumn(fields[0]); col != "" {
+            fields[0] = col
+        }
+        parts[i] = strings.Join(fields, " ")
+    }
+    return strings.Join(parts, ", ")
+}
+
+// ParseOrder 는 클라이언트가 보낸 정렬 문자열("createdat desc, name")을 검증해 SQL 정렬 절로 바꾼다.
+// 각 항목은 알려진 컬럼 + asc/desc 만 허용하고 나머지 항목은 버린다 (SQL injection 방지). 남은 항목이 없으면 "".
+func (p *{{name}}Manager) ParseOrder(orderby string) string {
+    ret := make([]string, 0)
+    for _, part := range strings.Split(orderby, ",") {
+        fields := strings.Fields(part)
+        if len(fields) == 0 || len(fields) > 2 {
+            continue
+        }
+        col := p.OrderColumn(fields[0])
+        if col == "" {
+            continue
+        }
+        if len(fields) == 2 {
+            dir := strings.ToLower(fields[1])
+            if dir != "asc" && dir != "desc" {
+                continue
+            }
+            col += " " + dir
+        }
+        ret = append(ret, col)
+    }
+    return strings.Join(ret, ", ")
+}
+
 func (p *{{name}}Manager) GetQuery() string {
     if p.SelectQuery != "" {
         return p.SelectQuery    
@@ -153,7 +208,8 @@ func (p *{{name}}Manager) GetQuerySelect() string {
 
     var ret strings.Builder
     
-    ret.WriteString("select count(*) from {{tableName}}")
+    // 조인 조건을 붙이므로 GetQuery 와 같이 조인 테이블도 from 에 넣는다.
+    ret.WriteString("select count(*) from {{tableName}}{{range joins}}, {{.Name}}_tb{{end}}")
 
     if p.Index != "" {
         ret.WriteString(" use index(")
@@ -182,7 +238,7 @@ func (p *{{name}}Manager) GetQueryGroup(name string) string {
     var ret strings.Builder
     ret.WriteString("select {{prefix}}_")
     ret.WriteString(name)
-    ret.WriteString(", count(*) from {{tableName}} ")
+    ret.WriteString(", count(*) from {{tableName}}{{range joins}}, {{.Name}}_tb{{end}} ")
 
     if p.Index != "" {
         ret.WriteString(" use index(")
@@ -228,9 +284,10 @@ func (p *{{name}}Manager) Insert(item *{{inputName}}) error {
     }
     {{end}}
 
-    {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime"}}
-    if item.{{v.Name}} == "" {
-       item.{{v.Name}} = "1000-01-01 00:00:00"
+    // NOT NULL 날짜 컬럼이 비어 있으면 기본값(현재 시각 / 고정 값 / 자리표시 값)을 넣는다. null 허용 컬럼은 NULL 로 저장한다.
+    {{range items}}{{if dateFill(.Name) != ""}}
+    if item.{{.Name}} == "" {
+       item.{{.Name}} = {{dateFill(.Name)|raw}}
     }
 	{{end}}{{end}}
 
@@ -239,13 +296,13 @@ func (p *{{name}}Manager) Insert(item *{{inputName}}) error {
     var err error
     {{if hasId}}if item.Id > 0 {
         query = "insert into {{tableName}} ({{range i, v := items}}{{if i > 0}}, {{end}}{{v.Column}}{{end}}) values ({{range i, v := items}}{{if i > 0}}, {{end}}?{{end}})"
-        res, err = p.Exec(query{{range items}}, item.{{.Name}}{{end}})
+        res, err = p.Exec(query{{range items}}, {{writeParam(.Name, "item." + .Name)|raw}}{{end}})
     } else {
         query = "insert into {{tableName}} ({{range i, v := nonIdItems}}{{if i > 0}}, {{end}}{{v.Column}}{{end}}) values ({{range i, v := nonIdItems}}{{if i > 0}}, {{end}}?{{end}})"
-        res, err = p.Exec(query{{range nonIdItems}}, item.{{.Name}}{{end}})
+        res, err = p.Exec(query{{range nonIdItems}}, {{writeParam(.Name, "item." + .Name)|raw}}{{end}})
     }{{else}}
     query = "insert into {{tableName}} ({{range i, v := items}}{{if i > 0}}, {{end}}{{v.Column}}{{end}}) values ({{range i, v := items}}{{if i > 0}}, {{end}}?{{end}})"
-    res, err = p.Exec(query{{range items}}, item.{{.Name}}{{end}}){{end}}
+    res, err = p.Exec(query{{range items}}, {{writeParam(.Name, "item." + .Name)|raw}}{{end}}){{end}}
     
     if err == nil {
         p.Result = &res
@@ -303,7 +360,8 @@ func (p *{{name}}Manager) MakeQuery(initQuery string , postQuery string, initPar
         params = append(params, initParams...)
     }
 
-    pos := 1
+    // Postgres 자리표시 번호($n)는 initParams 다음부터 시작한다.
+    pos := len(params) + 1
 
     var query strings.Builder
 	query.WriteString(initQuery)
@@ -350,14 +408,15 @@ func (p *{{name}}Manager) MakeQuery(initQuery string , postQuery string, initPar
         return errors.New("Connection Error")
     }
     
-    {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime"}}
-    if item.{{v.Name}} == "" {
-       item.{{v.Name}} = "1000-01-01 00:00:00"
+    // NOT NULL 날짜 컬럼이 비어 있으면 기본값(현재 시각 / 고정 값 / 자리표시 값)을 넣는다. null 허용 컬럼은 NULL 로 저장한다.
+    {{range items}}{{if dateFill(.Name) != ""}}
+    if item.{{.Name}} == "" {
+       item.{{.Name}} = {{dateFill(.Name)|raw}}
     }
 	{{end}}{{end}}
 
 	query := "update {{tableName}} set {{range i, v := nonIdItems}}{{if i > 0}}, {{end}}{{v.Column}} = ?{{end}} where {{prefix}}_id = ?"
-	_, err := p.Exec(query{{range nonIdItems}}, item.{{.Name}}{{end}}, item.Id)
+	_, err := p.Exec(query{{range nonIdItems}}, {{writeParam(.Name, "item." + .Name)|raw}}{{end}}, item.Id)
 
     if err != nil {
         if p.Log {
@@ -384,9 +443,14 @@ func (p *{{name}}Manager) UpdateWhere(columns []{{constPkg}}.Params, args []inte
             initQuery.WriteString(", ")
         }
 
+        placeholder := "?"
+        if config.Database.Type == config.Postgresql {
+            placeholder = fmt.Sprintf("$%d", len(initParams)+1)
+        }
+
         {{range items}}if v.Column == {{constPkg}}.Column{{.Name}} {
-        initQuery.WriteString("{{.Column}} = ?")
-        initParams = append(initParams, v.Value)
+        initQuery.WriteString("{{.Column}} = " + placeholder)
+        initParams = append(initParams, {{writeParam(.Name, "v.Value")|raw}})
         } else {{end}}{
         
         }
@@ -407,6 +471,15 @@ func (p *{{name}}Manager) UpdateWhere(columns []{{constPkg}}.Params, args []inte
     return err
 }
 
+{{if hasNullable}}
+// nullIfZero 는 null 허용 날짜/시간 컬럼의 빈 값을 NULL 로 저장하게 한다. 읽을 때 NULL 은 빈 값이 되므로 서로 맞는다.
+func (p *{{name}}Manager) nullIfZero(v interface{}) interface{} {
+    if v == nil || reflect.ValueOf(v).IsZero() {
+        return nil
+    }
+    return v
+}
+{{end}}
 {{end}}
 
 func (p *{{name}}Manager) GetIdentity() int64 {
@@ -441,9 +514,12 @@ func (p *{{name}}Manager) ReadRow(rows *sql.Rows) *{{name}} {
     {{end}}
 
     if rows.Next() {
-        err = rows.Scan({{range i, v := items}}{{if i > 0}}, {{end}}&item.{{v.Name}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, &_{{joinVar(v2)}}.{{.Name}}{{end}}{{end}})
+        // null 허용 컬럼은 sql.Null* 로 읽어 0 값으로 바꾼다.
+        {{scanDecls|raw}}
+        err = rows.Scan({{scanTargets|raw}})
+        {{scanAssigns|raw}}
         {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime" || v.OriginalType == "timestamp"}}
-        if item.{{v.Name}} == "0000-00-00 00:00:00" || item.{{v.Name}} == "1000-01-01 00:00:00" || item.{{v.Name}} == "9999-01-01 00:00:00" {
+        if item.{{v.Name}} == "0000-00-00 00:00:00" || item.{{v.Name}} == "1000-01-01 00:00:00" || item.{{v.Name}} == "9999-01-01 00:00:00" || item.{{v.Name}} == "0000-00-00" || item.{{v.Name}} == "1000-01-01" {
             item.{{v.Name}} = ""
         }
 
@@ -453,13 +529,16 @@ func (p *{{name}}Manager) ReadRow(rows *sql.Rows) *{{name}} {
 		{{end}}{{end}}
 
     } else {
+        if err := rows.Err(); err != nil {
+            p.LastError = err
+            log.Error().Str("error", err.Error()).Msg("SQL")
+        }
         return nil
     }
 
     if err != nil {
-        if p.Log {
-          log.Error().Str("error", err.Error()).Msg("SQL")
-        }
+        p.LastError = err
+        log.Error().Str("error", err.Error()).Msg("SQL")
         return nil
     } else {
 
@@ -479,16 +558,19 @@ func (p *{{name}}Manager) ReadRows(rows *sql.Rows) []{{name}} {
         {{range joins}}var _{{joinVar(.)}} {{camel(.Name)}}
         {{end}}
 
-        err := rows.Scan({{range i, v := items}}{{if i > 0}}, {{end}}&item.{{v.Name}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, &_{{joinVar(v2)}}.{{.Name}}{{end}}{{end}})
+        // null 허용 컬럼은 sql.Null* 로 읽어 0 값으로 바꾼다.
+        {{scanDecls|raw}}
+        err := rows.Scan({{scanTargets|raw}})
         if err != nil {
-           if p.Log {
-             log.Error().Str("error", err.Error()).Msg("SQL")
-           }
-           break
+           // 한 행을 읽지 못해도 나머지 행은 계속 읽는다 (예전에는 여기서 멈춰 뒤의 행이 조용히 빠졌다).
+           p.LastError = err
+           log.Error().Str("error", err.Error()).Msg("SQL")
+           continue
         }
+        {{scanAssigns|raw}}
 
         {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime" || v.OriginalType == "timestamp"}}
-        if item.{{v.Name}} == "0000-00-00 00:00:00" || item.{{v.Name}} == "1000-01-01 00:00:00" || item.{{v.Name}} == "9999-01-01 00:00:00" {
+        if item.{{v.Name}} == "0000-00-00 00:00:00" || item.{{v.Name}} == "1000-01-01 00:00:00" || item.{{v.Name}} == "9999-01-01 00:00:00" || item.{{v.Name}} == "0000-00-00" || item.{{v.Name}} == "1000-01-01" {
             item.{{v.Name}} = ""
         }
 
@@ -504,6 +586,10 @@ func (p *{{name}}Manager) ReadRows(rows *sql.Rows) []{{name}} {
         items = append(items, item)
     }
 
+    if err := rows.Err(); err != nil {
+        p.LastError = err
+        log.Error().Str("error", err.Error()).Msg("SQL")
+    }
 
      return items
 }
@@ -512,6 +598,8 @@ func (p *{{name}}Manager) ReadRows(rows *sql.Rows) []{{name}} {
     if !p.Conn.IsConnect() {
         return nil
     }
+
+    p.LastError = nil
 
     var query strings.Builder
     query.WriteString(p.GetQuery())
@@ -524,6 +612,7 @@ func (p *{{name}}Manager) ReadRows(rows *sql.Rows) []{{name}} {
     rows, err := p.Query(query.String(), id)
 
     if err != nil {
+       p.LastError = err
        if p.Log {
           log.Error().Str("error", err.Error()).Msg("SQL")
        }
@@ -550,10 +639,12 @@ func (p *{{name}}Manager) Count(args []interface{}) int {
         return 0
     }
 
+    p.LastError = nil
     query, params := p.MakeQuery(p.GetQuerySelect(), p.GroupQuery, nil, args)
     rows, err := p.Query(query, params...)
 
     if err != nil {
+       p.LastError = err
        if p.Log {
           log.Error().Str("error", err.Error()).Msg("SQL")
        }
@@ -563,6 +654,7 @@ func (p *{{name}}Manager) Count(args []interface{}) int {
     defer rows.Close()
 
     if !rows.Next() {
+        p.LastError = rows.Err()
         return 0
     }
 
@@ -570,6 +662,8 @@ func (p *{{name}}Manager) Count(args []interface{}) int {
     err = rows.Scan(&cnt)
 
     if err != nil {
+        p.LastError = err
+        log.Error().Str("error", err.Error()).Msg("SQL")
         return 0
     } else {
         return cnt
@@ -585,6 +679,8 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
         var items []{{name}}
         return items
     }
+
+    p.LastError = nil
 
     var params []interface{}
     baseQuery := p.GetQuery()
@@ -645,12 +741,8 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
         if orderby == "" {
             orderby = "{{prefix}}_{{orderKey}} desc"
         } else {
-            if !strings.Contains(orderby, "_") {                   
-                if strings.ToUpper(orderby) != "RAND()" {
-                    orderby = "{{prefix}}_" + orderby
-                }
-            }
-            
+            // 알려진 컬럼 이름(created_at, createdat ...)만 SQL 컬럼으로 바꾼다.
+            orderby = p.FixOrder(orderby)
         }
         query.WriteString(" order by ")
         query.WriteString(orderby)
@@ -671,11 +763,7 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
         if orderby == "" {
             orderby = "{{prefix}}_{{orderKey}}"
         } else {
-            if !strings.Contains(orderby, "_") {
-                if strings.ToUpper(orderby) != "RAND()" {
-                    orderby = "{{prefix}}_" + orderby
-                }
-            }
+            orderby = p.FixOrder(orderby)
         }
         query.WriteString(" order by ")
         query.WriteString(orderby)
@@ -684,6 +772,7 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
     rows, err := p.Query(baseQuery + query.String(), params...)
 
     if err != nil {
+       p.LastError = err
        if p.Log {
           log.Error().Str("error", err.Error()).Msg("SQL")
        }
@@ -734,7 +823,7 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
     }
 
     query := "update {{tableName}} set {{range i, v := f.Wheres}}{{if v.Compare == "column"}}{{if i > 0}}, {{end}}{{prefix}}_{{v.Key}} = ?{{end}}{{end}} where 1=1{{range i, v := f.Wheres}}{{if v.Compare == "where"}} and {{prefix}}_{{v.Key}} = ?{{end}}{{end}}"
-	_, err := p.Exec(query{{range f.Wheres}}, {{.Param}}{{end}})
+	_, err := p.Exec(query{{range f.Wheres}}, {{if .Compare == "column"}}{{writeParam(.Column, .Param)|raw}}{{else}}{{.Param}}{{end}}{{end}})
 
     if err != nil {
        if p.Log {
@@ -813,10 +902,7 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
         if orderby == "" {
             orderby = "{{prefix}}_{{orderKey}} desc"
         } else {
-            if !strings.Contains(orderby, "_") {                   
-                orderby = "{{prefix}}_" + orderby
-            }
-            
+            orderby = p.FixOrder(orderby)
         }
         query += " order by " + orderby
         //if config.Database == "mysql" {
@@ -834,9 +920,7 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
         if orderby == "" {
             orderby = "{{prefix}}_{{orderKey}}"
         } else {
-            if !strings.Contains(orderby, "_") {
-                orderby = "{{prefix}}_" + orderby
-            }
+            orderby = p.FixOrder(orderby)
         }
         query += " order by " + orderby
     }

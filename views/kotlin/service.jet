@@ -1,14 +1,15 @@
 package {{.BasePackage}}.service
 
 import {{.BasePackage}}.entity.{{.ModelName}}
-import {{.BasePackage}}.entity.{{.ModelName}}CreateRequest
+{{if not .IsView}}import {{.BasePackage}}.entity.{{.ModelName}}CreateRequest
 import {{.BasePackage}}.entity.{{.ModelName}}UpdateRequest
 import {{.BasePackage}}.entity.{{.ModelName}}PatchRequest
-import {{.BasePackage}}.repository.{{.ModelName}}Repository
-import org.springframework.data.domain.Page
-import org.springframework.data.domain.PageRequest
+{{end}}import {{.BasePackage}}.repository.{{.ModelName}}Repository
+{{if len(.Joins) > 0 && not .IsView}}import jakarta.persistence.EntityManager
+{{end}}import org.springframework.data.domain.Page
 import org.springframework.data.domain.Pageable
-{{if .HasPassword}}import org.springframework.security.crypto.password.PasswordEncoder{{- end}}
+import org.springframework.data.jpa.domain.Specification
+{{if .HasPassword && not .IsView}}import org.springframework.security.crypto.password.PasswordEncoder{{- end}}
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 {{if .HasDateTime}}import java.time.LocalDateTime
@@ -16,101 +17,96 @@ import org.springframework.transaction.annotation.Transactional
 {{end}}{{if .HasDecimal}}import java.math.BigDecimal
 {{end}}{{base := .BasePackage}}{{range .Enums}}import {{base}}.enums.{{.EnumPackage}}.{{.Name}}
 {{end}}
-{{allJoins := .Joins}}{{pk := .PK}}
+{{allJoins := .Joins}}{{pk := .PK}}{{repo := lower(.ModelName) + "Repository"}}
 @Service
 @Transactional
-class {{.ModelName}}Service(private val {{.ModelName|lower}}Repository: {{.ModelName}}Repository{{if .HasPassword}}, private val passwordEncoder: PasswordEncoder{{end}}) {
+class {{.ModelName}}Service(
+    private val {{repo}}: {{.ModelName}}Repository{{if .HasPassword && not .IsView}},
+    private val passwordEncoder: PasswordEncoder{{end}}{{if len(.Joins) > 0 && not .IsView}},
+    private val entityManager: EntityManager{{end}}
+) {
 
-    fun findAll(page: Int = 0, pagesize: Int = 10): Page<{{.ModelName}}> {
-        val pageable: Pageable = PageRequest.of(page, pagesize)
-        return {{.ModelName|lower}}Repository.findAll(pageable)
+    // 조건(Specification)과 페이지/정렬로 조회한다. 조건은 DB 쿼리로 실행된다.
+    @Transactional(readOnly = true)
+    fun findAll(spec: Specification<{{.ModelName}}>, pageable: Pageable): Page<{{.ModelName}}> {
+        return {{repo}}.findAll(spec, pageable)
     }
 
+    @Transactional(readOnly = true)
     fun findById(id: {{pk.KotlinType}}): {{.ModelName}}? {
-        return {{.ModelName|lower}}Repository.findById(id).orElse(null)
+        return {{repo}}.findById(id).orElse(null)
     }
 
-    fun count(): Long {
-        return {{.ModelName|lower}}Repository.count()
+    @Transactional(readOnly = true)
+    fun count(spec: Specification<{{.ModelName}}>): Long {
+        return {{repo}}.count(spec)
     }
 
 {{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if .IsSearchable}}{{if not joinData}}
+    @Transactional(readOnly = true)
     fun findBy{{.Name}}({{.Field|raw}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): List<{{.ModelName}}> {
-        return {{.ModelName|lower}}Repository.findBy{{.Name}}({{.Field|raw}})
+        return {{repo}}.findBy{{.Name}}({{.Field|raw}})
     }
 {{end}}{{if joinData}}
+    @Transactional(readOnly = true)
     fun findBy{{.Name}}({{joinData.AliasVar|raw}}: {{.KotlinType}}): List<{{.ModelName}}> {
-        return {{.ModelName|lower}}Repository.findBy{{joinData.ColumnName}}Id({{joinData.AliasVar|raw}})
+        return {{repo}}.findBy{{joinData.ColumnName}}Id({{joinData.AliasVar|raw}})
     }
 {{end}}{{end}}{{end}}
 {{if not .IsView}}
+{{if len(.Joins) > 0}}
+    // 저장한 엔티티는 조인(@ManyToOne) 필드가 비어 있으므로, DB 에 반영한 뒤 조인까지 다시 읽는다.
+    private fun reload(saved: {{.ModelName}}): {{.ModelName}} {
+        {{repo}}.flush()
+        entityManager.detach(saved)
+        return {{repo}}.findById(saved.{{pk.Field|raw}}).orElse(saved)
+    }
+{{end}}
     fun create(request: {{.ModelName}}CreateRequest): {{.ModelName}} {
         val entity = {{.ModelName}}(
-{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if not .IsPrimaryKey}}            {{if joinData}}{{joinData.ColumnName}}Id{{else}}{{.Field|raw}}{{end}} = {{if .IsProtected}}{{if .HasDefault}}{{.DefaultValue|raw}}{{else}}null{{end}}{{else if .IsPassword}}if (request.{{.Field|raw}}.isBlank()) "" else passwordEncoder.encode(request.{{.Field|raw}}){{else}}request.{{.Field|raw}}{{end}},
+{{range .Columns}}{{if not .IsPrimaryKey}}            {{.EntityField|raw}} = {{if .IsProtected}}{{if .HasDefault}}{{.DefaultValue|raw}}{{else}}null{{end}}{{else if .IsPassword}}{{if .IsNullable}}request.{{.Field|raw}}?.takeIf { it.isNotBlank() }?.let { passwordEncoder.encode(it) }{{else}}if (request.{{.Field|raw}}.isBlank()) "" else passwordEncoder.encode(request.{{.Field|raw}}){{end}}{{else}}request.{{.Field|raw}}{{end}},
 {{end}}{{end}}        )
-        return {{.ModelName|lower}}Repository.save(entity)
+        return {{if len(.Joins) > 0}}reload({{repo}}.save(entity)){{else}}{{repo}}.save(entity){{end}}
     }
 
     fun createBatch(requests: List<{{.ModelName}}CreateRequest>): List<{{.ModelName}}> {
         val entities = requests.map { request ->
             {{.ModelName}}(
-{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if not .IsPrimaryKey}}                {{if joinData}}{{joinData.ColumnName}}Id{{else}}{{.Field|raw}}{{end}} = {{if .IsProtected}}{{if .HasDefault}}{{.DefaultValue|raw}}{{else}}null{{end}}{{else if .IsPassword}}if (request.{{.Field|raw}}.isBlank()) "" else passwordEncoder.encode(request.{{.Field|raw}}){{else}}request.{{.Field|raw}}{{end}},
+{{range .Columns}}{{if not .IsPrimaryKey}}                {{.EntityField|raw}} = {{if .IsProtected}}{{if .HasDefault}}{{.DefaultValue|raw}}{{else}}null{{end}}{{else if .IsPassword}}{{if .IsNullable}}request.{{.Field|raw}}?.takeIf { it.isNotBlank() }?.let { passwordEncoder.encode(it) }{{else}}if (request.{{.Field|raw}}.isBlank()) "" else passwordEncoder.encode(request.{{.Field|raw}}){{end}}{{else}}request.{{.Field|raw}}{{end}},
 {{end}}{{end}}            )
         }
-        return {{.ModelName|lower}}Repository.saveAll(entities)
+        val saved = {{repo}}.saveAll(entities)
+        return {{if len(.Joins) > 0}}saved.map { reload(it) }{{else}}saved{{end}}
     }
 
+    // PUT 도 PATCH 와 같이 보낸 필드만 바꾼다.
     fun update(request: {{.ModelName}}UpdateRequest): {{.ModelName}}? {
-        val existing = {{.ModelName|lower}}Repository.findById(request.{{pk.Field|raw}}).orElse(null) ?: return null
-        {{- if .HasPassword}}
-        // 비밀번호를 비워 보내면 기존 해시를 유지한다.
-        val encodedPassword = if (request.{{.PasswordField|raw}}.isBlank()) {
-            existing.{{.PasswordField|raw}}
-        } else {
-            passwordEncoder.encode(request.{{.PasswordField|raw}})
-        }
-        {{end}}
-
-        // 보호 컬럼(protect)은 기존 값을 유지한다.
-        val updated = existing.copy(
-{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if not .IsPrimaryKey && not .IsProtected}}            {{if joinData}}{{joinData.ColumnName}}Id{{else}}{{.Field|raw}}{{end}} = {{if .IsPassword}}encodedPassword{{else}}request.{{.Field|raw}}{{end}},
-{{end}}{{end}}        )
-        return {{.ModelName|lower}}Repository.save(updated)
+        return patch(
+            {{.ModelName}}PatchRequest(
+{{range .Columns}}{{if .IsPrimaryKey || (not .IsProtected && not .IsCreated)}}                {{.Field|raw}} = request.{{.Field|raw}},
+{{end}}{{end}}            )
+        )
     }
 
-    fun delete(entity: {{.ModelName}}): Boolean {
-        return try {
-            {{.ModelName|lower}}Repository.delete(entity)
-            true
-        } catch (e: Exception) {
-            false
-        }
-    }
-
+    // 존재하지 않으면 false (컨트롤러가 404 를 돌려준다). DB 에러는 그대로 던진다.
     fun deleteById(id: {{pk.KotlinType}}): Boolean {
-        return try {
-            {{.ModelName|lower}}Repository.deleteById(id)
-            true
-        } catch (e: Exception) {
-            false
-        }
+        if (!{{repo}}.existsById(id)) return false
+        {{repo}}.deleteById(id)
+        return true
     }
 
     fun deleteBatch(entities: List<{{.ModelName}}>): Boolean {
-        return try {
-            {{.ModelName|lower}}Repository.deleteAll(entities)
-            true
-        } catch (e: Exception) {
-            false
-        }
+        {{repo}}.deleteAll(entities)
+        return true
     }
 
+    // 보낸(null 이 아닌) 필드만 바꾼다. 보호 컬럼, createddate, 조인 객체는 기존 값을 유지한다.
     fun patch(request: {{.ModelName}}PatchRequest): {{.ModelName}}? {
-        val existing = {{.ModelName|lower}}Repository.findById(request.{{pk.Field|raw}}).orElse(null) ?: return null
+        val existing = {{repo}}.findById(request.{{pk.Field|raw}}).orElse(null) ?: return null
 
         val updated = existing.copy(
-{{range .Columns}}{{if not .IsPrimaryKey && not .IsProtected}}{{joinData := findJoinByColumn(.DBName, allJoins)}}            {{if joinData}}{{joinData.ColumnName}}Id{{else}}{{.Field|raw}}{{end}} = {{if .IsPassword}}request.{{.Field|raw}}?.takeIf { it.isNotBlank() }?.let { passwordEncoder.encode(it) }{{else}}request.{{.Field|raw}}{{end}} ?: existing.{{if joinData}}{{joinData.ColumnName}}Id{{else}}{{.Field|raw}}{{end}},
+{{range .Columns}}{{if not .IsPrimaryKey && not .IsProtected && not .IsCreated}}            {{.EntityField|raw}} = {{if .IsPassword}}request.{{.Field|raw}}?.takeIf { it.isNotBlank() }?.let { passwordEncoder.encode(it) }{{else}}request.{{.Field|raw}}{{end}} ?: existing.{{.EntityField|raw}},
 {{end}}{{end}}        )
-        return {{.ModelName|lower}}Repository.save(updated)
+        return {{if len(.Joins) > 0}}reload({{repo}}.save(updated)){{else}}{{repo}}.save(updated){{end}}
     }
 {{end}}}

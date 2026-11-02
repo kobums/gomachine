@@ -143,34 +143,16 @@ var generators = map[string]generator{
 }
 
 func readColumn(packageName string, tableName string, db *sql.DB, gpa *config.Gpa, version string, auth string, cnf config.ModelConfig, languages []string) {
-	query := "select column_name as column_name, data_type as data_type from information_schema.columns where table_schema = '" + cnf.Database + "' and table_name = '" + tableName + "' order by ordinal_position"
-	rows, err := db.Query(query)
-
+	// 이름, 타입, null 허용(is_nullable), 기본값(column_default) 을 ordinal_position 순서로 읽는다.
+	rawCols, err := util.QueryColumns(db, cnf.Database, tableName)
 	if err != nil {
 		log.Println(err)
 		return
 	}
-	defer rows.Close()
 
-	// Store raw column data first
-	type RawCol struct {
-		Name     string
-		DataType string
-	}
-	var rawCols []RawCol
 	prefix := ""
-
-	for rows.Next() {
-		var name string
-		var typeid string
-
-		err := rows.Scan(&name, &typeid)
-		if err != nil {
-			log.Println(err)
-			continue
-		}
-		rawCols = append(rawCols, RawCol{Name: name, DataType: typeid})
-		prefix = util.GetPrefix(name)
+	for _, raw := range rawCols {
+		prefix = util.GetPrefix(raw.Name)
 	}
 
 	// 언어마다 타입 매핑이 달라서 컬럼 목록을 따로 만든다.
@@ -179,7 +161,7 @@ func readColumn(packageName string, tableName string, db *sql.DB, gpa *config.Gp
 		localCnf.Language = lang
 		columns := make([]util.Column, 0)
 		for _, raw := range rawCols {
-			columns = append(columns, util.NewColumn(tableName, raw.Name, raw.DataType, gpa, localCnf))
+			columns = append(columns, util.NewColumnFromRaw(tableName, raw, gpa, localCnf))
 		}
 		generators[lang](packageName, tableName, prefix, columns, db, gpa, version, auth, localCnf)
 	}

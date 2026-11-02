@@ -66,7 +66,51 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
 - Go `double`/`float` 은 예전 `Double`(대상 프로젝트에 정의가 필요했다)에서 `float64` 로 바뀌었다.
 - Go `bit` 는 MySQL 드라이버가 원시 바이트를 돌려줘서 `bool` 로 Scan 할 수 없으므로 `[]byte` 다.
 - Kotlin `double` 은 예전 `BigDecimal` 에서 `Double` 로, `date` 는 `LocalDateTime` 에서 `LocalDate` 로 바뀌었다.
-  날짜 검색 파라미터는 `@DateTimeFormat` ISO 형식(`2024-01-31T10:00:00`, `2024-01-31`)으로 받는다.
+
+## NULL 허용 컬럼 (`information_schema.columns.is_nullable`)
+
+| | NULL 허용 컬럼 | NOT NULL 컬럼 |
+|---|---|---|
+| Go | 0 값 타입 그대로. 읽을 때 NULL 은 0 값(`""`, `0`, `false`). 쓸 때는 날짜/시간 컬럼의 빈 값만 NULL 로 저장하고, 숫자·bool·문자열은 값 그대로 저장 | 그대로 |
+| Kotlin | `String?`, `Int?` ... (기본값 `null`), 응답도 `?` | non-null, 기본값 있음 |
+| TypeScript | `field: T \| null` | `field: T` |
+| Dart | `String?`, `int?` ... | 기본값 있음 |
+
+- Go 는 NULL 허용 컬럼을 `sql.Null*` 로 Scan 한다. 예전에는 NULL 이 있는 행이 Scan 에러로 빠지고, `ReadRows` 가
+  첫 에러에서 멈춰 뒤의 행도 조용히 사라졌다. 이제 읽지 못한 행만 로그를 남기고 건너뛴다.
+- Go 매니저에 `LastError` 가 생겼다. `Get/Find/Count` 가 nil/빈 결과를 돌려줄 때 DB 에러인지 확인할 수 있다
+  (REST `Read` 는 에러면 `code: "error"`).
+- Kotlin 은 예전 "날짜 컬럼만 nullable" 추측 대신 스키마의 null 허용 여부를 따른다. 기본 키는 항상 non-null.
+
+## 날짜 값
+
+- Go 저장: NULL 허용 날짜 컬럼이 `""` 면 NULL. NOT NULL 컬럼이 `""` 면 기본값이 `CURRENT_TIMESTAMP` 계열이면 현재 시각,
+  고정 기본값이면 그 값, 기본값이 없으면 자리표시 값(`datetime` `1000-01-01 00:00:00`, `date` `1000-01-01`,
+  `time` `00:00:00`, `timestamp` 는 범위 밖이라 현재 시각). 읽을 때 자리표시 값은 `""` 로 바뀐다.
+- 형식: Go 와 Spring 모두 응답은 `yyyy-MM-dd HH:mm:ss` (date 는 `yyyy-MM-dd`) 문자열이다.
+  Spring 요청 본문과 검색 파라미터는 `yyyy-MM-dd HH:mm:ss` 와 ISO `yyyy-MM-ddTHH:mm:ss` 둘 다 받는다 (초 생략 가능).
+  React/Vue 는 응답 문자열을 그대로 보내면 된다.
+
+## enum 코드 (`table[].map`)
+
+모든 언어에서 enum 코드는 **data 배열 안의 위치**다. 빈 항목(`""`)은 자리만 차지하고 상수를 만들지 않는다.
+
+```json
+"map": [{ "name": "status", "data": ["", "wait:대기", "done:완료"] }]   // Wait = 1, Done = 2 (0 = 없음)
+"map": [{ "name": "kind",   "data": ["a:A", "b:B"] }]                  // A = 0, B = 1
+```
+
+- Go: `StatusWait Status = 1` 처럼 값을 직접 쓴다. `GetStatus(code)` 는 라벨, `FindStatus(label)` 은 코드(없으면 0, 코드 0 이
+  실제 값인 enum 은 -1).
+- Kotlin: `enum class Status(val code: Int, val label: String)`. DB 에는 `StatusConverter` 로 코드를 저장하고, JSON 은
+  코드(숫자)로 주고받는다 (`@JsonValue` / `@JsonCreator fromCode`). `NONE(0)` 은 data[0] 이 `""` 일 때만 있다.
+  목록 필터와 `/search/{enum}` 은 코드(Int)를 받는다.
+- TypeScript / Dart 도 같은 코드다.
+- **바뀐 점**: 첫 항목이 빈 문자열이 아닌 map 은 예전 Go(iota)·Kotlin(ordinal, NONE 포함)이 1 부터 셌고 TypeScript 는 0 부터 셌다.
+  이제 모두 0 부터다 (`["wait:Wait", "done:Done"]` → Wait = 0). 이런 map 으로 저장된 기존 데이터가 있으면
+  data 앞에 `""` 를 넣으면 예전 값(1 부터)과 같아진다. 첫 항목만 `""` 이고 중간에 빈 항목이 없는 map 은 예전과 같은 값이다
+  (중간 빈 항목은 예전 Go/Kotlin 이 건너뛰고 셌지만 이제 자리를 차지한다).
+- 코드 0 이 실제 값인 enum 은 Go 목록 필터와 커스텀 Get/Find/Count 에서 0 도 조건으로 쓴다 (예전에는 0 이면 조건을 뺐다).
 
 ## Go 커스텀 메서드 (`table[].method`)
 
@@ -77,7 +121,21 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
 - Get/Find/Count 는 값이 0 / "" 인 매개변수의 조건을 빼지만, bool 과 in(슬라이스) 조건은 항상 붙인다.
 - 경로: `GET /{table}/{get|find|count}/{by 뒤 이름}/:{값}` (컬럼이 여러 개면 `/:{컬럼}/:{컬럼}`, in 은 쉼표로 구분),
   `PUT /{table}/{바꿀 컬럼}/{조건 컬럼}` (JSON 본문). 값을 해석하지 못하면 400 을 돌려준다 (예전에는 0 으로 바꿔 조건이 빠졌다).
-  `DeleteBy` 는 예전처럼 경로를 만들지 않는다.
+  `PUT` 본문에 필요한 key 가 없어도 400 이다 (예전에는 0 값으로 덮어썼다). `DeleteBy` 는 예전처럼 경로를 만들지 않는다.
+
+## Go REST 동작
+
+- `PUT /{table}` 은 부분 수정이다. 기존 행을 읽고 **본문에 있는 JSON key 만** 덮어쓴다 (key 이름은 모델 json 태그, 예: `createdat`).
+  빠진 필드는 DB 값을 유지한다. 그 뒤 id / 세션 컬럼 / `createddate` / 보호 컬럼 / 비밀번호 규칙을 다시 적용한다.
+  컨트롤러 시그니처가 `Update(item, body []byte)` 로 바뀌었다 (body 가 비어 있으면 item 전체로 바꾼다).
+- 목록 `orderby` 는 이 테이블 컬럼만 받는다. API 이름(`createdat`), 접두사 뺀 이름(`created_at`), 전체 이름(`p_created_at`)
+  + `asc`/`desc` 를 쉼표로 이어 쓴다. 모르는 항목은 버린다. 모델 `Find/Sum` 에 넘기는 정렬도 알려진 컬럼 이름만 SQL 컬럼으로
+  바꾸고 나머지(`rand()`, 조인 컬럼 등)는 그대로 둔다 (`p.ParseOrder`, `p.FixOrder`).
+- 목록은 `page`/`pagesize` 를 보내면 몇 번째 페이지든 `total` 을 같이 돌려준다 (예전에는 1 페이지만).
+- 조인(`table[].join`)이 있는 테이블의 `Count` / `GroupBy` 도 조인 테이블을 from 에 넣는다 (예전에는 unknown column 에러로 0).
+- `Insertbatch` 는 모든 행을 준비(해시 등)한 뒤 저장하고, `Deletebatch` 는 모든 행의 권한을 검사한 뒤 지운다.
+  둘 다 트랜잭션은 아니다: 저장/삭제 중간에 DB 에러가 나면 앞의 행은 이미 반영되어 있다.
+- `UpdateWhere` 의 Postgres 자리표시(`$n`)는 set 절 값 다음 번호부터 이어진다.
 
 ## id 컬럼이 없는 테이블 (Go)
 
@@ -152,4 +210,20 @@ API 경로는 react 와 같이 spring 백엔드(`/{table}/{id}`, `/{table}/searc
   생성/수정 요청의 세션 컬럼은 세션 값으로 고정한다. User 의 생성(회원가입)은 세션 없이 호출할 수 있다.
   - `config/SessionProvider.kt` 인터페이스는 파일이 없을 때만 생성한다(덮어쓰지 않음). 대상 프로젝트에서 `@Component` 로
     `currentUserId(): Long?` 를 구현해야 하고, `session` 의 key 가 `id` 가 아니면 `currentValue(key)` 도 구현한다.
-  - 소유권 필터는 전체 조회 후 메모리에서 거른다. 큰 테이블은 리포지토리 쿼리로 바꾸는 것이 좋다.
+  - 목록/개수의 소유권 필터는 Specification(DB where)으로 실행한다. `/search/{field}` 는 조건에 맞는 행만 읽은 뒤 거른다.
+
+### Spring 목록 / 수정 / 삭제
+
+- 리포지토리는 `JpaSpecificationExecutor` 를 상속한다. `GET /api/{table}` 은 필터(같음, 날짜 `start`/`end` 범위, enum 코드)와
+  소유권을 Specification 으로, 페이지와 정렬을 `PageRequest` 로 DB 에서 처리한다 (예전에는 전체 행을 읽어 메모리에서 걸렀다).
+  - `page` 는 0 이상, `pagesize` 는 1..10000 으로 맞춘다.
+  - 정렬: `sort` (또는 `orderby`) = `createddate desc, name` 또는 `createddate,desc`. 모르는 이름이면 400. 기본은 기본 키 내림차순.
+- `GET /api/{table}/count` 는 목록과 같은 필터 파라미터를 받는다.
+- `PUT` 은 `PATCH` 와 같이 보낸(null 이 아닌) 필드만 바꾼다. `createddate` 와 보호 컬럼은 바꾸지 않는다.
+  NULL 허용 컬럼을 null 로 지우는 요청은 할 수 없다 (null = 기존 값 유지).
+- `DELETE /api/{table}/{id}` 는 없는 행이면 404.
+- 생성 실패는 로그를 남기고 본문에 에러를 돌려준다 (제약 조건 위반 409 `{"error": "constraint violation"}`, 그 밖 400).
+- 응답의 조인 객체는 한 단계만 채운다 (조인의 조인은 `null`). `@EntityGraph` 도 직접 조인만 가져온다.
+  생성/수정 후에는 조인까지 다시 읽어 응답한다 (조인이 있는 서비스는 `EntityManager` 를 주입받는다).
+- 대상 프로젝트 요구사항: Spring Boot 기본 의존성(jackson-annotations, jackson-module-kotlin, jackson-datatype-jsr310, slf4j)과
+  Spring Data JPA 3.x.

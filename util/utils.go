@@ -37,6 +37,75 @@ type Column struct {
 	OriginalType string
 	Prefix       string
 	Primary      bool
+	Nullable     bool   // information_schema.columns.is_nullable = YES
+	HasDefault   bool   // column_default 가 있다 (NULL 이 아님)
+	Default      string // column_default 원문 (예: CURRENT_TIMESTAMP, 0, abc)
+}
+
+// RawColumn 은 information_schema.columns 에서 읽은 컬럼 하나다.
+type RawColumn struct {
+	Name       string
+	DataType   string
+	Nullable   bool
+	HasDefault bool
+	Default    string
+}
+
+// StaticColumns 는 DB 연결이 없을 때 QueryColumns 가 돌려줄 테이블별 컬럼이다 (테스트용).
+var StaticColumns = map[string][]RawColumn{}
+
+// QueryColumns 는 테이블의 컬럼을 ordinal_position 순서로 읽는다 (이름, 타입, null 허용, 기본값).
+func QueryColumns(db *sql.DB, schema string, table string) ([]RawColumn, error) {
+	ret := make([]RawColumn, 0)
+	if db == nil {
+		// DB 없이 생성기를 돌릴 때(테스트) 쓰는 컬럼 목록
+		if cols, ok := StaticColumns[table]; ok {
+			return cols, nil
+		}
+		return ret, nil
+	}
+	query := "select column_name, data_type, is_nullable, column_default from information_schema.columns where table_schema = ? and table_name = ? order by ordinal_position"
+	rows, err := db.Query(query, schema, table)
+	if err != nil {
+		return ret, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var name, typeid, nullable string
+		var def sql.NullString
+		if err := rows.Scan(&name, &typeid, &nullable, &def); err != nil {
+			log.Println(err)
+			continue
+		}
+		ret = append(ret, RawColumn{Name: name, DataType: typeid, Nullable: strings.EqualFold(nullable, "YES"), HasDefault: def.Valid, Default: def.String})
+	}
+	return ret, rows.Err()
+}
+
+// NewColumnFromRaw 는 RawColumn 으로 Column 을 만든다 (null 허용 / 기본값 포함).
+func NewColumnFromRaw(tableName string, raw RawColumn, gpa *config.Gpa, cnf config.ModelConfig) Column {
+	col := NewColumn(tableName, raw.Name, raw.DataType, gpa, cnf)
+	col.Nullable = raw.Nullable
+	col.HasDefault = raw.HasDefault
+	col.Default = raw.Default
+	return col
+}
+
+// IsDateType 은 날짜/시간 컬럼(date, datetime, timestamp, time)인지 확인한다.
+func IsDateType(originalType string) bool {
+	switch strings.ToLower(originalType) {
+	case "date", "datetime", "timestamp", "time":
+		return true
+	}
+	return false
+}
+
+// IsNowDefault 는 기본값이 현재 시각(CURRENT_TIMESTAMP, now() ...)인지 확인한다.
+func IsNowDefault(def string) bool {
+	d := strings.ToLower(strings.TrimSpace(def))
+	return strings.HasPrefix(d, "current_timestamp") || strings.HasPrefix(d, "now(") || strings.HasPrefix(d, "localtime") ||
+		d == "current_date" || d == "curdate()" || d == "current_time" || d == "curtime()"
 }
 
 type EnumValue struct {
@@ -46,8 +115,10 @@ type EnumValue struct {
 }
 
 type EnumData struct {
-	Name string
-	Data []EnumValue
+	Name    string
+	Data    []EnumValue
+	HasNone bool   // data[0] 이 비어 있으면 코드 0 인 none 을 만든다
+	Zero    string // 코드 0 인 값 이름 (NOT NULL 필드 기본값, 모르는 코드의 대체값)
 }
 
 func CopyFile(src, dst string) {
@@ -407,32 +478,15 @@ var dartTypes = map[string]string{
 }
 
 // TablePrefix 는 {str}_tb 테이블의 컬럼 접두사를 돌려준다 (첫 번째 컬럼 기준).
-func TablePrefix(str string, packageName string, db *sql.DB) string {
-	if db == nil {
-		return ""
-	}
-	query := "select column_name as column_name, data_type as data_type from information_schema.columns where table_schema = '" + packageName + "' and table_name = '" + str + "_tb' order by ordinal_position"
-	rows, err := db.Query(query)
-
+func TablePrefix(str string, schema string, db *sql.DB) string {
+	cols, err := QueryColumns(db, schema, str+"_tb")
 	if err != nil {
 		log.Println(err)
 		return ""
 	}
-	defer rows.Close()
-
-	if rows.Next() {
-		var name string
-		var typeid string
-
-		err := rows.Scan(&name, &typeid)
-		if err != nil {
-			log.Println(err)
-		}
-
-		prefix := GetPrefix(name)
-		return prefix
+	if len(cols) > 0 {
+		return GetPrefix(cols[0].Name)
 	}
-
 	return ""
 }
 
@@ -646,6 +700,7 @@ func DedupeIdent(ident string, used map[string]bool) string {
 // EnumItem 은 gpa.map 의 data 항목 하나("key:label")다.
 type EnumItem struct {
 	Index int    // data 배열 안의 위치
+	Code  int    // 저장/전송하는 코드 (EnumCode, data 위치와 같다)
 	Raw   string // 원래 key
 	Ident string // 언어별 상수 이름
 	Label string // 표시 이름 (":" 가 없으면 key 그대로)
@@ -668,7 +723,19 @@ func EnumKey(data string) string {
 	return data
 }
 
-// GoEnumItems 는 Go 상수 이름({Type}{Key})을 만든다. 빈 항목은 건너뛴다 (상수 값은 예전과 같이 iota 순서).
+// EnumCode 는 gpa.map data 항목의 코드다. 모든 언어(Go, Kotlin, TypeScript, Dart)에서 data 배열 안의 위치를 코드로 쓴다.
+// 빈 항목("")은 자리만 차지하고 상수를 만들지 않는다 (예: ["", "use:Use"] → Use = 1).
+func EnumCode(index int) int {
+	return index
+}
+
+// EnumHasZero 는 코드 0 이 실제 값인지(data[0] 이 비어 있지 않은지) 확인한다.
+// 코드 0 이 실제 값이면 0 을 "조건 없음"으로 볼 수 없다.
+func EnumHasZero(data []string) bool {
+	return len(data) > 0 && data[0] != ""
+}
+
+// GoEnumItems 는 Go 상수 이름({Type}{Key})을 만든다. 빈 항목은 건너뛴다. 상수 값은 EnumCode (data 위치).
 // 식별자로 쓸 수 없는 문자는 _ 로 바꾸고, 겹치면 뒤에 번호를 붙인다.
 func GoEnumItems(typeName string, data []string) []EnumItem {
 	ret := make([]EnumItem, 0)
@@ -680,12 +747,12 @@ func GoEnumItems(typeName string, data []string) []EnumItem {
 		key := EnumKey(d)
 		ident := typeName + sanitizeIdent(strings.Title(key), "")
 		ident = dedupe(ident, used)
-		ret = append(ret, EnumItem{Index: i, Raw: key, Ident: ident, Label: EnumLabel(d), Quote: strconv.Quote(EnumLabel(d))})
+		ret = append(ret, EnumItem{Index: i, Code: EnumCode(i), Raw: key, Ident: ident, Label: EnumLabel(d), Quote: strconv.Quote(EnumLabel(d))})
 	}
 	return ret
 }
 
-// KotlinEnumItems 는 Kotlin enum 상수 이름(대문자 key)을 만든다. 빈 항목은 건너뛴다.
+// KotlinEnumItems 는 Kotlin enum 상수 이름(대문자 key)을 만든다. 빈 항목은 건너뛴다. 코드는 EnumCode (data 위치).
 // 식별자로 쓸 수 없으면 바꾸고(숫자로 시작하면 V 접두사), 합성 상수 NONE 이나 다른 항목과 겹치면 뒤에 번호를 붙인다.
 func KotlinEnumItems(data []string) []EnumItem {
 	ret := make([]EnumItem, 0)
@@ -700,7 +767,7 @@ func KotlinEnumItems(data []string) []EnumItem {
 			ident = "`" + ident + "`"
 		}
 		ident = dedupe(ident, used)
-		ret = append(ret, EnumItem{Index: i, Raw: key, Ident: ident, Label: EnumLabel(d), Quote: KotlinString(EnumLabel(d))})
+		ret = append(ret, EnumItem{Index: i, Code: EnumCode(i), Raw: key, Ident: ident, Label: EnumLabel(d), Quote: KotlinString(EnumLabel(d))})
 	}
 	return ret
 }

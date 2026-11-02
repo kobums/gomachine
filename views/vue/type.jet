@@ -1,11 +1,13 @@
 // Auto-generated TypeScript types for {{.ModelName}}
 // Generated from table: {{.TableName}}
+// null 허용 컬럼은 `| null`, enum 은 코드(number, data 배열 위치), 날짜는 "yyyy-MM-dd HH:mm:ss" 문자열
+// (date 는 "yyyy-MM-dd"). 요청에는 ISO "yyyy-MM-ddTHH:mm:ss" 도 쓸 수 있다.
 {{if len(.Joins) > 0}}
 {{range .UniqueJoinNames}}import type { {{. | title}} } from './{{. | lower}}';
 {{end}}
 {{end}}
 export interface {{.ModelName}} {
-{{range .Columns}}  {{.Name | untitle}}{{if .IsOptional}}?{{end}}: {{.TypeScriptType}};
+{{range .Columns}}  {{.Name | untitle}}{{if .IsOptional}}?{{end}}: {{.TypeScriptType}}{{if .IsNullable}} | null{{end}};
 {{end}}{{if len(.Joins) > 0}}  extra?: {
 {{range .Joins}}    {{.Alias | lower}}?: {{.Name | title}};
 {{end}}  };

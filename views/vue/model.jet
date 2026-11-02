@@ -9,10 +9,10 @@ import type {
 export default class {{.ModelName}}Model {
 {{range .Enums}}  // {{.Name | title}} constants (from backend: enums/{{.Name | lower}}/Enums.kt)
   static readonly {{.Name | lower}} = {
-{{range .Data}}{{if .Key}}    {{.Key | upper}}: {{.Index}},
+{{range .Data}}{{if .Key}}    {{.Key | upper}}: {{.Code}},
 {{end}}{{end}}  };
   static readonly {{.Name | lower}}s = [
-{{range .Data}}    '{{.Label}}',
+{{range .Data}}    {{.Quote|raw}},
 {{end}}  ];
 
   static get{{.Name | title}}(value: number): string {
