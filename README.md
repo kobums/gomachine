@@ -72,7 +72,7 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
 
 | | NULL 허용 컬럼 | NOT NULL 컬럼 |
 |---|---|---|
-| Go | 0 값 타입 그대로. 읽을 때 NULL 은 0 값(`""`, `0`, `false`). 쓸 때는 날짜/시간 컬럼의 빈 값만 NULL 로 저장하고, 숫자·bool·문자열은 값 그대로 저장 | 그대로 |
+| Go | 0 값 타입 그대로. 읽을 때 NULL 은 0 값(`""`, `0`, `false`). 쓸 때는 날짜/시간 컬럼의 빈 값만 NULL 로 저장하고, 숫자·bool·문자열은 값 그대로 저장. REST 부분 수정은 아래 참고 | 그대로 |
 | Kotlin | `String?`, `Int?` ... (기본값 `null`), 응답도 `?` | non-null, 기본값 있음 |
 | TypeScript | `field: T \| null` | `field: T` |
 | Dart | `String?`, `int?` ... | 기본값 있음 |
@@ -81,6 +81,13 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
   첫 에러에서 멈춰 뒤의 행도 조용히 사라졌다. 이제 읽지 못한 행만 로그를 남기고 건너뛴다.
 - Go 매니저에 `LastError` 가 생겼다. `Get/Find/Count` 가 nil/빈 결과를 돌려줄 때 DB 에러인지 확인할 수 있다
   (REST `Read` 는 에러면 `code: "error"`).
+- Go REST 부분 수정(`PUT /{t}`, `PUT/PATCH /{t}/:id`)은 NULL 을 보존한다: 본문에 없는 null 허용 필드는 DB 의 NULL 을 그대로 두고
+  (예전에는 `0`/`""`/enum 코드 0 으로 바뀌었다), 본문에 `null` 로 보낸 null 허용 필드는 NULL 로 지운다. 값을 보내면 그 값을 쓴다.
+  NOT NULL 컬럼에 `null` 을 보내면 기존 값을 유지한다. 보호 컬럼 / `createddate` / 비밀번호는 기존 값(NULL 포함)을 유지한다.
+  모델: `GetRaw(id) (*X, nulls)` 가 NULL 이었던 컬럼(필드 이름)을 돌려주고, `Merge{X}Nulls(nulls, body)` 가 본문으로 고치고,
+  `UpdateNulls(item, nulls)` 가 그 필드를 NULL 로 저장한다 (`Update(item)` 은 `UpdateNulls(item, nil)` 과 같다).
+  구조체 필드 타입은 그대로다. Insert 와 커스텀 `UpdateXByY` 는 예전과 같다 (`UpdateXByY` 본문의 `null` 은 400).
+- Go `tinyint`(bool) 컬럼은 정수로 읽어 `!= 0` 으로 바꾼다 (예전에는 2 이상 값이 Scan 에러로 행이 빠졌다).
 - Kotlin 은 예전 "날짜 컬럼만 nullable" 추측 대신 스키마의 null 허용 여부를 따른다. 기본 키는 항상 non-null.
 
 ## 날짜 값
@@ -88,6 +95,9 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
 - Go 저장: NULL 허용 날짜 컬럼이 `""` 면 NULL. NOT NULL 컬럼이 `""` 면 기본값이 `CURRENT_TIMESTAMP` 계열이면 현재 시각,
   고정 기본값이면 그 값, 기본값이 없으면 자리표시 값(`datetime` `1000-01-01 00:00:00`, `date` `1000-01-01`,
   `time` `00:00:00`, `timestamp` 는 범위 밖이라 현재 시각). 읽을 때 자리표시 값은 `""` 로 바뀐다.
+- Go REST `Insert`/`Insertbatch` 는 문자열 `createddate` 를 서버가 현재 시각으로 넣는다 (클라이언트가 보낸 값은 무시한다).
+  현재 시각은 예전과 같이 UTC+9 (Asia/Seoul) 다. `model.json` 의 `"timezone"` 으로 바꿀 수 있다:
+  `"local"`(서버 지역 시간), `"UTC"`, 또는 IANA 이름(`"America/New_York"`, 서버에서 찾지 못하면 UTC+9). 비어 있으면 예전과 같다.
 - 형식: Go 와 Spring 모두 응답은 `yyyy-MM-dd HH:mm:ss` (date 는 `yyyy-MM-dd`) 문자열이다.
   Spring 요청 본문과 검색 파라미터는 `yyyy-MM-dd HH:mm:ss` 와 ISO `yyyy-MM-ddTHH:mm:ss` 둘 다 받는다 (초 생략 가능).
   React/Vue 는 응답 문자열을 그대로 보내면 된다.
@@ -124,6 +134,10 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
   `PUT /{table}/{바꿀 컬럼}/{조건 컬럼}` (JSON 본문). 값을 해석하지 못하면 400 을 돌려준다 (예전에는 0 으로 바꿔 조건이 빠졌다).
   `PUT` 본문에 필요한 key 가 없어도 400 이다 (예전에는 0 값으로 덮어썼다). 본문 key 는 JSON key 다 (`postTitle`).
   `DeleteBy` 는 `DELETE /{table}/delete/{by 뒤 이름}/:{값}` 경로가 생겼다 (소유권 검사는 위와 같다).
+  like 조건이 있는 `DeleteBy`(`DeleteByNamelike`)는 와일드카드 하나로 많은 행을 지울 수 있어 HTTP 경로를 만들지 않는다 (경고, 모델/컨트롤러 메서드는 있다).
+- `UpdateXByY` 로 id / 기본 키(`primary`)를 바꾸는 메서드(`UpdateIdByName`)는 경고를 찍고 만들지 않는다.
+- `UpdatePasswdByX` / `UpdatePasswordByX` 는 REST Update 와 같이 `jwt.GeneratePasswd` 로 해시해서 저장한다 (빈 값은 `bad request`).
+  User 테이블이면 본인 행만 바꿀 수 있다 (관리자 제외, 아래 인증 참고).
 
 ## Go REST 동작
 
@@ -134,10 +148,23 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
   + `asc`/`desc` 를 쉼표로 이어 쓴다. 모르는 항목은 버린다. 모델 `Find/Sum` 에 넘기는 정렬도 알려진 컬럼 이름만 SQL 컬럼으로
   바꾸고 나머지(`rand()`, 조인 컬럼 등)는 그대로 둔다 (`p.ParseOrder`, `p.FixOrder`).
 - 목록은 `page`/`pagesize` 를 보내면 몇 번째 페이지든 `total` 을 같이 돌려준다 (예전에는 1 페이지만).
-- 조인(`table[].join`)이 있는 테이블의 `Count` / `GroupBy` 도 조인 테이블을 from 에 넣는다 (예전에는 unknown column 에러로 0).
+  `page` 가 없거나 0 이면 예전과 같이 전체 행이다. `page`/`pagesize` 가 숫자가 아니거나 음수면 400 (예전에는 0 으로 보고 전체 행),
+  `pagesize` 는 10000 을 넘지 않는다 (Spring 과 같다).
+- 목록/개수 필터의 숫자/enum/bool 값을 해석하지 못하면 400 이다 (`?status=abc`, 예전에는 조건을 빼서 전체 행을 돌려줬다).
+  bool(`tinyint`) 필터는 `1/0/true/false` 를 받고 보냈을 때만 거른다 (예전에는 `false` 로 거를 수 없었다).
+  숫자 필터의 0 은 예전과 같이 조건 없음이다 (코드 0 이 실제 값인 enum 제외). 필터 해석은 `rest.Parse{X}Filters(get)` 순수 함수다.
+- 조인(`table[].join`)은 `left join ... on` 이다 (예전에는 쉼표 조인 + where 조건이라 조인 키가 NULL 이거나 조인 행이 없는 행이
+  목록/개수/Read 에서 빠졌다). 조인 행이 없으면 `Extra[조인]` 은 `nil` 이다. 조인 컬럼은 모두 NULL 을 받을 수 있게 읽는다.
+  - 같은 테이블을 다시 조인하면(자기 조인, 같은 테이블 두 번) SQL 별칭 `j_{이름}` 을 붙이고, Go 변수 / `Extra` key 는
+    alias > name 소문자에 겹치면 번호를 붙인다 (`user`, `user2`). 이 테이블과 접두사가 같은 테이블을 조인하면(자기 조인)
+    이 테이블의 컬럼(where / order by / group by)을 테이블 이름으로 한정한다 (`comment_tb.c_parent`).
+  - `use index(...)` 는 이 테이블 바로 뒤에 붙는다. `JoinQuery` 는 left join 뒤에 `, ` 로 붙는다.
+  - `Count` / `GroupBy` 도 같은 from 을 쓴다.
+- REST Update/Delete/Deletebatch 의 기존 행 읽기와 소유권 검사는 조인 없이 이 테이블만 읽는다 (`GetRaw`).
 - `Insertbatch` 는 모든 행을 준비(해시 등)한 뒤 저장하고, `Deletebatch` 는 모든 행의 권한을 검사한 뒤 지운다.
   둘 다 트랜잭션은 아니다: 저장/삭제 중간에 DB 에러가 나면 앞의 행은 이미 반영되어 있다.
-- `UpdateWhere` 의 Postgres 자리표시(`$n`)는 set 절 값 다음 번호부터 이어진다.
+- Postgres 는 지원하지 않는다. 생성 Go 모델의 `Find/Count/UpdateWhere/GroupBy` 는 `$n` 자리표시를 쓰지만 `Get/GetRaw/Insert/Update/Delete`,
+  커스텀 `UpdateXByY`, 소유권 검사 등은 `?` 를 쓴다. MySQL 만 대상으로 한다.
 
 ## id 컬럼이 없는 테이블 (Go)
 
@@ -159,6 +186,7 @@ Spring 은 기본 키를 `gpa.primary` > `id` 컬럼 > 첫 컬럼 순서로 정�
 - `src/types/{table}.ts` — 모델 인터페이스, 검색 파라미터, 응답 타입
 - `src/models/{table}.ts` — API 호출 클래스 (`{Model}Model.find/get/insert/update/remove`, enum 상수, `searchByXxx`)
 - `src/composables/use{Model}.ts` — `items`, `item`, `total`, `loading`, `error` ref 와 `fetchPage/fetchAll/fetchOne/create/update/remove`
+  (view 는 `create/update/remove`, id 컬럼이 없는 테이블은 `fetchOne/update/remove` 가 없다)
 
 대상 프로젝트에는 axios 같은 시그니처의 `src/services/api.ts` (`get`, `post`, `put`, `patch`, `del`) 가 있어야 한다.
 API 경로와 응답 처리는 [HTTP 계약](#http-계약-go--spring--react--vue--dart)을 따르므로 Go 와 Spring 어느 백엔드에도 쓸 수 있다.
@@ -187,9 +215,12 @@ API 경로와 응답 처리는 [HTTP 계약](#http-계약-go--spring--react--vue
   - User 테이블의 Update/Delete/Deletebatch/UpdateXByY/DeleteBy 는 본인(`c.Session.Id`) 행만 바꿀 수 있다.
 - `session` 이 있으면 목록/개수/커스텀 Get·Find·Count 조회에 세션 컬럼 조건을 항상 붙이고, Read/Update/Delete 와
   커스텀 UpdateXByY/DeleteBy 는 다른 사용자 소유 행이 걸리면 `auth error` 로 거부한다. 없는 행을 Read 하면 `error`.
+  소유자 컬럼이 NULL 인 행도 남의 행으로 본다 (`(owner <> ? or owner is null)`, 예전에는 NULL 소유자 행을 누구나 바꿀 수 있었다).
+  세션 값은 컬럼의 Go 타입으로 바꿔 비교/대입한다 (`int` 컬럼이면 `int(c.Session.Id)`).
 - REST Insert/Insertbatch 는 클라이언트가 보낸 `id` 를 무시한다 (모델의 `Insert` 는 그대로 id 지정 가능).
 - `"protect": ["level", ...]` — REST Insert 는 0 값, Update 는 기존 DB 값으로 덮어써서 클라이언트가 못 바꾸게 한다.
-  보호 컬럼을 바꾸는 커스텀 `UpdateXByY` 는 거부한다. `protect` 가 없으면 User 테이블의 `level` 을 기본으로 보호한다.
+  보호 컬럼을 바꾸는 커스텀 `UpdateXByY` 는 거부한다. User 테이블의 `level` 은 항상 보호한다
+  (예전에는 `protect` 를 설정하면 `level` 이 빠졌다).
   id 와 session 컬럼은 따로 처리하므로 protect 에 넣어도 무시된다.
   - `auth: "jwt"` 이고 `adminLevel` 이 숫자면, 세션 구조체에 정수형 `Level` 필드가 있고 그 값이 `adminLevel` 이상인
     관리자는 보호 컬럼을 바꿀 수 있고 다른 회원 정보도 수정/삭제할 수 있다 (reflect 로 확인하므로 `Level` 이 없으면 항상 보호).
@@ -239,6 +270,10 @@ React/Vue(그리고 Dart)가 두 백엔드 중 어느 것에도 붙을 수 있�
 ### 이름
 
 - JSON key = 접두사 뺀 컬럼 이름의 lowerCamel (`util.JSONKey`). Go json 태그, Kotlin 프로퍼티, TypeScript 필드, Dart json key 가 모두 같다.
+- `_` / 대소문자만 다른 컬럼(`p_created_at` 과 `p_createdat`, `user_id` 와 `userId`)은 이름이 겹치므로 경고를 찍고,
+  앞(ordinal_position) 컬럼이 원래 이름을 갖고 뒤 컬럼은 번호를 붙인다 (`util.DedupeColumns`): Go 필드 `Createdat2`,
+  JSON key / 필터 `createdat2`, 검색 경로 `/search/createdat2`, 날짜 범위 `startcreatedat2`. Go / TypeScript / Dart 가 같은 규칙이다
+  (Spring 은 아직 적용하지 않았다). SQL 컬럼 이름은 그대로다.
 
   | 컬럼 | JSON key | 검색 경로 | 날짜 범위 파라미터 |
   |---|---|---|---|
@@ -266,7 +301,7 @@ React/Vue(그리고 Dart)가 두 백엔드 중 어느 것에도 붙을 수 있�
 | `DELETE /{t}/batch` 본문 `[{"id":1}]` | O | O (본문 모양 변경) | |
 | `PUT /{t}`, `DELETE /{t}` (본문) | O (예전 경로) | X | |
 | `GET /{t}/{get,find,count}/...`, `PUT /{t}/{x}/{y}` | O (예전 경로) | X | 커스텀 메서드 |
-| `DELETE /{t}/delete/{by}/:{값}` | O (추가) | X | 커스텀 `DeleteBy` |
+| `DELETE /{t}/delete/{by}/:{값}` | O (추가) | X | 커스텀 `DeleteBy` (like 조건 제외) |
 
 - Go 는 정적 경로(`/count`, `/batch`, `/search/x`)를 `/:id` 보다 먼저 등록한다 (fiber 는 등록 순서로 찾는다).
 - 새 Go 경로는 기존 핸들러(Read/Update/Delete/Count/커스텀 메서드)와 새 `Search` 를 부르므로 세션/소유권/보호 컬럼/비밀번호 규칙이 같다.
@@ -289,15 +324,22 @@ React/Vue(그리고 Dart)가 두 백엔드 중 어느 것에도 붙을 수 있�
   개수 `count ?? total`, 단건은 `item` key 가 있으면 그 값. 엔티티에 `item`/`code` 필드가 있으면 기본 키가 있는 응답을 엔티티로 본다.
   모델 메서드는 `find/findall → T[]`, `findpage → Page<T> {items, total}`, `get → T | null`, `count → number`,
   `insert/update/patch → Partial<T>` (Go 는 id 만 준다), `remove/removeBatch → void` 를 돌려준다.
+  - `findall` 은 `pagesize` 1000 으로 페이지를 차례로 읽어 모은다 (받은 행이 1000 보다 적거나 전체 개수만큼 모이면 멈춘다. 예전에는 `pagesize: 9999` 한 번).
+  - view 는 쓰기 메서드(`insert/insertBatch/update/patch/remove/removeBatch`)가 없고, id 컬럼이 없는 테이블은
+    `get/update/patch/remove/removeBatch` 가 없다 (Go 에 그 경로가 없다). Vue composable 도 같이 `create/fetchOne/update/remove` 를 뺀다.
 - Go 의 `code` 에러(`error`, `auth error`, `bad request`)는 `ApiError` 로 던진다. Spring 에러는 api 래퍼(axios 등)가 던진다.
   Vue composable 은 둘 다 `error` 에 담는다.
-- Dart 는 목록 `content ?? items`, 개수 `count ?? total`, 단건 `item` 래퍼를 읽고, 수정/삭제를 `/{t}/{id}` 로 부른다 (id 컬럼이 있을 때).
+- Dart 는 목록 `content ?? items`, 개수 `count ?? total`, 단건 `item` 래퍼를 읽고, 수정/삭제를 `/{t}/{id}` 로 부른다.
+  view 는 `insert/update/delete` 가 없고, id 컬럼이 없는 테이블은 `get/update/delete` 가 없다 (예전에는 Go 에 없는 `PUT /{t}` 를 불렀다).
+  `fromJson` 은 값을 너그럽게 읽는다: bool 은 `true/false`, 숫자(0 이 아니면 true), `"1"/"true"`, base64(Go `bit`) 를,
+  int/double 은 숫자, 숫자 문자열, bool 을 받는다. 없는 NOT NULL 문자열 필드(예: 응답에 없는 비밀번호)는 `''` 이다.
+  필드 / enum 값 이름이 Dart 예약어나 생성 멤버(`class`, `in`, `extra`, enum 의 `values`, `index` ...)면 뒤에 `_` 를 붙인다 (JSON key 는 그대로).
 
 ### 값
 
 - enum 은 코드(숫자, data 위치)로 주고받는다. TypeScript 필드 타입은 코드 union (`0 | 1 | 2`). 필터와 `/search` 도 코드.
 - 날짜는 `yyyy-MM-dd HH:mm:ss` (date 는 `yyyy-MM-dd`). Spring 은 요청에서 ISO 형식도 받는다.
-- 두 백엔드가 다른 타입: `tinyint` 는 Go `bool`, Spring `Int` 라 TypeScript 는 `boolean | number`.
+- 두 백엔드가 다른 타입: `tinyint` 는 Go `bool`, Spring `Int` 라 TypeScript 는 `boolean | number`. Go 목록 필터는 `true/false/1/0` 을 받는다.
   `bit` 는 Go `[]byte`(base64 문자열), Spring `Boolean` 이라 `boolean | string`. `json` 은 둘 다 문자열.
 - 문자열 필터: Go 는 `name`/`title`/`content` 는 `=`(또는 `compare` 설정), 나머지는 `like`(와일드카드는 보낸 값 그대로), Spring 은 모두 `=`.
 

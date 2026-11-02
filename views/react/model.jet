@@ -1,13 +1,15 @@
-import { get, post, put, patch, del } from '../services/api';
+{{write := !.IsView}}{{byId := .HasId && !.IsView}}import { get{{if write}}, post{{end}}{{if byId}}, put, patch, del{{end}} } from '../services/api';
 import type { {{.ModelName}}, {{.ModelName}}SearchParams } from '../types/{{.TableName | lower}}';
-import { toCount, toDone, toItem, toList, toPage, toSaved, toSavedList } from './contract';
-import type { EntityShape, Page } from './contract';
+import { toCount{{if byId}}, toDone{{end}}{{if .HasId}}, toItem{{end}}, toList, toPage{{if write}}, toSaved, toSavedList{{end}} } from './contract';
+import type { {{if write || .HasId}}EntityShape, {{end}}Page } from './contract';
 
 // Go / Spring 어느 백엔드든 같은 결과를 돌려준다 (contract.ts). Go 의 code 에러는 ApiError 로 던진다.
-type Id = NonNullable<{{.ModelName}}['{{.PK.Key}}']>;
-
-const SHAPE: EntityShape = { strict: {{if .StrictShape}}true{{else}}false{{end}}, probe: '{{.PK.Key}}' };
-
+{{if .IsView}}// view 는 읽기 전용이라 쓰기 메서드(insert/update/patch/remove)가 없다.
+{{end}}{{if !.HasId}}// id 컬럼이 없어 Go 에 /{table}/:id 경로가 없으므로 get/update/patch/remove 가 없다.
+{{end}}{{if .HasId}}type Id = NonNullable<{{.ModelName}}['{{.PK.Key}}']>;
+{{end}}
+{{if write || .HasId}}const SHAPE: EntityShape = { strict: {{if .StrictShape}}true{{else}}false{{end}}, probe: '{{.PK.Key}}' };
+{{end}}
 export default class {{.ModelName}}Model {
 {{range .Enums}}  // {{.Name | title}} 코드 (model.json map data 위치, Go / Spring 과 같은 값)
   static readonly {{.Name | lower}} = {
@@ -21,7 +23,7 @@ export default class {{.ModelName}}Model {
     return this.{{.Name | lower}}s[value] || String(value);
   }
 
-{{end}}  // 생성. Spring 은 저장한 엔티티, Go 는 {id} 만 돌려준다.
+{{end}}{{if !.IsView}}  // 생성. Spring 은 저장한 엔티티, Go 는 {id} 만 돌려준다.
   static async insert(item: Partial<{{.ModelName}}>): Promise<Partial<{{.ModelName}}>> {
     const res = await post<unknown>('/{{.TableName | lower}}', item);
     return toSaved<{{.ModelName}}>(res.data, SHAPE);
@@ -32,7 +34,7 @@ export default class {{.ModelName}}Model {
     const res = await post<unknown>('/{{.TableName | lower}}/batch', items);
     return toSavedList<{{.ModelName}}>(res.data);
   }
-
+{{end}}{{if .HasId && !.IsView}}
   // PUT /{table}/{id}: 보낸 필드만 바꾼다 (두 백엔드 모두 부분 수정). 경로의 id 가 본문 id 보다 우선한다.
   static async update(id: Id, item: Partial<{{.ModelName}}>): Promise<Partial<{{.ModelName}}>> {
     const res = await put<unknown>(`/{{.TableName | lower}}/${encodeURIComponent(String(id))}`, item);
@@ -54,17 +56,28 @@ export default class {{.ModelName}}Model {
     const res = await del<unknown>('/{{.TableName | lower}}/batch', { data: ids.map((id) => ({ {{.PK.Key}}: id })) });
     toDone(res.data);
   }
+{{end}}
 
   static async find(params?: {{.ModelName}}SearchParams): Promise<{{.ModelName}}[]> {
     const res = await get<unknown>('/{{.TableName | lower}}', { params });
     return toList<{{.ModelName}}>(res.data);
   }
 
+  // 전체 행: pagesize 1000 씩 페이지를 읽어 모은다 (Go / Spring 모두 pagesize 최대 10000).
+  // 받은 행이 pagesize 보다 적거나 전체 개수(total)만큼 모이면 멈춘다.
   static async findall(params: {{.ModelName}}SearchParams = {}): Promise<{{.ModelName}}[]> {
-    const res = await get<unknown>('/{{.TableName | lower}}', {
-      params: { ...params, page: 1, pagesize: 9999 },
-    });
-    return toList<{{.ModelName}}>(res.data);
+    const pagesize = 1000;
+    const all: {{.ModelName}}[] = [];
+    for (let page = 1; ; page++) {
+      const res = await get<unknown>('/{{.TableName | lower}}', {
+        params: { ...params, page, pagesize },
+      });
+      const list = toPage<{{.ModelName}}>(res.data);
+      all.push(...list.items);
+      if (list.items.length < pagesize || all.length >= list.total) {
+        return all;
+      }
+    }
   }
 
   // page 는 1 부터. total 은 Spring totalElements / Go total.
@@ -78,12 +91,13 @@ export default class {{.ModelName}}Model {
     return toCount(res.data);
   }
 
+{{if .HasId}}
   // 없으면 null (Go {item: null}, Spring 404 는 api 래퍼가 던진다).
   static async get(id: Id): Promise<{{.ModelName}} | null> {
     const res = await get<unknown>(`/{{.TableName | lower}}/${encodeURIComponent(String(id))}`);
     return toItem<{{.ModelName}}>(res.data, SHAPE);
   }
-{{range .SearchMethods}}
+{{end}}{{range .SearchMethods}}
   // GET /{{.TableName}}/search/{{.Segment}}?{{.Key}}= (Go: {items}, Spring: 배열)
   static async {{.MethodName}}({{.ParamName}}: {{.ParamType|raw}}): Promise<{{if .IsSingle}}{{.ModelName}} | null{{else}}{{.ModelName}}[]{{end}}> {
     const res = await get<unknown>('/{{.TableName | lower}}/search/{{.Segment}}', {

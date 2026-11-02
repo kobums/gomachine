@@ -111,13 +111,13 @@ func TestJSONKeysAgree(t *testing.T) {
 	check("ts keys", tsKeys, want)
 
 	dart := read("dart", "acct.dart")
-	check("dart fromJson keys", all(`json\['(\w+)'\] (?:as|==)`, strings.Split(dart, "factory")[1][:strings.Index(strings.Split(dart, "factory")[1], "extra:")]), want)
+	check("dart fromJson keys", unique(all(`json\['(\w+)'\]`, strings.Split(dart, "factory")[1][:strings.Index(strings.Split(dart, "factory")[1], "extra:")])), want)
 
 	// 목록 필터 이름: Go Index, Spring @RequestParam, TypeScript SearchParams
 	wantFilters := []string{"loginid", "displayName", "userid", "status", "startcreatedat", "endcreatedat", "startcreateddate", "endcreateddate"}
 	rest := read("controllers", "rest", "acct.go")
-	filters := regexp.MustCompile(`(?s)func \(c \*AcctController\) filters\(\).*?\n}`).FindString(rest)
-	check("go filters", all(`c\.Get[if64]*\("(\w+)"\)`, filters), wantFilters)
+	filters := regexp.MustCompile(`(?s)func ParseAcctFilters\(.*?\n}`).FindString(rest)
+	check("go filters", all(`get\("(\w+)"\)`, filters), wantFilters)
 
 	ctl := read("kt", "controller", "AcctController.kt")
 	list := regexp.MustCompile(`(?s)fun getAccts\((.*?)\): ResponseEntity`).FindStringSubmatch(ctl)
@@ -155,4 +155,17 @@ func TestJSONKeysAgree(t *testing.T) {
 			t.Errorf("Go search does not read query %q", key)
 		}
 	}
+}
+
+// unique 는 순서를 지키며 중복을 뺀다 (Dart fromJson 은 null 검사로 같은 key 를 두 번 읽는다).
+func unique(list []string) []string {
+	ret := make([]string, 0, len(list))
+	seen := map[string]bool{}
+	for _, v := range list {
+		if !seen[v] {
+			seen[v] = true
+			ret = append(ret, v)
+		}
+	}
+	return ret
 }

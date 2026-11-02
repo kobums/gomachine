@@ -40,6 +40,8 @@ type Column struct {
 	Nullable     bool   // information_schema.columns.is_nullable = YES
 	HasDefault   bool   // column_default 가 있다 (NULL 이 아님)
 	Default      string // column_default 원문 (예: CURRENT_TIMESTAMP, 0, abc)
+	// Dup 은 _ / 대소문자만 다른 컬럼과 이름이 겹칠 때 Name 과 JSON key 뒤에 붙인 번호다 (DedupeColumns).
+	Dup string
 }
 
 // RawColumn 은 information_schema.columns 에서 읽은 컬럼 하나다.
@@ -314,8 +316,70 @@ func JSONKey(col Column) string {
 	key := col.Key
 	if key == "" {
 		key = col.Name
+		if col.Dup != "" {
+			// Name 에 이미 번호가 붙어 있다
+			return LowerCamel(key)
+		}
 	}
-	return LowerCamel(key)
+	return LowerCamel(key) + col.Dup
+}
+
+// DedupeColumns 는 _ / 대소문자만 다른 컬럼(p_created_at 과 p_createdat, user_id 와 userId)을 찾아
+// 뒤 컬럼의 Name 과 JSON key 에 번호(2, 3 ...)를 붙인 복사본을 돌려준다. 앞(ordinal_position) 컬럼이 원래 이름을 갖는다.
+// Go 필드/변수, JSON key, 목록 필터, 검색 경로가 모두 이 이름을 쓰므로 언어 사이에 같다. SQL 컬럼(Key, Column)은 그대로다.
+func DedupeColumns(tableName string, items []Column) []Column {
+	ret := make([]Column, len(items))
+	copy(ret, items)
+	norm := func(s string) string { return strings.ToLower(strings.ReplaceAll(s, "_", "")) }
+	used := map[string]bool{}
+	for _, item := range ret {
+		if item.Dup == "" {
+			used[norm(JSONKey(item))] = true
+		}
+	}
+	seen := map[string]bool{}
+	for i := range ret {
+		if ret[i].Dup != "" {
+			continue
+		}
+		key := norm(JSONKey(ret[i]))
+		if !seen[key] {
+			seen[key] = true
+			continue
+		}
+		for n := 2; ; n++ {
+			dup := strconv.Itoa(n)
+			if !used[key+dup] {
+				used[key+dup] = true
+				ret[i].Dup = dup
+				ret[i].Name += dup
+				break
+			}
+		}
+		log.Printf("WARNING: %s column %s has the same name as another column except _ / case, generated as %s (json %s)", tableName, ret[i].Column, ret[i].Name, JSONKey(ret[i]))
+	}
+	return ret
+}
+
+// JoinVars 는 조인마다 쓰는 이름이다 (Go 변수, Extra key, TypeScript extra key). alias > name 소문자,
+// 같은 이름이 또 나오면 뒤에 번호(2, 3 ...)를 붙인다.
+func JoinVars(joins []config.GpaJoin) []string {
+	ret := make([]string, 0, len(joins))
+	used := map[string]bool{}
+	for _, join := range joins {
+		name := join.Alias
+		if name == "" {
+			name = join.Name
+		}
+		name = strings.ToLower(name)
+		v := name
+		for n := 2; used[v]; n++ {
+			v = name + strconv.Itoa(n)
+		}
+		used[v] = true
+		ret = append(ret, v)
+	}
+	return ret
 }
 
 // SearchSegment 는 GET /{table}/search/{segment} 의 경로 이름이다 (JSONKey 의 소문자).
@@ -585,26 +649,32 @@ func PasswordColumn(items []Column) string {
 }
 
 // ProtectedColumns 는 REST 입력으로 받지 않을 컬럼의 Name 목록을 돌려준다.
-// gpa.protect 가 있으면 그것을 쓰고, 없으면 User 테이블의 Level 컬럼을 기본으로 보호한다.
+// User 테이블의 Level 컬럼은 항상 보호하고 (protect 를 설정해도 빠지지 않는다), gpa.protect 컬럼을 더한다.
 // id 와 session 컬럼은 따로 처리(자동 증가 / 세션 값으로 고정)하므로 제외한다.
 func ProtectedColumns(modelName string, items []Column, gpa *config.Gpa) []string {
 	ret := make([]string, 0)
-	if gpa != nil && len(gpa.Protect) > 0 {
+	add := func(name string) {
+		for _, v := range ret {
+			if v == name {
+				return
+			}
+		}
+		ret = append(ret, name)
+	}
+	if modelName == "User" {
+		for _, item := range items {
+			if item.Name == "Level" && (gpa == nil || !isSessionColumn(item, gpa)) {
+				add(item.Name)
+			}
+		}
+	}
+	if gpa != nil {
 		for _, p := range gpa.Protect {
 			for _, item := range items {
 				if MatchColumn(item, p) && item.Name != "Id" && !isSessionColumn(item, gpa) {
-					ret = append(ret, item.Name)
+					add(item.Name)
 					break
 				}
-			}
-		}
-		return ret
-	}
-
-	if modelName == "User" {
-		for _, item := range items {
-			if item.Name == "Level" {
-				ret = append(ret, item.Name)
 			}
 		}
 	}
@@ -894,6 +964,10 @@ func ParseFunc(method string, items []Column) (Func, error) {
 			return fn, err
 		}
 		for i := range sets {
+			// id / 기본 키는 바꿀 수 없다 (다른 행을 덮어쓰거나 소유권 검사를 피할 수 있다).
+			if col := findByName(items, sets[i].Column); col != nil && (col.Name == "Id" || col.Primary) {
+				return fn, fmt.Errorf("primary key %s cannot be updated", col.Key)
+			}
 			sets[i].Compare = "column"
 		}
 		for i := range wheres {
@@ -915,6 +989,15 @@ func ParseFunc(method string, items []Column) (Func, error) {
 		seen[w.Param] = true
 	}
 	return fn, nil
+}
+
+func findByName(items []Column, name string) *Column {
+	for i := range items {
+		if items[i].Name == name {
+			return &items[i]
+		}
+	}
+	return nil
 }
 
 // matchColumns 는 토큰을 앞에서부터 가장 길게 맞는 컬럼으로 묶는다.

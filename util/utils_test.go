@@ -316,3 +316,89 @@ func TestIsNowDefault(t *testing.T) {
 		}
 	}
 }
+
+func TestProtectedColumnsUserLevel(t *testing.T) {
+	cnf := config.ModelConfig{Language: "go"}
+	items := []Column{NewColumn("user_tb", "u_id", "bigint", nil, cnf), NewColumn("user_tb", "u_email", "varchar", nil, cnf), NewColumn("user_tb", "u_level", "int", nil, cnf)}
+	cases := []struct {
+		gpa  *config.Gpa
+		want []string
+	}{
+		{nil, []string{"Level"}},
+		{&config.Gpa{}, []string{"Level"}},
+		// protect 를 설정해도 User 의 level 은 보호한다 (예전에는 빠졌다)
+		{&config.Gpa{Protect: []string{"email"}}, []string{"Level", "Email"}},
+		{&config.Gpa{Protect: []string{"level", "email"}}, []string{"Level", "Email"}},
+	}
+	for _, c := range cases {
+		if got := ProtectedColumns("User", items, c.gpa); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("ProtectedColumns(%+v) = %v, want %v", c.gpa, got, c.want)
+		}
+	}
+	if got := ProtectedColumns("Member", items, &config.Gpa{Protect: []string{"email"}}); !reflect.DeepEqual(got, []string{"Email"}) {
+		t.Errorf("non-User ProtectedColumns = %v", got)
+	}
+}
+
+func TestDedupeColumns(t *testing.T) {
+	cnf := config.ModelConfig{Language: "go"}
+	raw := []string{"p_id", "p_created_at", "p_createdat", "p_user_id", "p_userId", "p_userid", "p_name"}
+	items := make([]Column, 0)
+	for _, r := range raw {
+		items = append(items, NewColumn("post_tb", r, "bigint", nil, cnf))
+	}
+	got := DedupeColumns("post_tb", items)
+	names, keys := []string{}, []string{}
+	for _, c := range got {
+		names = append(names, c.Name)
+		keys = append(keys, JSONKey(c))
+	}
+	if want := []string{"Id", "CreatedAt", "Createdat2", "UserId", "UserId2", "Userid3", "Name"}; !reflect.DeepEqual(names, want) {
+		t.Errorf("names = %v, want %v", names, want)
+	}
+	if want := []string{"id", "createdAt", "createdat2", "userId", "userid2", "userid3", "name"}; !reflect.DeepEqual(keys, want) {
+		t.Errorf("json keys = %v, want %v", keys, want)
+	}
+	// SQL 컬럼은 그대로, 입력은 바꾸지 않는다
+	if got[2].Key != "createdat" || got[2].Column != "p_createdat" || items[2].Name != "Createdat" {
+		t.Errorf("sql names changed: %+v / input %+v", got[2], items[2])
+	}
+	// 다시 불러도 같다 (idempotent)
+	if again := DedupeColumns("post_tb", got); !reflect.DeepEqual(again, got) {
+		t.Errorf("not idempotent: %+v", again)
+	}
+	// 이미 있는 이름(createdat2)과 겹치지 않는다
+	items2 := []Column{NewColumn("t_tb", "t_createdat2", "int", nil, cnf), NewColumn("t_tb", "t_created_at", "int", nil, cnf), NewColumn("t_tb", "t_createdat", "int", nil, cnf)}
+	if got := DedupeColumns("t_tb", items2); JSONKey(got[2]) != "createdat3" {
+		t.Errorf("collision with existing suffix: %s", JSONKey(got[2]))
+	}
+	// 검색 경로 / 범위 파라미터도 번호가 붙는다
+	if seg := SearchSegment(got[2]); seg != "createdat2" {
+		t.Errorf("search segment = %s", seg)
+	}
+}
+
+func TestJoinVars(t *testing.T) {
+	joins := []config.GpaJoin{{Name: "user"}, {Name: "user"}, {Name: "User", Alias: "agent"}, {Name: "comment", Alias: "User"}}
+	if got := JoinVars(joins); !reflect.DeepEqual(got, []string{"user", "user2", "agent", "user3"}) {
+		t.Errorf("JoinVars = %v", got)
+	}
+}
+
+func TestParseFuncPrimaryUpdate(t *testing.T) {
+	cnf := config.ModelConfig{Language: "go"}
+	items := []Column{NewColumn("m_tb", "m_id", "bigint", nil, cnf), NewColumn("m_tb", "m_code", "varchar", nil, cnf), NewColumn("m_tb", "m_name", "varchar", nil, cnf)}
+	if _, err := ParseFunc("UpdateIdByName", items); err == nil {
+		t.Errorf("UpdateIdByName accepted")
+	}
+	items[1].Primary = true
+	if _, err := ParseFunc("UpdateCodeByName", items); err == nil {
+		t.Errorf("UpdateCodeByName (primary) accepted")
+	}
+	if _, err := ParseFunc("UpdateNameById", items); err != nil {
+		t.Errorf("UpdateNameById rejected: %v", err)
+	}
+	if _, err := ParseFunc("FindById", items); err != nil {
+		t.Errorf("FindById rejected: %v", err)
+	}
+}

@@ -68,7 +68,10 @@ type ModelConfig struct {
 	// 생성할 언어별 on/off. 예: {"go": true, "react": true, "spring": false}. "all": true 면 전부 생성.
 	// 비어 있으면 예전 방식대로 language 필드를 쓴다.
 	Languages map[string]bool `json:"languages"`
-	Gpa       []Gpa           `json:"table"`
+	// Go Insert 가 createddate 를 채울 때 쓰는 시간대. 비어 있으면 예전과 같은 UTC+9 (Asia/Seoul),
+	// "local" 은 서버 지역 시간, 그 밖은 IANA 이름 (예: "UTC", "America/New_York").
+	Timezone string `json:"timezone"`
+	Gpa      []Gpa  `json:"table"`
 }
 
 type Pubspec struct {

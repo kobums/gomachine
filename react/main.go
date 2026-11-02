@@ -76,6 +76,10 @@ type ReactTemplateData struct {
 	Joins         []ReactJoin
 	UniqueJoins   []ReactJoin
 	PK            ReactColumn
+	// HasId 는 id 컬럼이 있는지다. 없으면 Go 에 id 경로가 없으므로 get/update/patch/remove 를 만들지 않는다.
+	HasId bool
+	// IsView 는 view(_vw)인지다. view 는 읽기 전용이라 쓰기 메서드를 만들지 않는다.
+	IsView bool
 	// StrictShape 는 엔티티에 item 또는 code 필드가 있어 Go 래퍼({item, code})와 헷갈릴 수 있을 때 true 다.
 	// 그러면 기본 키 필드가 있는 응답을 엔티티로 본다 (contract.ts 참고).
 	StrictShape bool
@@ -107,6 +111,8 @@ func ProcessReact(packageName string, tableName string, prefix string, items []u
 
 // BuildTemplateData 는 TypeScript 계열 생성기(react, vue)가 함께 쓰는 템플릿 데이터를 만든다.
 func BuildTemplateData(packageName string, tableName string, items []util.Column, gpa *config.Gpa) ReactTemplateData {
+	// _ / 대소문자만 다른 컬럼은 Go 와 같은 규칙으로 뒤 컬럼 이름에 번호를 붙인다.
+	items = util.DedupeColumns(tableName, items)
 	modelName := util.ModelName(tableName)
 	// URL 과 파일 이름은 Go / Spring 과 같은 이름을 쓴다 (user_role_tb → userrole).
 	fileName := util.FileName(tableName)
@@ -236,11 +242,10 @@ func BuildTemplateData(packageName string, tableName string, items []util.Column
 	uniqueJoins := make([]ReactJoin, 0)
 	seenJoin := map[string]bool{}
 	if gpa != nil {
-		for _, join := range gpa.Join {
-			alias := join.Alias
-			if alias == "" {
-				alias = join.Name
-			}
+		// extra key 는 Go 와 같다 (alias 또는 name 소문자, 겹치면 번호).
+		joinVars := util.JoinVars(gpa.Join)
+		for i, join := range gpa.Join {
+			alias := joinVars[i]
 			j := ReactJoin{
 				Name:      join.Name,
 				Column:    join.Column,
@@ -256,7 +261,16 @@ func BuildTemplateData(packageName string, tableName string, items []util.Column
 		}
 	}
 
+	hasId := false
+	for _, col := range items {
+		if col.Name == "Id" {
+			hasId = true
+		}
+	}
+
 	return ReactTemplateData{
+		HasId:         hasId,
+		IsView:        util.GetTableType(tableName) == "view",
 		PackageName:   packageName,
 		TableName:     fileName,
 		ModelName:     modelName,

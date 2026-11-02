@@ -8,7 +8,8 @@ import (
     "fmt"
     "strings"
     {{if needsTime}}"time"{{end}}
-    {{if hasNullable}}"reflect"{{end}}
+    {{if hasNullable || needsReflect}}"reflect"{{end}}
+    {{if !isView && hasId}}"encoding/json"{{end}}
 
     log "{{packageName}}/global/log"
     _ "github.com/go-sql-driver/mysql"
@@ -180,13 +181,17 @@ func (p *{{name}}Manager) GetQuery() string {
 
     var ret strings.Builder
 
-    ret.WriteString("select {{range i, v := items}}{{if i > 0}}, {{end}}{{v.Column}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, {{.Column}}{{end}}{{end}} from {{tableName}}{{range joins}}, {{.Name}}_tb{{end}}")
+    ret.WriteString("{{selectQuery|raw}}")
 
     if p.Index != "" {
         ret.WriteString(" use index(")
         ret.WriteString(p.Index)
         ret.WriteString(")")
     }
+    {{if joinFrom != ""}}
+    // 조인 테이블은 left join 이다 (조인 키가 NULL 이거나 조인 행이 없어도 이 테이블의 행은 나온다).
+    ret.WriteString("{{joinFrom|raw}}")
+    {{end}}
 
     if p.JoinQuery != "" {
         ret.WriteString(", ")
@@ -194,9 +199,6 @@ func (p *{{name}}Manager) GetQuery() string {
     }
 
     ret.WriteString(" where 1=1 ")
-    {{range joins}}
-    ret.WriteString("and {{prefix}}_{{.Column}} = {{.Prefix}}_id ")
-    {{end}}
 
     return ret.String()
 }
@@ -208,14 +210,17 @@ func (p *{{name}}Manager) GetQuerySelect() string {
 
     var ret strings.Builder
     
-    // 조인 조건을 붙이므로 GetQuery 와 같이 조인 테이블도 from 에 넣는다.
-    ret.WriteString("select count(*) from {{tableName}}{{range joins}}, {{.Name}}_tb{{end}}")
+    // GetQuery 와 같은 from (left join) 이라 목록과 개수가 같다.
+    ret.WriteString("select count(*) from {{tableName}}")
 
     if p.Index != "" {
         ret.WriteString(" use index(")
         ret.WriteString(p.Index)
         ret.WriteString(")")
     }
+    {{if joinFrom != ""}}
+    ret.WriteString("{{joinFrom|raw}}")
+    {{end}}
 
     if p.JoinQuery != "" {
         ret.WriteString(", ")
@@ -223,9 +228,6 @@ func (p *{{name}}Manager) GetQuerySelect() string {
     }
 
     ret.WriteString(" where 1=1 ")
-    {{range joins}}
-    ret.WriteString("and {{prefix}}_{{.Column}} = {{.Prefix}}_id ")
-    {{end}}
 
     return ret.String()
 }
@@ -236,20 +238,20 @@ func (p *{{name}}Manager) GetQueryGroup(name string) string {
     }
 
     var ret strings.Builder
-    ret.WriteString("select {{prefix}}_")
+    ret.WriteString("select {{wherePrefix}}")
     ret.WriteString(name)
-    ret.WriteString(", count(*) from {{tableName}}{{range joins}}, {{.Name}}_tb{{end}} ")
+    ret.WriteString(", count(*) from {{tableName}}")
 
     if p.Index != "" {
         ret.WriteString(" use index(")
         ret.WriteString(p.Index)
         ret.WriteString(")")
     }
+    {{if joinFrom != ""}}
+    ret.WriteString("{{joinFrom|raw}}")
+    {{end}}
 
     ret.WriteString(" where 1=1 ")
-    {{range joins}}
-    ret.WriteString("and {{prefix}}_{{.Column}} = {{.Prefix}}_id ")
-    {{end}}
 
     return ret.String()
 }
@@ -278,8 +280,7 @@ func (p *{{name}}Manager) Insert(item *{{inputName}}) error {
 
     {{if createdDefault}}
     if item.Createddate == "" {
-        t := time.Now().UTC().Add(time.Hour * 9)
-        //t := time.Now()
+        {{createdNow|raw}}
         item.Createddate = fmt.Sprintf("%04d-%02d-%02d %02d:%02d:%02d", t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second())
     }
     {{end}}
@@ -369,7 +370,7 @@ func (p *{{name}}Manager) MakeQuery(initQuery string , postQuery string, initPar
     for _, arg := range args {
         switch v := arg.(type) {        
         case Where:
-            clause, whereParams := WhereClause("{{prefix}}_", v, &pos)
+            clause, whereParams := WhereClause("{{wherePrefix}}", v, &pos)
             query.WriteString(clause)
             params = append(params, whereParams...)
         case Custom:
@@ -403,7 +404,13 @@ func (p *{{name}}Manager) MakeQuery(initQuery string , postQuery string, initPar
     return err
 }
 
-{{if hasId}}func (p *{{name}}Manager) Update(item *{{inputName}}) error {
+{{if hasId}}// Update 는 item 전체를 저장한다.
+func (p *{{name}}Manager) Update(item *{{inputName}}) error {
+    return p.UpdateNulls(item, nil)
+}
+
+// UpdateNulls 는 Update 와 같고, nulls 에 있는 null 허용 컬럼(필드 이름)은 값 대신 NULL 로 저장한다 (REST 부분 수정).
+func (p *{{name}}Manager) UpdateNulls(item *{{inputName}}, nulls map[string]bool) error {
     if !p.Conn.IsConnect() {
         return errors.New("Connection Error")
     }
@@ -416,7 +423,7 @@ func (p *{{name}}Manager) MakeQuery(initQuery string , postQuery string, initPar
 	{{end}}{{end}}
 
 	query := "update {{tableName}} set {{range i, v := nonIdItems}}{{if i > 0}}, {{end}}{{v.Column}} = ?{{end}} where {{prefix}}_id = ?"
-	_, err := p.Exec(query{{range nonIdItems}}, {{writeParam(.Name, "item." + .Name)|raw}}{{end}}, item.Id)
+	_, err := p.Exec(query{{range nonIdItems}}, {{writeNull(.Name, "item." + .Name)|raw}}{{end}}, item.Id)
 
     if err != nil {
         if p.Log {
@@ -480,6 +487,48 @@ func (p *{{name}}Manager) nullIfZero(v interface{}) interface{} {
     return v
 }
 {{end}}
+{{if hasId}}
+// nullIf 는 nulls 에 name 이 있으면 NULL(nil), 없으면 v 다.
+func (p *{{name}}Manager) nullIf(nulls map[string]bool, name string, v interface{}) interface{} {
+    if nulls[name] {
+        return nil
+    }
+    return v
+}
+
+// nullableKeys{{name}} 은 null 허용 컬럼의 JSON key(소문자) → 필드 이름이다 (비밀번호 제외).
+var nullableKeys{{name}} = map[string]string{
+{{range nullCols}}    "{{.Key}}": "{{.Column}}",
+{{end}}}
+
+// Merge{{name}}Nulls 는 부분 수정 본문(JSON 객체)으로 NULL 로 저장할 필드를 정한다.
+// nulls 는 GetRaw 가 돌려준 기존 행의 NULL 컬럼이다. 본문에 없는 필드는 기존 상태(NULL 이면 NULL)를 유지하고,
+// 본문에 null 로 보낸 필드는 NULL 로 지우고, 값을 보낸 필드는 그 값을 쓴다. key 는 Go json 과 같이 대소문자를 가리지 않는다.
+func Merge{{name}}Nulls(nulls map[string]bool, body []byte) map[string]bool {
+    ret := map[string]bool{}
+    for k, v := range nulls {
+        if v {
+            ret[k] = true
+        }
+    }
+    var fields map[string]json.RawMessage
+    if err := json.Unmarshal(body, &fields); err != nil {
+        return ret
+    }
+    for k, v := range fields {
+        name, ok := nullableKeys{{name}}[strings.ToLower(k)]
+        if !ok {
+            continue
+        }
+        if strings.TrimSpace(string(v)) == "null" {
+            ret[name] = true
+        } else {
+            delete(ret, name)
+        }
+    }
+    return ret
+}
+{{end}}
 {{end}}
 
 func (p *{{name}}Manager) GetIdentity() int64 {
@@ -510,12 +559,13 @@ func (p *{{name}}Manager) ReadRow(rows *sql.Rows) *{{name}} {
     var item {{name}}
     var err error
 
-    {{range joins}}var _{{joinVar(.)}} {{camel(.Name)}}
+    {{range goJoins}}var _{{.Var}} {{.Model}}
     {{end}}
 
+    // null 허용 컬럼(과 조인 컬럼)은 sql.Null* 로 읽어 0 값으로 바꾼다.
+    {{scanDecls|raw}}
+
     if rows.Next() {
-        // null 허용 컬럼은 sql.Null* 로 읽어 0 값으로 바꾼다.
-        {{scanDecls|raw}}
         err = rows.Scan({{scanTargets|raw}})
         {{scanAssigns|raw}}
         {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime" || v.OriginalType == "timestamp"}}
@@ -543,9 +593,7 @@ func (p *{{name}}Manager) ReadRow(rows *sql.Rows) *{{name}} {
     } else {
 
         item.InitExtra()
-        {{range joins}}_{{joinVar(.)}}.InitExtra()
-        item.AddExtra("{{joinVar(.)}}",  _{{joinVar(.)}})
-{{end}}
+        {{joinExtra|raw}}
         return &item
     }
 }
@@ -555,7 +603,7 @@ func (p *{{name}}Manager) ReadRows(rows *sql.Rows) []{{name}} {
 
     for rows.Next() {
         var item {{name}}
-        {{range joins}}var _{{joinVar(.)}} {{camel(.Name)}}
+        {{range goJoins}}var _{{.Var}} {{.Model}}
         {{end}}
 
         // null 허용 컬럼은 sql.Null* 로 읽어 0 값으로 바꾼다.
@@ -580,9 +628,7 @@ func (p *{{name}}Manager) ReadRows(rows *sql.Rows) []{{name}} {
 		{{end}}{{end}}
 
         item.InitExtra()
-        {{range joins}}_{{joinVar(.)}}.InitExtra()
-        item.AddExtra("{{joinVar(.)}}",  _{{joinVar(.)}})
-{{end}}
+        {{joinExtra|raw}}
         items = append(items, item)
     }
 
@@ -603,11 +649,7 @@ func (p *{{name}}Manager) ReadRows(rows *sql.Rows) []{{name}} {
 
     var query strings.Builder
     query.WriteString(p.GetQuery())
-    query.WriteString(" and {{prefix}}_id = ?")
-
-    {{range joins}}
-    query.WriteString(" and {{prefix}}_{{.Column}} = {{.Prefix}}_id")
-    {{end}}
+    query.WriteString(" and {{qual}}{{prefix}}_id = ?")
     
     rows, err := p.Query(query.String(), id)
 
@@ -622,6 +664,53 @@ func (p *{{name}}Manager) ReadRows(rows *sql.Rows) []{{name}} {
     defer rows.Close()
 
     return p.ReadRow(rows)
+}
+
+// GetRaw 는 조인 없이 이 테이블의 행만 읽는다 (수정/삭제/소유권 검사용: 조인 키가 NULL 이거나 조인 행이 없어도 읽는다).
+// 두 번째 값은 NULL 이었던 null 허용 컬럼(필드 이름)이다. 부분 수정에서 보내지 않은 필드의 NULL 을 유지할 때 쓴다.
+func (p *{{name}}Manager) GetRaw(id int64) (*{{name}}, map[string]bool) {
+    if !p.Conn.IsConnect() {
+        return nil, nil
+    }
+
+    p.LastError = nil
+
+    rows, err := p.Query("{{rawSelect|raw}} where {{prefix}}_id = ?", id)
+    if err != nil {
+       p.LastError = err
+       if p.Log {
+          log.Error().Str("error", err.Error()).Msg("SQL")
+       }
+       return nil, nil
+    }
+
+    defer rows.Close()
+
+    if !rows.Next() {
+        if err := rows.Err(); err != nil {
+            p.LastError = err
+            log.Error().Str("error", err.Error()).Msg("SQL")
+        }
+        return nil, nil
+    }
+
+    var item {{name}}
+    nulls := map[string]bool{}
+    {{rawDecls|raw}}
+    if err := rows.Scan({{rawTargets|raw}}); err != nil {
+        p.LastError = err
+        log.Error().Str("error", err.Error()).Msg("SQL")
+        return nil, nil
+    }
+    {{rawAssigns|raw}}
+    {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime" || v.OriginalType == "timestamp"}}
+    if item.{{v.Name}} == "0000-00-00 00:00:00" || item.{{v.Name}} == "1000-01-01 00:00:00" || item.{{v.Name}} == "9999-01-01 00:00:00" || item.{{v.Name}} == "0000-00-00" || item.{{v.Name}} == "1000-01-01" {
+        item.{{v.Name}} = ""
+    }
+    {{end}}{{end}}
+
+    item.InitExtra()
+    return &item, nulls
 }
 {{end}}
 
@@ -717,7 +806,7 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
             }
             orderby = item.Order
         case Where:
-            clause, whereParams := WhereClause("{{prefix}}_", v, &pos)
+            clause, whereParams := WhereClause("{{wherePrefix}}", v, &pos)
             query.WriteString(clause)
             params = append(params, whereParams...)
         case Custom:
@@ -739,7 +828,7 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
     
     if page > 0 && pagesize > 0 {
         if orderby == "" {
-            orderby = "{{prefix}}_{{orderKey}} desc"
+            orderby = "{{qual}}{{prefix}}_{{orderKey}} desc"
         } else {
             // 알려진 컬럼 이름(created_at, createdat ...)만 SQL 컬럼으로 바꾼다.
             orderby = p.FixOrder(orderby)
@@ -761,7 +850,7 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
         }
     } else {
         if orderby == "" {
-            orderby = "{{prefix}}_{{orderKey}}"
+            orderby = "{{qual}}{{prefix}}_{{orderKey}}"
         } else {
             orderby = p.FixOrder(orderby)
         }
@@ -885,7 +974,7 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
                 // 예전 생성 코드와 같이 이 함수의 in 조건은 항상 기본 키 컬럼에 건다.
                 item.Column = "{{orderKey}}"
             }
-            clause, whereParams := WhereClause("{{prefix}}_", item, nil)
+            clause, whereParams := WhereClause("{{wherePrefix}}", item, nil)
             query += clause
             params = append(params, whereParams...)
         case Custom:
@@ -900,7 +989,7 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
     
     if page > 0 && pagesize > 0 {
         if orderby == "" {
-            orderby = "{{prefix}}_{{orderKey}} desc"
+            orderby = "{{qual}}{{prefix}}_{{orderKey}} desc"
         } else {
             orderby = p.FixOrder(orderby)
         }
@@ -918,7 +1007,7 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
         */
     } else {
         if orderby == "" {
-            orderby = "{{prefix}}_{{orderKey}}"
+            orderby = "{{qual}}{{prefix}}_{{orderKey}}"
         } else {
             orderby = p.FixOrder(orderby)
         }
@@ -966,7 +1055,7 @@ func (p *{{name}}Manager) GroupBy(name string, args []interface{}) []Groupby {
     for _, arg := range args {
         switch v := arg.(type) {
         case Where:
-            clause, whereParams := WhereClause("{{prefix}}_", v, &pos)
+            clause, whereParams := WhereClause("{{wherePrefix}}", v, &pos)
             query.WriteString(clause)
             params = append(params, whereParams...)
         case Custom:
@@ -982,7 +1071,7 @@ func (p *{{name}}Manager) GroupBy(name string, args []interface{}) []Groupby {
         }
     }
     
-    query.WriteString(" group by {{prefix}}_")
+    query.WriteString(" group by {{wherePrefix}}")
     query.WriteString(name)
 
     rows, err := p.Query(baseQuery + query.String(), params...)
