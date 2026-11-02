@@ -12,7 +12,8 @@
     "vue": false
   },
   "goModelFilePath": "",
-  "kotlinModelFilePath": "../your-project/your-project_spring",
+  "kotlinModelFilePath": "../your-project/your-project_spring/src/main/kotlin/com/example/app",
+  "kotlinPackage": "com.example.app",
   "dartModelFilePath": "../your-project/your-project_app/lib/model/",
   "reactModelFilePath": "../your-project/your-project_front",
   "vueModelFilePath": "../your-project/your-project_vue",

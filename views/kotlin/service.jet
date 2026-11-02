@@ -1,21 +1,22 @@
-package com.gowoobro.gymspring.service
+package {{.BasePackage}}.service
 
-import com.gowoobro.gymspring.entity.{{.ModelName}}
-import com.gowoobro.gymspring.entity.{{.ModelName}}CreateRequest
-import com.gowoobro.gymspring.entity.{{.ModelName}}UpdateRequest
-import com.gowoobro.gymspring.entity.{{.ModelName}}PatchRequest
-import com.gowoobro.gymspring.repository.{{.ModelName}}Repository
+import {{.BasePackage}}.entity.{{.ModelName}}
+import {{.BasePackage}}.entity.{{.ModelName}}CreateRequest
+import {{.BasePackage}}.entity.{{.ModelName}}UpdateRequest
+import {{.BasePackage}}.entity.{{.ModelName}}PatchRequest
+import {{.BasePackage}}.repository.{{.ModelName}}Repository
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.PageRequest
 import org.springframework.data.domain.Pageable
 {{if .HasPassword}}import org.springframework.security.crypto.password.PasswordEncoder{{- end}}
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
-{{if .HasDateTime}}import java.time.LocalDateTime{{end}}
-{{if .HasDecimal}}import java.math.BigDecimal{{end}}
-{{range .Enums}}import com.gowoobro.gymspring.enums.{{.EnumPackage}}.{{.Name|title}}
+{{if .HasDateTime}}import java.time.LocalDateTime
+{{end}}{{if .HasDate}}import java.time.LocalDate
+{{end}}{{if .HasDecimal}}import java.math.BigDecimal
+{{end}}{{base := .BasePackage}}{{range .Enums}}import {{base}}.enums.{{.EnumPackage}}.{{.Name}}
 {{end}}
-{{allJoins := .Joins}}
+{{allJoins := .Joins}}{{pk := .PK}}
 @Service
 @Transactional
 class {{.ModelName}}Service(private val {{.ModelName|lower}}Repository: {{.ModelName}}Repository{{if .HasPassword}}, private val passwordEncoder: PasswordEncoder{{end}}) {
@@ -25,7 +26,7 @@ class {{.ModelName}}Service(private val {{.ModelName|lower}}Repository: {{.Model
         return {{.ModelName|lower}}Repository.findAll(pageable)
     }
 
-    fun findById(id: Long): {{.ModelName}}? {
+    fun findById(id: {{pk.KotlinType}}): {{.ModelName}}? {
         return {{.ModelName|lower}}Repository.findById(id).orElse(null)
     }
 
@@ -33,50 +34,47 @@ class {{.ModelName}}Service(private val {{.ModelName|lower}}Repository: {{.Model
         return {{.ModelName|lower}}Repository.count()
     }
 
-{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if .Name != "Id" && not .IsPassword}}{{if not joinData}}
-    fun findBy{{.Name}}({{.Name|lower}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): List<{{.ModelName}}> {
-        return {{.ModelName|lower}}Repository.findBy{{.Name}}({{.Name|lower}})
+{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if .IsSearchable}}{{if not joinData}}
+    fun findBy{{.Name}}({{.Field|raw}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): List<{{.ModelName}}> {
+        return {{.ModelName|lower}}Repository.findBy{{.Name}}({{.Field|raw}})
     }
 {{end}}{{if joinData}}
-    fun findBy{{.Name}}({{joinData.Alias|lower}}: Long): List<{{.ModelName}}> {
-        return {{.ModelName|lower}}Repository.findBy{{joinData.ColumnName}}Id({{joinData.Alias|lower}})
+    fun findBy{{.Name}}({{joinData.AliasVar|raw}}: {{.KotlinType}}): List<{{.ModelName}}> {
+        return {{.ModelName|lower}}Repository.findBy{{joinData.ColumnName}}Id({{joinData.AliasVar|raw}})
     }
 {{end}}{{end}}{{end}}
-
+{{if not .IsView}}
     fun create(request: {{.ModelName}}CreateRequest): {{.ModelName}} {
         val entity = {{.ModelName}}(
-{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if not .IsPrimaryKey}}{{if not joinData}}            {{.Name|lower}} = {{if .IsProtected}}{{if .HasDefault}}{{.DefaultValue|raw}}{{else}}null{{end}},{{else if .IsPassword}}if (request.{{.Name|lower}}.isBlank()) "" else passwordEncoder.encode(request.{{.Name|lower}}),{{else}}request.{{.Name|lower}},{{end}}
-{{end}}{{if joinData}}            {{joinData.ColumnName}}Id = {{if .IsProtected}}{{if .HasDefault}}{{.DefaultValue|raw}}{{else}}null{{end}}{{else}}request.{{joinData.ColumnName|lower}}{{end}},
-{{end}}{{end}}{{end}}        )
+{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if not .IsPrimaryKey}}            {{if joinData}}{{joinData.ColumnName}}Id{{else}}{{.Field|raw}}{{end}} = {{if .IsProtected}}{{if .HasDefault}}{{.DefaultValue|raw}}{{else}}null{{end}}{{else if .IsPassword}}if (request.{{.Field|raw}}.isBlank()) "" else passwordEncoder.encode(request.{{.Field|raw}}){{else}}request.{{.Field|raw}}{{end}},
+{{end}}{{end}}        )
         return {{.ModelName|lower}}Repository.save(entity)
     }
 
     fun createBatch(requests: List<{{.ModelName}}CreateRequest>): List<{{.ModelName}}> {
         val entities = requests.map { request ->
             {{.ModelName}}(
-{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if not .IsPrimaryKey}}{{if not joinData}}                {{.Name|lower}} = {{if .IsProtected}}{{if .HasDefault}}{{.DefaultValue|raw}}{{else}}null{{end}},{{else if .IsPassword}}if (request.{{.Name|lower}}.isBlank()) "" else passwordEncoder.encode(request.{{.Name|lower}}),{{else}}request.{{.Name|lower}},{{end}}
-{{end}}{{if joinData}}                {{joinData.ColumnName}}Id = {{if .IsProtected}}{{if .HasDefault}}{{.DefaultValue|raw}}{{else}}null{{end}}{{else}}request.{{joinData.ColumnName|lower}}{{end}},
-{{end}}{{end}}{{end}}            )
+{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if not .IsPrimaryKey}}                {{if joinData}}{{joinData.ColumnName}}Id{{else}}{{.Field|raw}}{{end}} = {{if .IsProtected}}{{if .HasDefault}}{{.DefaultValue|raw}}{{else}}null{{end}}{{else if .IsPassword}}if (request.{{.Field|raw}}.isBlank()) "" else passwordEncoder.encode(request.{{.Field|raw}}){{else}}request.{{.Field|raw}}{{end}},
+{{end}}{{end}}            )
         }
         return {{.ModelName|lower}}Repository.saveAll(entities)
     }
 
     fun update(request: {{.ModelName}}UpdateRequest): {{.ModelName}}? {
-        val existing = {{.ModelName|lower}}Repository.findById(request.id).orElse(null) ?: return null
+        val existing = {{.ModelName|lower}}Repository.findById(request.{{pk.Field|raw}}).orElse(null) ?: return null
         {{- if .HasPassword}}
         // 비밀번호를 비워 보내면 기존 해시를 유지한다.
-        val encodedPassword = if (request.{{.PasswordField}}.isBlank()) {
-            existing.{{.PasswordField}}
+        val encodedPassword = if (request.{{.PasswordField|raw}}.isBlank()) {
+            existing.{{.PasswordField|raw}}
         } else {
-            passwordEncoder.encode(request.{{.PasswordField}})
+            passwordEncoder.encode(request.{{.PasswordField|raw}})
         }
         {{end}}
 
         // 보호 컬럼(protect)은 기존 값을 유지한다.
         val updated = existing.copy(
-{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if not .IsPrimaryKey && not .IsProtected}}{{if not joinData}}            {{.Name|lower}} = {{if .IsPassword}}encodedPassword,{{else}}request.{{.Name|lower}},{{end}}
-{{end}}{{if joinData}}            {{joinData.ColumnName}}Id = request.{{joinData.ColumnName|lower}},
-{{end}}{{end}}{{end}}        )
+{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if not .IsPrimaryKey && not .IsProtected}}            {{if joinData}}{{joinData.ColumnName}}Id{{else}}{{.Field|raw}}{{end}} = {{if .IsPassword}}encodedPassword{{else}}request.{{.Field|raw}}{{end}},
+{{end}}{{end}}        )
         return {{.ModelName|lower}}Repository.save(updated)
     }
 
@@ -89,7 +87,7 @@ class {{.ModelName}}Service(private val {{.ModelName|lower}}Repository: {{.Model
         }
     }
 
-    fun deleteById(id: Long): Boolean {
+    fun deleteById(id: {{pk.KotlinType}}): Boolean {
         return try {
             {{.ModelName|lower}}Repository.deleteById(id)
             true
@@ -108,11 +106,11 @@ class {{.ModelName}}Service(private val {{.ModelName|lower}}Repository: {{.Model
     }
 
     fun patch(request: {{.ModelName}}PatchRequest): {{.ModelName}}? {
-        val existing = {{.ModelName|lower}}Repository.findById(request.id).orElse(null) ?: return null
+        val existing = {{.ModelName|lower}}Repository.findById(request.{{pk.Field|raw}}).orElse(null) ?: return null
 
         val updated = existing.copy(
-{{range .Columns}}{{if not .IsPrimaryKey && not .IsProtected}}{{joinData := findJoinByColumn(.DBName, allJoins)}}            {{if joinData}}{{joinData.ColumnName}}Id{{else}}{{.Name|lower}}{{end}} = {{if .IsPassword}}request.{{.Name|lower}}?.takeIf { it.isNotBlank() }?.let { passwordEncoder.encode(it) }{{else}}request.{{.Name|lower}}{{end}} ?: existing.{{if joinData}}{{joinData.ColumnName}}Id{{else}}{{.Name|lower}}{{end}},
+{{range .Columns}}{{if not .IsPrimaryKey && not .IsProtected}}{{joinData := findJoinByColumn(.DBName, allJoins)}}            {{if joinData}}{{joinData.ColumnName}}Id{{else}}{{.Field|raw}}{{end}} = {{if .IsPassword}}request.{{.Field|raw}}?.takeIf { it.isNotBlank() }?.let { passwordEncoder.encode(it) }{{else}}request.{{.Field|raw}}{{end}} ?: existing.{{if joinData}}{{joinData.ColumnName}}Id{{else}}{{.Field|raw}}{{end}},
 {{end}}{{end}}        )
         return {{.ModelName|lower}}Repository.save(updated)
     }
-}
+{{end}}}

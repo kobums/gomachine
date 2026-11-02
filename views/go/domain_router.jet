@@ -4,7 +4,12 @@ import (
 {{if needsJson}}
 	"encoding/json"
 {{end}}
+{{if needsStrconv}}
 	"strconv"
+{{end}}
+{{if needsStrings}}
+	"strings"
+{{end}}
 {{if needsLog}}
 	"{{packageName}}/global/log"
 {{end}}
@@ -13,15 +18,17 @@ import (
 {{else}}
 	"{{packageName}}/controllers/rest"
 {{end}}
-{{range enumImports}}
-	"{{packageName}}/models/{{.}}"
+{{if needsConst}}
+	{{constImport|raw}}
 {{end}}
+{{if needsModels}}
 	"{{packageName}}/models"
+{{end}}
 	"github.com/gofiber/fiber/v2"
 )
 
-// Setup{{domainName|title}}Routes sets up routes for {{domainName}} domain
-func Setup{{domainName|title}}Routes(group fiber.Router) {
+// Setup{{modelName}}Routes sets up routes for {{domainName}} domain
+func Setup{{modelName}}Routes(group fiber.Router) {
 {{range routes}}
 	group.{{.Method}}("{{.URL}}", func(c *fiber.Ctx) error {
 {{.ParamCode|raw}}

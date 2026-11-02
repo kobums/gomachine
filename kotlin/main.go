@@ -1,6 +1,7 @@
 package kotlin
 
 import (
+	"bytes"
 	"database/sql"
 	"gomachine/config"
 	"gomachine/util"
@@ -14,18 +15,22 @@ import (
 
 type KotlinColumn struct {
 	Name         string
+	Field        string // Kotlin 프로퍼티 이름 (예약어면 backtick)
 	DBName       string
 	KotlinType   string
 	DBType       string // Original DB type (Int, String, etc.) for Response
 	ModelName    string
 	IsNullable   bool
 	IsPrimaryKey bool
+	IsGenerated  bool // 정수형 기본 키: @GeneratedValue(IDENTITY)
 	HasDefault   bool
 	DefaultValue string
 	IsEnum       bool
 	EnumType     string
-	IsPassword   bool // 비밀번호 컬럼: 응답/검색에서 제외하고 저장 시 해시한다
-	IsProtected  bool // 보호 컬럼: Create/Update/Patch 요청으로 바꿀 수 없다
+	IsPassword   bool   // 비밀번호 컬럼: 응답/검색에서 제외하고 저장 시 해시한다
+	IsProtected  bool   // 보호 컬럼: Create/Update/Patch 요청으로 바꿀 수 없다
+	IsSearchable bool   // 목록 필터 / /search 엔드포인트 / findBy 를 만든다
+	DateFormat   string // LocalDateTime / LocalDate 요청 파라미터의 @DateTimeFormat ISO 값 (DATE_TIME / DATE)
 }
 
 // KotlinSession 은 세션 값(SessionProvider.currentValue(Key))과 엔티티 컬럼의 매핑이다.
@@ -38,8 +43,10 @@ type KotlinSession struct {
 }
 
 type KotlinEnumData struct {
-	Name        string
-	Data        []string
+	Name        string // enum class 이름 (CamelCase)
+	ExtraField  string // ExtraInfo 프로퍼티 이름
+	ColumnField string // 이 enum 을 쓰는 엔티티 프로퍼티. 컬럼이 없으면 ""
+	Items       []util.EnumItem
 	EnumPackage string
 }
 
@@ -49,6 +56,7 @@ type KotlinJoin struct {
 	ColumnName      string // camelCase column name for Kotlin
 	Prefix          string
 	Alias           string
+	AliasVar        string // 별칭을 매개변수로 쓸 때의 이름
 	ModelName       string
 	ParentModelName string // The main model name
 	Columns         []KotlinColumn
@@ -62,12 +70,18 @@ type EntityGraphPath struct {
 }
 
 type KotlinTemplateData struct {
+	BasePackage      string // 생성 코드의 기본 패키지 (kotlinPackage)
 	PackageName      string
 	TableName        string
 	ModelName        string
+	ModelVar         string // 모델을 매개변수로 쓸 때의 이름
 	Columns          []KotlinColumn
-	HasDateTime      bool
+	PK               KotlinColumn // 기본 키 컬럼
+	HasDateTime      bool         // LocalDateTime 컬럼이 있다
+	HasDate          bool         // LocalDate 컬럼이 있다
+	HasDateFilter    bool         // 목록 필터에 날짜 범위 컬럼이 있다
 	HasDecimal       bool
+	IsView           bool // _vw: 읽기 전용 (쓰기 엔드포인트/서비스 메서드 없음)
 	Enums            []KotlinEnumData
 	Joins            []KotlinJoin
 	UniqueJoinNames  []string          // Unique join model names for imports
@@ -135,20 +149,70 @@ func buildEntityGraphPaths(joins []KotlinJoin, globalJoinsMap map[string][]confi
 	return paths
 }
 
+// kotlinField 는 컬럼의 Kotlin 프로퍼티 이름이다. 밑줄 하나짜리 컬럼은 예전과 같이 전부 소문자 (createddate),
+// 밑줄이 더 있으면 camelCase (created_at → createdAt). 예약어는 backtick 으로 감싼다.
+func kotlinField(col util.Column) string {
+	key := col.Key
+	if key == "" {
+		key = col.Name
+	}
+	return util.KotlinIdent(util.LowerCamel(key))
+}
+
+// findPrimaryKey 는 기본 키 컬럼 위치다. gpa.primary > 이름이 id 인 컬럼 > 첫 번째 컬럼 순서.
+func findPrimaryKey(columns []util.Column, gpa *config.Gpa) int {
+	if gpa != nil {
+		for _, p := range gpa.Primary {
+			for i, col := range columns {
+				if util.MatchColumn(col, p) {
+					return i
+				}
+			}
+		}
+	}
+	for i, col := range columns {
+		if col.Name == "Id" {
+			return i
+		}
+	}
+	return 0
+}
+
+func defaultValue(kotlinType string) string {
+	switch kotlinType {
+	case "LocalDateTime":
+		return "LocalDateTime.now()"
+	case "LocalDate":
+		return "LocalDate.now()"
+	case "BigDecimal":
+		return "BigDecimal.ZERO"
+	case "String":
+		return `""`
+	case "Int":
+		return "0"
+	case "Long":
+		return "0L"
+	case "Double":
+		return "0.0"
+	case "Boolean":
+		return "false"
+	case "ByteArray":
+		return "ByteArray(0)"
+	}
+	return ""
+}
+
 func ProcessKotlin(packageName string, tableName string, prefix string, columns []util.Column, db *sql.DB, gpa *config.Gpa, version string, auth string, cnf config.ModelConfig) {
-	modelName := strings.Title(util.GetTableName(tableName))
+	modelName := util.ModelName(tableName)
 
 	// Build global joins map for recursive entity graph paths
 	globalJoinsMap := buildGlobalJoinsMap(cnf)
 
-	// Determine target path
-	var targetPath string
-	if cnf.KotlinModelFilePath != "" {
-		targetPath = cnf.KotlinModelFilePath
-	} else if len(os.Args) > 1 && os.Args[1] != "" {
-		targetPath = os.Args[1]
-	} else {
-		targetPath = "../gym/gymspring"
+	// 출력 경로는 kotlinModelFilePath 만 쓴다 (main.go 가 경로 없는 언어는 건너뛴다).
+	targetPath := cnf.KotlinModelFilePath
+	if targetPath == "" {
+		log.Println("kotlinModelFilePath is not set, skip kotlin")
+		return
 	}
 
 	// Make sure the target directory exists
@@ -159,108 +223,96 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 		}
 	}
 
-	// Build enum map for easy lookup
-	enumMap := make(map[string][]string)
-	if gpa != nil && gpa.Map != nil {
-		for _, gpaMap := range gpa.Map {
-			enumMap[strings.ToLower(gpaMap.Name)] = gpaMap.Data
-		}
-	}
-
 	protects := util.ProtectedColumns(modelName, columns, gpa)
 	kotlinColumns := make([]KotlinColumn, 0)
 	hasDateTime := false
+	hasDate := false
+	hasDateFilter := false
 	hasDecimal := false
+	pkIndex := findPrimaryKey(columns, gpa)
 
 	for i, col := range columns {
-		// Check if this is primary key (usually first column with "id" in name)
-		isPrimaryKey := i == 0 && strings.Contains(strings.ToLower(col.Column), "id")
+		isPrimaryKey := i == pkIndex
 
 		// Check for nullable and default values based on type and position
-		isNullable := !isPrimaryKey && (col.Type == "LocalDateTime" || strings.Contains(col.Column, "_date"))
+		isDateType := col.Type == "LocalDateTime" || col.Type == "LocalDate"
+		isNullable := !isPrimaryKey && (isDateType || strings.Contains(col.Column, "_date"))
 		hasDefault := false
-		defaultValue := ""
+		defValue := ""
 
 		// Check if this column is an enum type
-		colNameLower := strings.ToLower(col.Name)
 		isEnumType := false
 		enumTypeName := ""
-		if enumData, isEnum := enumMap[colNameLower]; isEnum {
+		if m := util.FindEnumMap(gpa, col.Key); m != nil {
 			isEnumType = true
-			enumTypeName = strings.Title(col.Name)
-			// Find first non-empty value in enum data
-			for _, enumValue := range enumData {
-				if enumValue != "" {
-					parts := strings.Split(enumValue, ":")
-					if len(parts) > 0 && parts[0] != "" {
-						// Use the enum constant name with type prefix (e.g., "Type.NOTICE" from "notice:공지")
-						hasDefault = true
-						defaultValue = enumTypeName + "." + strings.ToUpper(parts[0])
-						break
-					}
-				}
-			}
-		} else if col.Type == "LocalDateTime" {
-			hasDateTime = true
-			if !isPrimaryKey {
+			enumTypeName = col.Type
+			// 첫 번째 항목을 기본값으로 쓴다 (예: "notice:공지" → Type.NOTICE)
+			if items := util.KotlinEnumItems(m.Data); len(items) > 0 {
 				hasDefault = true
-				if isNullable {
-					defaultValue = "LocalDateTime.now()"
-				} else {
-					defaultValue = "LocalDateTime.now()"
-				}
+				defValue = enumTypeName + "." + items[0].Ident
 			}
-		} else if col.Type == "BigDecimal" {
-			hasDecimal = true
-			if !isPrimaryKey {
-				hasDefault = true
-				defaultValue = "BigDecimal.ZERO"
-			}
-		} else if col.Type == "String" && !isPrimaryKey {
-			hasDefault = true
-			defaultValue = `""`
-		} else if col.Type == "Int" && !isPrimaryKey {
-			hasDefault = true
-			defaultValue = "0"
-		} else if col.Type == "Long" && !isPrimaryKey {
-			hasDefault = true
-			defaultValue = "0L"
-		} else if col.Type == "Double" && !isPrimaryKey {
-			hasDefault = true
-			defaultValue = "0.0"
-		} else if col.Type == "Boolean" && !isPrimaryKey {
-			hasDefault = true
-			defaultValue = "false"
+		} else if !isPrimaryKey {
+			defValue = defaultValue(col.Type)
+			hasDefault = defValue != ""
 		}
 
+		switch col.Type {
+		case "LocalDateTime":
+			hasDateTime = true
+		case "LocalDate":
+			hasDate = true
+		case "BigDecimal":
+			hasDecimal = true
+		}
+
+		isGenerated := false
 		// Special handling for primary key
 		if isPrimaryKey {
 			hasDefault = true
-			defaultValue = "0"
 			isNullable = false
+			switch col.Type {
+			case "Long", "Int":
+				defValue = "0"
+				isGenerated = true
+			default:
+				defValue = defaultValue(col.Type)
+				hasDefault = defValue != ""
+			}
 		}
 
 		// Determine DBType for Response
 		dbType := col.Type
 		if isEnumType {
 			dbType = "Int" // Enums are stored as Int (ordinal) in Response
-		} else if col.Type == "LocalDateTime" {
-			dbType = "String" // LocalDateTime is converted to String in Response
+		} else if isDateType {
+			dbType = "String" // LocalDateTime / LocalDate is converted to String in Response
 		}
 
+		isPassword := util.IsPasswordColumn(col.Name) && col.Type == "String"
 		kotlinCol := KotlinColumn{
 			Name:         col.Name,
+			Field:        kotlinField(col),
 			DBName:       col.Column,
 			KotlinType:   col.Type,
 			DBType:       dbType,
 			ModelName:    modelName,
 			IsNullable:   isNullable,
 			IsPrimaryKey: isPrimaryKey,
+			IsGenerated:  isGenerated,
 			HasDefault:   hasDefault,
-			DefaultValue: defaultValue,
+			DefaultValue: defValue,
 			IsEnum:       isEnumType,
 			EnumType:     enumTypeName,
-			IsPassword:   util.IsPasswordColumn(col.Name) && col.Type == "String",
+			IsPassword:   isPassword,
+			IsSearchable: !isPrimaryKey && col.Name != "Id" && !isPassword && col.Type != "ByteArray",
+		}
+		if col.Type == "LocalDateTime" {
+			kotlinCol.DateFormat = "DATE_TIME"
+		} else if col.Type == "LocalDate" {
+			kotlinCol.DateFormat = "DATE"
+		}
+		if kotlinCol.IsSearchable && kotlinCol.DateFormat != "" {
+			hasDateFilter = true
 		}
 		for _, p := range protects {
 			if p == col.Name && !isPrimaryKey {
@@ -270,67 +322,77 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 		kotlinColumns = append(kotlinColumns, kotlinCol)
 	}
 
+	if len(kotlinColumns) == 0 {
+		log.Printf("WARNING: %s has no column, skip kotlin", tableName)
+		return
+	}
+
 	// Get enum data from GPA and convert to KotlinEnumData
-	var enums []KotlinEnumData
-	if gpa != nil && gpa.Map != nil {
-		enumPackage := strings.ToLower(modelName)
+	enums := make([]KotlinEnumData, 0)
+	enumPackage := util.KotlinIdent(strings.ToLower(modelName))
+	if gpa != nil {
 		for _, gpaMap := range gpa.Map {
-			enums = append(enums, KotlinEnumData{
-				Name:        gpaMap.Name,
-				Data:        gpaMap.Data,
+			e := KotlinEnumData{
+				Name:        util.CamelCase(gpaMap.Name),
+				ExtraField:  util.KotlinIdent(strings.ToLower(gpaMap.Name)),
+				Items:       util.KotlinEnumItems(gpaMap.Data),
 				EnumPackage: enumPackage,
-			})
+			}
+			for i, col := range columns {
+				if m := util.FindEnumMap(gpa, col.Key); m != nil && m.Name == gpaMap.Name {
+					e.ColumnField = kotlinColumns[i].Field
+				}
+			}
+			enums = append(enums, e)
 		}
-	} else {
-		enums = make([]KotlinEnumData, 0)
 	}
 
 	// Process joins
-	var joins []KotlinJoin
-	if gpa != nil && gpa.Join != nil {
+	joins := make([]KotlinJoin, 0)
+	if gpa != nil {
 		for joinIndex, join := range gpa.Join {
 			joinTableName := strings.ToLower(join.Name) + "_tb"
-			joinModelName := strings.Title(join.Name)
+			joinModelName := util.ModelName(joinTableName)
 
 			// Get columns for joined table
-			query := "select column_name as column_name, data_type as data_type from information_schema.columns where table_schema = '" + packageName + "' and table_name = '" + joinTableName + "'"
-			rows, err := db.Query(query)
-			if err != nil {
-				log.Printf("Failed to query join table columns: %v", err)
-				continue
-			}
-
 			joinColumns := make([]KotlinColumn, 0)
-			for rows.Next() {
-				var colName, colType string
-				err := rows.Scan(&colName, &colType)
+			if db != nil {
+				query := "select column_name as column_name, data_type as data_type from information_schema.columns where table_schema = '" + packageName + "' and table_name = '" + joinTableName + "' order by ordinal_position"
+				rows, err := db.Query(query)
 				if err != nil {
+					log.Printf("Failed to query join table columns: %v", err)
 					continue
 				}
 
-				name := strings.Title(util.GetName(colName))
-				kotlinType := util.GetType(joinModelName, name, colType, nil, cnf)
+				for rows.Next() {
+					var colName, colType string
+					err := rows.Scan(&colName, &colType)
+					if err != nil {
+						continue
+					}
 
-				// Simple processing for joined columns
-				isPrimaryKey := strings.Contains(strings.ToLower(colName), "_id")
-				isNullable := !isPrimaryKey
+					col := util.NewColumn(joinTableName, colName, colType, nil, cnf)
 
-				dbType := kotlinType
-				if kotlinType == "LocalDateTime" {
-					dbType = "String"
+					// Simple processing for joined columns
+					isPrimaryKey := strings.Contains(strings.ToLower(colName), "_id")
+					dbType := col.Type
+					if dbType == "LocalDateTime" || dbType == "LocalDate" {
+						dbType = "String"
+					}
+
+					joinColumns = append(joinColumns, KotlinColumn{
+						Name:         col.Name,
+						Field:        kotlinField(col),
+						DBName:       colName,
+						KotlinType:   col.Type,
+						DBType:       dbType,
+						ModelName:    joinModelName,
+						IsNullable:   !isPrimaryKey,
+						IsPrimaryKey: isPrimaryKey,
+					})
 				}
-
-				joinColumns = append(joinColumns, KotlinColumn{
-					Name:         name,
-					DBName:       colName,
-					KotlinType:   kotlinType,
-					DBType:       dbType,
-					ModelName:    joinModelName,
-					IsNullable:   isNullable,
-					IsPrimaryKey: isPrimaryKey,
-				})
+				rows.Close()
 			}
-			rows.Close()
 
 			alias := join.Alias
 			if alias == "" {
@@ -338,29 +400,29 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 			}
 
 			// Convert column name to camelCase for Kotlin (e.g., author_id -> authorId)
-			columnName := strings.Title(util.GetName(join.Column))
-			columnName = strings.ToLower(columnName[0:1]) + columnName[1:] // make first letter lowercase
+			columnName := util.LowerCamel(join.Column)
+			if columnName == "" {
+				log.Printf("WARNING: join %s of %s has no column, skipped", join.Name, tableName)
+				continue
+			}
 
 			// Build full column name with prefix (e.g., "gym" -> "m_gym")
 			// Always use current table's prefix for the join column
 			fullColumnName := prefix + "_" + join.Column
-			// log.Printf("[Join Processing] Table: %s, Prefix: %s, Join.Column: %s, FullColumnName: %s", tableName, prefix, join.Column, fullColumnName)
 
-			kotlinJoin := KotlinJoin{
+			joins = append(joins, KotlinJoin{
 				Name:            join.Name,
 				Column:          fullColumnName,
 				ColumnName:      columnName,
 				Prefix:          join.Prefix,
 				Alias:           alias,
+				AliasVar:        util.KotlinIdent(strings.ToLower(alias)),
 				ModelName:       joinModelName,
 				ParentModelName: modelName,
 				Columns:         joinColumns,
 				Index:           joinIndex,
-			}
-			joins = append(joins, kotlinJoin)
+			})
 		}
-	} else {
-		joins = make([]KotlinJoin, 0)
 	}
 
 	// Extract unique join model names for imports
@@ -380,23 +442,30 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 	passwordField := ""
 	for _, col := range kotlinColumns {
 		if col.IsPassword {
-			passwordField = strings.ToLower(col.Name)
+			passwordField = col.Field
 			break
 		}
 	}
 
+	basePackage := cnf.GetKotlinPackage()
 	sessions := buildKotlinSessions(auth, gpa, kotlinColumns, joins)
 	if len(sessions) > 0 {
-		generateSessionProvider(targetPath)
+		generateSessionProvider(targetPath, basePackage)
 	}
 
 	templateData := KotlinTemplateData{
+		BasePackage:      basePackage,
 		PackageName:      packageName,
 		TableName:        tableName,
 		ModelName:        modelName,
+		ModelVar:         util.KotlinIdent(strings.ToLower(modelName)),
 		Columns:          kotlinColumns,
+		PK:               kotlinColumns[pkIndex],
 		HasDateTime:      hasDateTime,
+		HasDate:          hasDate,
+		HasDateFilter:    hasDateFilter,
 		HasDecimal:       hasDecimal,
+		IsView:           util.GetTableType(tableName) == "view",
 		Enums:            enums,
 		Joins:            joins,
 		UniqueJoinNames:  uniqueJoinNames,
@@ -406,21 +475,13 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 		Sessions:         sessions,
 	}
 
-	// Generate entity file
-	generateKotlinEntity(targetPath, templateData)
-
-	// Generate repository file
-	generateKotlinRepository(targetPath, templateData)
-
-	// Generate service file
-	generateKotlinService(targetPath, templateData)
-
-	// Generate controller file
-	generateKotlinController(targetPath, templateData)
-
-	// Generate enums file if there are enums
+	views := newViews()
+	render(views, "entity.jet", filepath.Join(targetPath, "entity"), modelName+".kt", templateData)
+	render(views, "repository.jet", filepath.Join(targetPath, "repository"), modelName+"Repository.kt", templateData)
+	render(views, "service.jet", filepath.Join(targetPath, "service"), modelName+"Service.kt", templateData)
+	render(views, "controller.jet", filepath.Join(targetPath, "controller"), modelName+"Controller.kt", templateData)
 	if len(enums) > 0 {
-		generateKotlinEnums(targetPath, templateData)
+		render(views, "enums.jet", filepath.Join(targetPath, "enums", strings.ToLower(modelName)), "Enums.kt", templateData)
 	}
 }
 
@@ -434,12 +495,12 @@ func buildKotlinSessions(auth string, gpa *config.Gpa, columns []KotlinColumn, j
 	for _, pair := range gpa.Session {
 		found := false
 		for _, col := range columns {
-			if !strings.EqualFold(col.Name, pair.Column) {
+			if !util.MatchColumn(util.Column{Name: col.Name, Column: col.DBName, Key: util.GetName(col.DBName)}, pair.Column) {
 				continue
 			}
 			found = true
 
-			field := strings.ToLower(col.Name)
+			field := col.Field
 			for _, join := range joins {
 				if join.Column == col.DBName {
 					field = join.ColumnName + "Id"
@@ -459,7 +520,7 @@ func buildKotlinSessions(auth string, gpa *config.Gpa, columns []KotlinColumn, j
 				found = false
 			}
 			if found {
-				ret = append(ret, KotlinSession{Key: strings.ToLower(pair.Key), Field: field, RequestField: strings.ToLower(col.Name), Convert: convert, IsPrimaryKey: col.IsPrimaryKey})
+				ret = append(ret, KotlinSession{Key: strings.ToLower(pair.Key), Field: field, RequestField: col.Field, Convert: convert, IsPrimaryKey: col.IsPrimaryKey})
 			}
 			break
 		}
@@ -471,7 +532,7 @@ func buildKotlinSessions(auth string, gpa *config.Gpa, columns []KotlinColumn, j
 }
 
 // generateSessionProvider 는 대상 프로젝트가 구현해야 할 SessionProvider 인터페이스를 한 번만 만든다 (이미 있으면 덮어쓰지 않는다).
-func generateSessionProvider(targetPath string) {
+func generateSessionProvider(targetPath string, basePackage string) {
 	configDir := filepath.Join(targetPath, "config")
 	outputPath := filepath.Join(configDir, "SessionProvider.kt")
 	if _, err := os.Stat(outputPath); err == nil {
@@ -482,7 +543,7 @@ func generateSessionProvider(targetPath string) {
 		return
 	}
 
-	content := `package com.gowoobro.gymspring.config
+	content := `package ` + basePackage + `.config
 
 // 생성된 컨트롤러가 소유권 검사에 쓰는 현재 로그인 사용자 정보.
 // 대상 프로젝트에서 인증 방식(JWT 필터, Spring Security 등)에 맞게 @Component 로 구현해야 한다.
@@ -501,27 +562,15 @@ interface SessionProvider {
 	log.Printf("Generated Kotlin: %s", outputPath)
 }
 
-func generateKotlinEntity(targetPath string, data KotlinTemplateData) {
-	// Create entity directory
-	entityDir := filepath.Join(targetPath, "entity")
-	err := os.MkdirAll(entityDir, 0755)
-	if err != nil {
-		log.Printf("Failed to create entity directory: %v", err)
-		return
-	}
-
-	// Load template from ~/bin/buildtool
+// newViews 는 ~/bin/buildtool/kotlin 템플릿과 헬퍼 함수를 준비한다.
+func newViews() *jet.Set {
 	templateDir := filepath.Join(os.Getenv("HOME"), "bin", "buildtool", "kotlin")
 	views := jet.NewSet(
 		jet.NewOSFileSystemLoader(templateDir),
 		jet.InDevelopmentMode(),
 	)
 
-	// Add custom functions for the template
 	views.AddGlobal("title", func(str string) string {
-		if str == "" {
-			return ""
-		}
 		return strings.Title(str)
 	})
 
@@ -531,319 +580,39 @@ func generateKotlinEntity(targetPath string, data KotlinTemplateData) {
 
 	// Add helper function to find join by column name
 	views.AddGlobal("findJoinByColumn", func(columnDBName string, joins []KotlinJoin) *KotlinJoin {
-		// log.Printf("Finding join for column: %s", columnDBName)
-		for _, join := range joins {
-			// log.Printf("  Checking join: Column=%s, ColumnName=%s, Name=%s, Alias=%s", join.Column, join.ColumnName, join.Name, join.Alias)
-			if join.Column == columnDBName {
-				// log.Printf("  MATCH FOUND!")
-				return &join
-			}
-		}
-		// log.Printf("  No match found")
-		return nil
-	})
-
-	template, err := views.GetTemplate("entity.jet")
-	if err != nil {
-		log.Printf("Failed to load template: %v", err)
-		return
-	}
-
-	// Generate file
-	outputPath := filepath.Join(entityDir, data.ModelName+".kt")
-	file, err := os.Create(outputPath)
-	if err != nil {
-		log.Printf("Failed to create entity file: %v", err)
-		return
-	}
-	defer file.Close()
-
-	err = template.Execute(file, nil, data)
-	if err != nil {
-		log.Printf("Failed to execute template: %v", err)
-		return
-	}
-
-	log.Printf("Generated Kotlin: %s", outputPath)
-}
-
-func generateKotlinRepository(targetPath string, data KotlinTemplateData) {
-	// Create repository directory
-	repositoryDir := filepath.Join(targetPath, "repository")
-	err := os.MkdirAll(repositoryDir, 0755)
-	if err != nil {
-		log.Printf("Failed to create repository directory: %v", err)
-		return
-	}
-
-	// Load template from ~/bin/buildtool
-	templateDir := filepath.Join(os.Getenv("HOME"), "bin", "buildtool", "kotlin")
-	views := jet.NewSet(
-		jet.NewOSFileSystemLoader(templateDir),
-		jet.InDevelopmentMode(),
-	)
-
-	// Add custom functions for the template
-	views.AddGlobal("title", func(str string) string {
-		if str == "" {
-			return ""
-		}
-		return strings.Title(str)
-	})
-
-	views.AddGlobal("lower", func(str string) string {
-		return strings.ToLower(str)
-	})
-
-	// Add helper function to find join by column name
-	views.AddGlobal("findJoinByColumn", func(columnDBName string, joins []KotlinJoin) *KotlinJoin {
-		for _, join := range joins {
-			if join.Column == columnDBName {
-				return &join
+		for i := range joins {
+			if joins[i].Column == columnDBName {
+				return &joins[i]
 			}
 		}
 		return nil
 	})
 
-	// Add helper function to check if this is the first join
-	views.AddGlobal("isFirstJoin", func(join KotlinJoin) bool {
-		return join.Index == 0
-	})
-
-	// Add helper function to check if index is last in array
-	views.AddGlobal("isLast", func(index int, arr []string) bool {
-		return index == len(arr)-1
-	})
-
-	template, err := views.GetTemplate("repository.jet")
-	if err != nil {
-		log.Printf("Failed to load repository template: %v", err)
-		return
-	}
-
-	// Generate file
-	outputPath := filepath.Join(repositoryDir, data.ModelName+"Repository.kt")
-	file, err := os.Create(outputPath)
-	if err != nil {
-		log.Printf("Failed to create repository file: %v", err)
-		return
-	}
-	defer file.Close()
-
-	err = template.Execute(file, nil, data)
-	if err != nil {
-		log.Printf("Failed to execute repository template: %v", err)
-		return
-	}
-
-	log.Printf("Generated Kotlin: %s", outputPath)
+	return views
 }
 
-func generateKotlinService(targetPath string, data KotlinTemplateData) {
-	// Create service directory
-	serviceDir := filepath.Join(targetPath, "service")
-	err := os.MkdirAll(serviceDir, 0755)
-	if err != nil {
-		log.Printf("Failed to create service directory: %v", err)
+func render(views *jet.Set, templateName string, dir string, fileName string, data KotlinTemplateData) {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Printf("Failed to create directory %s: %v", dir, err)
 		return
 	}
 
-	// Load template from ~/bin/buildtool
-	templateDir := filepath.Join(os.Getenv("HOME"), "bin", "buildtool", "kotlin")
-	views := jet.NewSet(
-		jet.NewOSFileSystemLoader(templateDir),
-		jet.InDevelopmentMode(),
-	)
-
-	// Add custom functions for the template
-	views.AddGlobal("title", func(str string) string {
-		if str == "" {
-			return ""
-		}
-		return strings.Title(str)
-	})
-
-	views.AddGlobal("lower", func(str string) string {
-		return strings.ToLower(str)
-	})
-
-	// Add helper function to find join by column name
-	views.AddGlobal("findJoinByColumn", func(columnDBName string, joins []KotlinJoin) *KotlinJoin {
-		for _, join := range joins {
-			if join.Column == columnDBName {
-				return &join
-			}
-		}
-		return nil
-	})
-
-	template, err := views.GetTemplate("service.jet")
+	template, err := views.GetTemplate(templateName)
 	if err != nil {
-		log.Printf("Failed to load service template: %v", err)
+		log.Printf("Failed to load template %s: %v", templateName, err)
 		return
 	}
 
-	// Generate file
-	outputPath := filepath.Join(serviceDir, data.ModelName+"Service.kt")
-	file, err := os.Create(outputPath)
-	if err != nil {
-		log.Printf("Failed to create service file: %v", err)
-		return
-	}
-	defer file.Close()
-
-	err = template.Execute(file, nil, data)
-	if err != nil {
-		log.Printf("Failed to execute service template: %v", err)
+	// 템플릿 실행이 실패하면 반쯤 만든 파일을 남기지 않는다.
+	var b bytes.Buffer
+	if err := template.Execute(&b, nil, data); err != nil {
+		log.Printf("Failed to execute template %s: %v", templateName, err)
 		return
 	}
 
-	log.Printf("Generated Kotlin: %s", outputPath)
-}
-
-func generateKotlinController(targetPath string, data KotlinTemplateData) {
-	// Create controller directory
-	controllerDir := filepath.Join(targetPath, "controller")
-	err := os.MkdirAll(controllerDir, 0755)
-	if err != nil {
-		log.Printf("Failed to create controller directory: %v", err)
-		return
-	}
-
-	// Load template from ~/bin/buildtool
-	templateDir := filepath.Join(os.Getenv("HOME"), "bin", "buildtool", "kotlin")
-	views := jet.NewSet(
-		jet.NewOSFileSystemLoader(templateDir),
-		jet.InDevelopmentMode(),
-	)
-
-	// Add custom functions for the template
-	views.AddGlobal("title", func(str string) string {
-		if str == "" {
-			return ""
-		}
-		return strings.Title(str)
-	})
-
-	views.AddGlobal("lower", func(str string) string {
-		return strings.ToLower(str)
-	})
-
-	// Add helper function to find join by column name
-	views.AddGlobal("findJoinByColumn", func(columnDBName string, joins []KotlinJoin) *KotlinJoin {
-		for _, join := range joins {
-			if join.Column == columnDBName {
-				return &join
-			}
-		}
-		return nil
-	})
-
-	template, err := views.GetTemplate("controller.jet")
-	if err != nil {
-		log.Printf("Failed to load controller template: %v", err)
-		return
-	}
-
-	// Generate file
-	outputPath := filepath.Join(controllerDir, data.ModelName+"Controller.kt")
-	file, err := os.Create(outputPath)
-	if err != nil {
-		log.Printf("Failed to create controller file: %v", err)
-		return
-	}
-	defer file.Close()
-
-	err = template.Execute(file, nil, data)
-	if err != nil {
-		log.Printf("Failed to execute controller template: %v", err)
-		return
-	}
-
-	log.Printf("Generated Kotlin: %s", outputPath)
-}
-
-func generateKotlinEnums(targetPath string, data KotlinTemplateData) {
-	// Create enums directory
-	enumsDir := filepath.Join(targetPath, "enums", strings.ToLower(data.ModelName))
-	err := os.MkdirAll(enumsDir, 0755)
-	if err != nil {
-		log.Printf("Failed to create enums directory: %v", err)
-		return
-	}
-
-	// Load template from ~/bin/buildtool with custom functions
-	templateDir := filepath.Join(os.Getenv("HOME"), "bin", "buildtool", "kotlin")
-	views := jet.NewSet(
-		jet.NewOSFileSystemLoader(templateDir),
-		jet.InDevelopmentMode(),
-	)
-
-	// Add custom functions for the template
-	views.AddGlobal("first", func(str string) string {
-		if str == "" {
-			return ""
-		}
-		parts := strings.Split(str, ":")
-		return parts[0]
-	})
-
-	views.AddGlobal("last", func(str string) string {
-		if str == "" {
-			return ""
-		}
-		parts := strings.Split(str, ":")
-		if len(parts) > 1 {
-			return parts[1]
-		}
-		return str
-	})
-
-	views.AddGlobal("title", func(str string) string {
-		if str == "" {
-			return ""
-		}
-		return strings.Title(str)
-	})
-
-	views.AddGlobal("lower", func(str string) string {
-		return strings.ToLower(str)
-	})
-
-	views.AddGlobal("upper", func(str string) string {
-		return strings.ToUpper(str)
-	})
-
-	views.AddGlobal("len", func(arr []string) int {
-		return len(arr)
-	})
-
-	views.AddGlobal("sub", func(a, b int) int {
-		return a - b
-	})
-
-	views.AddGlobal("ne", func(a, b int) bool {
-		return a != b
-	})
-
-	template, err := views.GetTemplate("enums.jet")
-	if err != nil {
-		log.Printf("Failed to load enums template: %v", err)
-		return
-	}
-
-	// Generate file
-	outputPath := filepath.Join(enumsDir, "Enums.kt")
-	file, err := os.Create(outputPath)
-	if err != nil {
-		log.Printf("Failed to create enums file: %v", err)
-		return
-	}
-	defer file.Close()
-
-	err = template.Execute(file, nil, data)
-	if err != nil {
-		log.Printf("Failed to execute enums template: %v", err)
+	outputPath := filepath.Join(dir, fileName)
+	if err := util.WriteFile(outputPath, b.String()); err != nil {
+		log.Printf("Failed to write %s: %v", outputPath, err)
 		return
 	}
 

@@ -95,36 +95,40 @@ func main() {
 	}
 	defer db.Close()
 
-	query := fmt.Sprintf("select table_name from information_schema.tables where table_schema = '%v'", modelConfig.Database)
+	query := fmt.Sprintf("select table_name from information_schema.tables where table_schema = '%v' order by table_name", modelConfig.Database)
 	rows, err := db.Query(query)
 
 	if err != nil {
 		log.Println(err)
 		return
 	}
-	defer rows.Close()
 
-	tables := make([]string, 0)
+	names := make([]string, 0)
 	for rows.Next() {
 		name := ""
 
 		err := rows.Scan(&name)
 		if err != nil {
 			log.Println(err)
+			continue
 		}
+		names = append(names, name)
+	}
+	rows.Close()
 
-		tableName := util.GetTableName(name)
+	util.ResolveTableNames(names)
 
+	for _, name := range names {
 		var gpa *config.Gpa = nil
-		for _, item := range gpas {
-			if item.Name == tableName {
-				gpa = &item
+		for i := range gpas {
+			if util.MatchTableName(gpas[i].Name, name) {
+				g := gpas[i]
+				gpa = &g
 				break
 			}
 		}
 
 		readColumn(packageName, name, db, gpa, modelConfig.Buildtool, modelConfig.Auth, modelConfig, enabled)
-		tables = append(tables, tableName)
 	}
 }
 
@@ -139,7 +143,7 @@ var generators = map[string]generator{
 }
 
 func readColumn(packageName string, tableName string, db *sql.DB, gpa *config.Gpa, version string, auth string, cnf config.ModelConfig, languages []string) {
-	query := "select column_name as column_name, data_type as data_type from information_schema.columns where table_schema = '" + cnf.Database + "' and table_name = '" + tableName + "'"
+	query := "select column_name as column_name, data_type as data_type from information_schema.columns where table_schema = '" + cnf.Database + "' and table_name = '" + tableName + "' order by ordinal_position"
 	rows, err := db.Query(query)
 
 	if err != nil {
@@ -175,14 +179,7 @@ func readColumn(packageName string, tableName string, db *sql.DB, gpa *config.Gp
 		localCnf.Language = lang
 		columns := make([]util.Column, 0)
 		for _, raw := range rawCols {
-			column := util.Column{
-				Name:         strings.Title(util.GetName(raw.Name)),
-				Column:       raw.Name,
-				Type:         util.GetType(util.GetTableName(tableName), util.GetName(raw.Name), raw.DataType, gpa, localCnf),
-				OriginalType: raw.DataType,
-				Prefix:       util.GetPrefix(raw.Name),
-			}
-			columns = append(columns, column)
+			columns = append(columns, util.NewColumn(tableName, raw.Name, raw.DataType, gpa, localCnf))
 		}
 		generators[lang](packageName, tableName, prefix, columns, db, gpa, version, auth, localCnf)
 	}

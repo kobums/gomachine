@@ -9,17 +9,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/CloudyKit/jet/v6"
 	log "github.com/sirupsen/logrus"
 )
-
-type RouteParam struct {
-	Name      string
-	Type      string
-	ParamType string // "path", "query", "body"
-}
 
 type Route struct {
 	Method         string
@@ -28,7 +21,22 @@ type Route struct {
 	ControllerName string
 	ParamCode      string
 	ParamStr       string
-	Params         []RouteParam
+}
+
+// GoEnum 은 gpa.map 하나로 만드는 Go 상수 타입이다.
+type GoEnum struct {
+	Name   string          // 타입 이름 (Status)
+	Key    string          // InitExtra 의 Extra 키 (예전과 같이 map name 소문자)
+	Field  string          // 이 enum 을 쓰는 모델 필드 이름. 컬럼이 없으면 ""
+	Items  []util.EnumItem // 상수 (빈 항목 제외, iota 순서)
+	Labels []string        // 표시 이름 문자열 리터럴 (data 순서 그대로)
+}
+
+// GoSession 은 세션 값과 모델 컬럼의 매핑이다.
+type GoSession struct {
+	Key    string // 세션 구조체 필드 (c.Session.{Key|title})
+	Field  string // 모델 필드 이름 (User)
+	Column string // SQL 컬럼 이름 (접두사 제외: user)
 }
 
 func ProcessGo(packageName string, tableName string, prefix string, items []util.Column, db *sql.DB, gpa *config.Gpa, version string, auth string, cnf config.ModelConfig) {
@@ -36,86 +44,12 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 
 	var views = jet.NewSet(jet.NewOSFileSystemLoader(path), jet.InDevelopmentMode())
 
-	views.AddGlobal("striparray", func(str string) string {
-		return strings.ReplaceAll(str, "[]", "")
-	})
-
-	views.AddGlobal("substring", func(str string, start int, end int) string {
-		return str[start:end]
-	})
-
 	views.AddGlobal("title", func(str string) string {
 		return strings.Title(str)
 	})
 
-	views.AddGlobal("untitle", func(str string) string {
-		a := []rune(str)
-		a[0] = unicode.ToLower(a[0])
-		return string(a)
-	})
-
-	views.AddGlobal("first", func(str string) string {
-		if str == "" {
-			return ""
-		}
-		ret := strings.Split(str, ":")
-		return ret[0]
-	})
-
-	views.AddGlobal("typescriptType", func(str string) string {
-		if str == "" {
-			return ""
-		}
-		ret := strings.Split(str, ":")
-		return ret[0]
-	})
-
-	views.AddGlobal("last", func(str string) string {
-		if str == "" {
-			return ""
-		}
-		ret := strings.Split(str, ":")
-		return ret[1]
-	})
-
-	views.AddGlobal("querytype", func(str string) string {
-		tokens := util.Split(str)
-		return tokens[0]
-	})
-
-	views.AddGlobal("adjustPackage", func(str string) string {
-		if strings.Index(str, ".") > 0 {
-			return "models." + str
-		} else {
-			return str
-		}
-	})
-
-	views.AddGlobal("isNeedImport", func(str string) bool {
-		if strings.Index(str, ".") > 0 {
-			return true
-		} else {
-			return false
-		}
-	})
-
-	views.AddGlobal("getPrefix", func(str string, prefix string) string {
-		strs := strings.Split(str, "_")
-
-		if len(strs) >= 2 {
-			return str
-		} else {
-			return prefix + "_" + str
-		}
-	})
-
-	views.AddGlobal("joinColumn", func(str string, cols []config.GpaJoin) bool {
-		for _, v := range cols {
-			if util.GetName(strings.ToLower(str)) == v.Name {
-				return false
-			}
-		}
-		return true
+	views.AddGlobal("camel", func(str string) string {
+		return util.CamelCase(str)
 	})
 
 	views.AddGlobal("joinVar", func(join config.GpaJoin) string {
@@ -136,44 +70,20 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 
 	views.AddGlobal("compareColumn", func(str string, cols []config.GpaCompare) string {
 		for _, v := range cols {
-			if util.GetName(strings.ToLower(str)) == v.Name {
+			if strings.EqualFold(v.Name, str) || strings.EqualFold(strings.ReplaceAll(v.Name, "_", ""), str) {
 				return v.Type
 			}
 		}
 		return "="
 	})
 
-	views.AddGlobal("javascriptfunction", func(str string) string {
-		return strings.ToLower(str[0:1]) + str[1:]
-	})
-
-	views.AddGlobal("javascriptapiurl", func(str string) string {
-		return strings.ReplaceAll(strings.ToLower(str), "delete", "")
-	})
-
-	views.AddGlobal("apiurl", func(str string) string {
-		funcName := strings.ToLower(str)
-		url := ""
-		if len(funcName) > 5 && funcName[:5] == "getby" {
-			url = fmt.Sprintf("/get/%v", funcName[5:])
-		} else if len(funcName) > 7 && funcName[:7] == "countby" {
-			url = fmt.Sprintf("/count/%v", funcName[7:])
-		} else if len(funcName) > 6 && funcName[:6] == "findby" {
-			url = fmt.Sprintf("/find/%v", funcName[6:])
-		} else if len(funcName) > 6 && funcName[:6] == "update" {
-			strs := strings.Split(str[6:], "By")
-			url = fmt.Sprintf("/%v/%v", strings.ToLower(strs[0]), strings.ToLower(strs[1]))
-		} else if len(funcName) > 8 && funcName[:8] == "deleteby" {
-			url = fmt.Sprintf("/%v", funcName[8:])
-		} else {
-			url = fmt.Sprintf("/%v", funcName)
-		}
-		return url
-	})
-
+	// 조인 테이블 컬럼 (ordinal_position 순서)
 	views.AddGlobal("columns", func(str string) []util.Column {
-		query := "select column_name as column_name, data_type as data_type from information_schema.columns where table_schema = '" + packageName + "' and table_name = '" + strings.ToLower(str) + "_tb'"
 		columns := make([]util.Column, 0)
+		if db == nil {
+			return columns
+		}
+		query := "select column_name as column_name, data_type as data_type from information_schema.columns where table_schema = '" + packageName + "' and table_name = '" + strings.ToLower(str) + "_tb' order by ordinal_position"
 
 		rows, err := db.Query(query)
 		if err != nil {
@@ -189,45 +99,89 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 			err := rows.Scan(&name, &typeid)
 			if err != nil {
 				log.Println(err)
+				continue
 			}
 
-			prefix := util.GetPrefix(name)
-			column := util.Column{Name: strings.Title(util.GetName(name)), Column: name, Type: util.GetType(util.GetTableName(str), util.GetName(name), typeid, gpa, cnf), Prefix: prefix}
-			columns = append(columns, column)
+			columns = append(columns, util.NewColumn(str+"_tb", name, typeid, gpa, cnf))
 		}
 
 		return columns
 	})
 
-	v := make(jet.VarMap)
-	v.Set("version", version)
-	v.Set("packageName", packageName)
-	v.Set("type", util.GetTableType(tableName))
-	v.Set("adminLevel", cnf.AdminLevel)
-	v.Set("name", strings.Title(util.GetTableName(tableName)))
-	v.Set("tableName", tableName)
-	v.Set("prefix", prefix)
+	modelName := util.ModelName(tableName)
+	fileName := util.FileName(tableName)
+	constPkg := util.GoConstPackage(tableName)
+	constClause := util.GoConstPackageClause(tableName)
+	isView := util.GetTableType(tableName) == "view"
+
+	// 상수 패키지 import 줄. package 이름과 다른 이름을 쓰면 별칭을 붙인다 (log_tb → logpkg "pkg/models/log").
+	constImport := fmt.Sprintf("\"%s/models/%s\"", packageName, fileName)
+	if constPkg != constClause {
+		constImport = constPkg + " " + constImport
+	}
 
 	if gpa != nil {
 		for i, v := range items {
 			for _, v2 := range gpa.Primary {
-				if v.Name == strings.Title(v2) {
+				if util.MatchColumn(v, v2) {
 					items[i].Primary = true
 				}
 			}
 		}
 	}
 
+	// id 컬럼이 없으면 id 기준 메서드(Get/Update/Delete, Read/Update/Delete 핸들러)는 만들지 않는다.
+	hasId := false
+	orderKey := ""
+	for _, item := range items {
+		if item.Name == "Id" {
+			hasId = true
+			orderKey = item.Key
+		}
+	}
+	if orderKey == "" && len(items) > 0 {
+		orderKey = items[0].Key
+		for _, item := range items {
+			if item.Primary {
+				orderKey = item.Key
+				break
+			}
+		}
+	}
+	nonIdItems := make([]util.Column, 0)
+	for _, item := range items {
+		if item.Name != "Id" {
+			nonIdItems = append(nonIdItems, item)
+		}
+	}
+
+	v := make(jet.VarMap)
+	v.Set("version", version)
+	v.Set("packageName", packageName)
+	v.Set("type", util.GetTableType(tableName))
+	v.Set("isView", isView)
+	v.Set("adminLevel", cnf.AdminLevel)
+	v.Set("name", modelName)
+	v.Set("tableName", tableName)
+	v.Set("prefix", prefix)
+	v.Set("constPkg", constPkg)
+	v.Set("constClause", constClause)
+	v.Set("constImport", constImport)
+	v.Set("hasId", hasId)
+	v.Set("orderKey", orderKey)
 	v.Set("items", items)
+	v.Set("nonIdItems", nonIdItems)
 	v.Set("auth", auth)
 
-	modelName := strings.Title(util.GetTableName(tableName))
 	passwordColumn := util.PasswordColumn(items)
 	protects := util.ProtectedColumns(modelName, items, gpa)
 	createdColumn := ""
+	createdDefault := false
 	for _, item := range items {
 		if item.Name == "Createddate" {
 			createdColumn = item.Name
+			// Insert 에서 현재 시각 문자열을 넣는 것은 문자열 컬럼일 때만 한다.
+			createdDefault = item.Type == "string"
 		}
 	}
 	// adminLevel 이 숫자로 설정되어 있고 jwt 인증이면 세션 Level 이 그 이상인 관리자는 보호 컬럼을 바꿀 수 있다.
@@ -237,139 +191,107 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 	v.Set("inputName", inputModelName(modelName, items))
 	v.Set("passwordColumn", passwordColumn)
 	v.Set("createdColumn", createdColumn)
+	v.Set("createdDefault", createdDefault)
 	v.Set("protects", protects)
 	v.Set("adminCheck", adminCheck)
 	v.Set("adminLevelNum", adminLevelNum)
-	if gpa == nil {
-		v.Set("consts", make([]string, 0))
-		v.Set("methods", make([]string, 0))
-		v.Set("primarys", []string{"id"})
-		v.Set("funcs", make([]string, 0))
-		v.Set("joins", make([]config.GpaJoin, 0))
-		v.Set("compares", make([]config.GpaCompare, 0))
-		v.Set("sessions", make([]config.SessionPair, 0))
-		v.Set("search", false)
-		v.Set("imports", make([]string, 0))
-	} else {
-		for i := range gpa.Join {
-			gpa.Join[i].Prefix = util.TablePrefix(gpa.Join[i].Name, packageName, db)
-		}
-		v.Set("consts", gpa.Map)
-		v.Set("methods", gpa.Method)
-		if len(gpa.Primary) == 0 {
-			gpa.Primary = append(gpa.Primary, "id")
-		}
-		v.Set("primarys", gpa.Primary)
-		v.Set("joins", gpa.Join)
-		v.Set("compares", gpa.Compare)
-		v.Set("search", gpa.Search)
-		v.Set("sessions", gpa.Session)
 
-		funcs := make([]util.Func, 0)
+	consts := make([]GoEnum, 0)
+	joins := make([]config.GpaJoin, 0)
+	compares := make([]config.GpaCompare, 0)
+	sessions := make([]GoSession, 0)
+	funcs := make([]util.Func, 0)
+	search := false
 
-		for _, item := range gpa.Method {
-			tokens := util.Split(item)
-
-			wheres := make([]util.Where, 0)
-			if tokens[0] == "Update" {
-				flag := false
-				for i := 1; i < len(tokens); i++ {
-					token := tokens[i]
-					column := ""
-					typename := ""
-					compare := ""
-
-					if token == "By" {
-						flag = true
-						continue
-					} else {
-						for _, name := range items {
-							if token == name.Name {
-								column = name.Name
-								typename = name.Type
-								if flag == true {
-									compare = "where"
-								} else {
-									compare = "column"
-								}
-								break
-							}
-						}
-					}
-
-					where := util.Where{Column: column, Type: typename, Compare: compare}
-					wheres = append(wheres, where)
-				}
-			} else {
-				for i := 2; i < len(tokens); i++ {
-					token := tokens[i]
-					column := ""
-					typename := ""
-					compare := ""
-					flag := false
-					for _, name := range items {
-						if token == name.Name {
-							column = name.Name
-							typename = name.Type
-							compare = "="
-							flag = true
-							break
-						}
-					}
-
-					if flag == false {
-						for _, name := range items {
-							if token == name.Name+"s" {
-								column = name.Name
-								typename = "[]" + name.Type
-								compare = "in"
-								flag = true
-								break
-							}
-						}
-					}
-
-					if flag == false {
-						for _, name := range items {
-							if token == name.Name+"like" {
-								column = name.Name
-								typename = name.Type
-								compare = "like"
-								flag = true
-								break
-							}
-						}
-					}
-
-					where := util.Where{Column: column, Type: typename, Compare: compare}
-					wheres = append(wheres, where)
+	if gpa != nil {
+		for _, m := range gpa.Map {
+			e := GoEnum{Name: util.CamelCase(m.Name), Key: strings.ToLower(m.Name)}
+			e.Items = util.GoEnumItems(e.Name, m.Data)
+			for _, d := range m.Data {
+				e.Labels = append(e.Labels, strconv.Quote(util.EnumLabel(d)))
+			}
+			for _, item := range items {
+				if fm := util.FindEnumMap(gpa, item.Key); fm != nil && fm.Name == m.Name {
+					e.Field = item.Name
+					break
 				}
 			}
-
-			fn := util.Func{Name: item, Wheres: wheres}
-			funcs = append(funcs, fn)
+			consts = append(consts, e)
 		}
 
-		v.Set("funcs", funcs)
-		v.Set("imports", util.Unique(funcs))
+		for _, join := range gpa.Join {
+			join.Prefix = util.TablePrefix(join.Name, packageName, db)
+			joins = append(joins, join)
+		}
+		compares = append(compares, gpa.Compare...)
+		search = gpa.Search
+
+		for _, pair := range gpa.Session {
+			s := GoSession{Key: pair.Key, Field: util.CamelCase(pair.Column), Column: strings.ToLower(pair.Column)}
+			if col := util.FindColumn(items, pair.Column); col != nil {
+				s.Field = col.Name
+				s.Column = col.Key
+			} else {
+				log.Printf("WARNING: session column %s not found in %s", pair.Column, tableName)
+			}
+			sessions = append(sessions, s)
+		}
+
+		for _, fn := range util.ParseFuncs(tableName, gpa.Method, items) {
+			if isView && (fn.Kind == "Update" || fn.Kind == "Delete") {
+				log.Printf("WARNING: %s is a view, write method %s skipped", tableName, fn.Name)
+				continue
+			}
+			for i := range fn.Wheres {
+				w := &fn.Wheres[i]
+				if w.Param == constPkg {
+					w.Param += "_"
+				}
+				w.Check = zeroCheck(w.Type, w.Param)
+			}
+			funcs = append(funcs, fn)
+		}
 	}
+
+	// rest 컨트롤러가 상수 패키지를 쓰는 것은 커스텀 메서드 매개변수가 enum 타입일 때뿐이다.
+	restUsesConst := false
+	for _, fn := range funcs {
+		for _, w := range fn.Wheres {
+			if strings.HasPrefix(strings.TrimPrefix(w.Type, "[]"), constPkg+".") {
+				restUsesConst = true
+			}
+		}
+	}
+	// model 은 UpdateWhere(쓰기) 와 enum 필드/InitExtra 에서 상수 패키지를 쓴다.
+	modelUsesConst := !isView || len(consts) > 0
+	for _, item := range items {
+		if strings.HasPrefix(item.Type, constPkg+".") {
+			modelUsesConst = true
+		}
+	}
+
+	v.Set("consts", consts)
+	v.Set("joins", joins)
+	v.Set("compares", compares)
+	v.Set("sessions", sessions)
+	v.Set("search", search)
+	v.Set("funcs", funcs)
+	v.Set("restUsesConst", restUsesConst)
+	v.Set("modelUsesConst", modelUsesConst)
 
 	// Generate Go model file
 	var b bytes.Buffer
-	modelFilename := "go/model.jet"
-	t, err := views.GetTemplate(modelFilename)
+	t, err := views.GetTemplate("go/model.jet")
 	if err == nil {
 		if err = t.Execute(&b, v, nil); err != nil {
-			log.Println(err)
+			log.Printf("ERROR: model template execution failed: %v", err)
 		}
 	} else {
-		log.Println("error ========================")
-		log.Println(err)
-		log.Println("error ========================")
+		log.Printf("ERROR: Failed to load model template: %v", err)
 	}
 
 	if cnf.Language == "go" {
-		modelFile := cnf.GoModelFilePath + "models/" + util.GetTableName(tableName) + ".go"
+		modelFile := cnf.GoModelFilePath + "models/" + fileName + ".go"
 
 		if err := util.WriteFile(modelFile, b.String()); err != nil {
 			log.Printf("ERROR: Failed to write model file %s: %v", modelFile, err)
@@ -389,7 +311,7 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 		log.Printf("ERROR: Failed to load REST template: %v", err)
 	}
 
-	restFile := cnf.GoModelFilePath + "controllers/rest/" + util.GetTableName(tableName) + ".go"
+	restFile := cnf.GoModelFilePath + "controllers/rest/" + fileName + ".go"
 
 	if err := util.WriteFile(restFile, b2.String()); err != nil {
 		log.Printf("ERROR: Failed to write rest controller file %s: %v", restFile, err)
@@ -398,35 +320,22 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 	}
 
 	// Generate const file
-	v2 := make(jet.VarMap)
-	v2.Set("version", version)
-	v2.Set("name", strings.Title(util.GetTableName(tableName)))
-	v2.Set("auth", auth)
-	v2.Set("items", items)
-	if gpa == nil {
-		v2.Set("consts", make([]string, 0))
-		v2.Set("methods", make([]string, 0))
-		v2.Set("funcs", make([]string, 0))
-	} else {
-		v2.Set("consts", gpa.Map)
-	}
-
 	var b3 bytes.Buffer
 	t, err = views.GetTemplate("go/const.jet")
 	if err == nil {
-		if err = t.Execute(&b3, v2, nil); err != nil {
+		if err = t.Execute(&b3, v, nil); err != nil {
 			log.Printf("ERROR: Const template execution failed: %v", err)
 		}
 	} else {
 		log.Printf("ERROR: Failed to load const template: %v", err)
 	}
 
-	constDir := cnf.GoModelFilePath + "models/" + util.GetTableName(tableName)
+	constDir := cnf.GoModelFilePath + "models/" + fileName
 	if err := os.MkdirAll(constDir, 0755); err != nil {
 		log.Printf("ERROR: Failed to create const directory %s: %v", constDir, err)
 	}
 
-	constFile := constDir + "/" + util.GetTableName(tableName) + ".go"
+	constFile := constDir + "/" + fileName + ".go"
 
 	if err := util.WriteFile(constFile, b3.String()); err != nil {
 		log.Printf("ERROR: Failed to write const file %s: %v", constFile, err)
@@ -435,7 +344,23 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 	}
 
 	// Generate domain router file
-	generateDomainRouter(views, packageName, tableName, items, gpa, cnf)
+	generateDomainRouter(views, packageName, tableName, items, funcs, hasId, isView, constPkg, constImport, cnf)
+}
+
+// zeroCheck 는 커스텀 Get/Find/Count 에서 매개변수가 "값 없음"이 아닐 때만 조건을 붙이는 검사식이다.
+// bool 과 슬라이스(in)는 값 없음을 구분할 수 없어서 항상 조건을 붙인다 (빈 in 목록으로 전체 행이 나오지 않도록).
+func zeroCheck(typeName string, param string) string {
+	switch {
+	case typeName == "string":
+		return param + ` != ""`
+	case typeName == "[]byte":
+		return "len(" + param + ") > 0"
+	case typeName == "bool" || strings.HasPrefix(typeName, "[]"):
+		return ""
+	default:
+		// int, int64, float64, enum(int 기반)
+		return param + " != 0"
+	}
 }
 
 // inputModelName 은 REST Insert/Update 입력 구조체 이름이다.
@@ -447,138 +372,77 @@ func inputModelName(modelName string, items []util.Column) string {
 	return modelName
 }
 
-func generateDomainRouter(views *jet.Set, packageName string, tableName string, items []util.Column, gpa *config.Gpa, cnf config.ModelConfig) {
-	domainName := util.GetTableName(tableName)
+const badRequest = "return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{\"code\": \"bad request\"})"
+
+func bodyParam(model string, slice bool) string {
+	decl := fmt.Sprintf("\t\titem_ := &models.%s{}\n\t\terr := c.BodyParser(item_)\n", model)
+	if slice {
+		decl = fmt.Sprintf("\t\titem_ := &[]models.%s{}\n\t\terr := c.BodyParser(item_)\n", model)
+	}
+	return decl + "\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t    " + badRequest + "\n\t\t}"
+}
+
+func generateDomainRouter(views *jet.Set, packageName string, tableName string, items []util.Column, funcs []util.Func, hasId bool, isView bool, constPkg string, constImport string, cnf config.ModelConfig) {
+	domainName := util.FileName(tableName)
+	modelName := util.ModelName(tableName)
 
 	routes := make([]Route, 0)
-	controllerName := "rest." + strings.Title(domainName) + "Controller"
+	controllerName := "rest." + modelName + "Controller"
+	modelNameForUpdate := inputModelName(modelName, items)
+	route := func(method, url, funcName, code, params string) {
+		routes = append(routes, Route{Method: method, URL: url, FuncName: funcName, ControllerName: controllerName, ParamCode: code, ParamStr: params})
+	}
 
-	// Add standard CRUD routes
 	// GET /domain - Index
-	routes = append(routes, Route{
-		Method:         "Get",
-		URL:            "/" + domainName,
-		FuncName:       "Index",
-		ControllerName: controllerName,
-		ParamCode:      "\t\tpage_, _ := strconv.Atoi(c.Query(\"page\"))\n\t\tpagesize_, _ := strconv.Atoi(c.Query(\"pagesize\"))",
-		ParamStr:       "page_, pagesize_",
-	})
+	route("Get", "/"+domainName, "Index", "\t\tpage_, _ := strconv.Atoi(c.Query(\"page\"))\n\t\tpagesize_, _ := strconv.Atoi(c.Query(\"pagesize\"))", "page_, pagesize_")
 
 	// GET /domain/:id - Read
-	routes = append(routes, Route{
-		Method:         "Get",
-		URL:            "/" + domainName + "/:id",
-		FuncName:       "Read",
-		ControllerName: controllerName,
-		ParamCode:      "\t\tid_, _ := strconv.ParseInt(c.Params(\"id\"), 10, 64)",
-		ParamStr:       "id_",
-	})
+	if hasId {
+		route("Get", "/"+domainName+"/:id", "Read", "\t\tid_, err := strconv.ParseInt(c.Params(\"id\"), 10, 64)\n\t\tif err != nil {\n\t\t\t"+badRequest+"\n\t\t}", "id_")
+	}
 
-	modelNameForUpdate := inputModelName(strings.Title(domainName), items)
+	// view 는 읽기 전용이라 쓰기 경로를 만들지 않는다.
+	if !isView {
+		route("Post", "/"+domainName, "Insert", bodyParam(modelNameForUpdate, false), "item_")
 
-	// POST /domain - Insert
-	routes = append(routes, Route{
-		Method:         "Post",
-		URL:            "/" + domainName,
-		FuncName:       "Insert",
-		ControllerName: controllerName,
-		ParamCode:      fmt.Sprintf("\t\titem_ := &models.%s{}\n\t\terr := c.BodyParser(item_)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t    return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{\"code\": \"bad request\"})\n\t\t}", modelNameForUpdate),
-		ParamStr:       "item_",
-	})
-
-	// POST /domain/batch - Insertbatch
-	routes = append(routes, Route{
-		Method:         "Post",
-		URL:            "/" + domainName + "/batch",
-		FuncName:       "Insertbatch",
-		ControllerName: controllerName,
-		ParamCode:      fmt.Sprintf("\t\tvar items_ *[]models.%s\n\t\titems__ref := &items_\n\t\terr := c.BodyParser(items__ref)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t    return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{\"code\": \"bad request\"})\n\t\t}", modelNameForUpdate),
-		ParamStr:       "items_",
-	})
+		batch := fmt.Sprintf("\t\tvar items_ *[]models.%s\n\t\titems__ref := &items_\n\t\terr := c.BodyParser(items__ref)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t    %s\n\t\t}", modelNameForUpdate, badRequest)
+		route("Post", "/"+domainName+"/batch", "Insertbatch", batch, "items_")
+	}
 
 	// POST /domain/count - Count
-	routes = append(routes, Route{
-		Method:         "Post",
-		URL:            "/" + domainName + "/count",
-		FuncName:       "Count",
-		ControllerName: controllerName,
-		ParamCode:      "",
-		ParamStr:       "",
-	})
+	route("Post", "/"+domainName+"/count", "Count", "", "")
 
-	// PUT /domain - Update
-	routes = append(routes, Route{
-		Method:         "Put",
-		URL:            "/" + domainName,
-		FuncName:       "Update",
-		ControllerName: controllerName,
-		ParamCode:      fmt.Sprintf("\t\titem_ := &models.%s{}\n\t\terr := c.BodyParser(item_)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t    return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{\"code\": \"bad request\"})\n\t\t}", modelNameForUpdate),
-		ParamStr:       "item_",
-	})
+	if !isView && hasId {
+		route("Put", "/"+domainName, "Update", bodyParam(modelNameForUpdate, false), "item_")
+		route("Delete", "/"+domainName, "Delete", bodyParam(modelName, false), "item_")
+		route("Delete", "/"+domainName+"/batch", "Deletebatch", bodyParam(modelName, true), "item_")
+	}
 
-	// DELETE /domain - Delete
-	routes = append(routes, Route{
-		Method:         "Delete",
-		URL:            "/" + domainName,
-		FuncName:       "Delete",
-		ControllerName: controllerName,
-		ParamCode:      fmt.Sprintf("\t\titem_ := &models.%s{}\n\t\terr := c.BodyParser(item_)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t    return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{\"code\": \"bad request\"})\n\t\t}", strings.Title(domainName)),
-		ParamStr:       "item_",
-	})
-
-	// DELETE /domain/batch - Deletebatch
-	routes = append(routes, Route{
-		Method:         "Delete",
-		URL:            "/" + domainName + "/batch",
-		FuncName:       "Deletebatch",
-		ControllerName: controllerName,
-		ParamCode:      fmt.Sprintf("\t\titem_ := &[]models.%s{}\n\t\terr := c.BodyParser(item_)\n\t\tif err != nil {\n\t\t    log.Error().Msg(err.Error())\n\t\t    return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{\"code\": \"bad request\"})\n\t\t}", strings.Title(domainName)),
-		ParamStr:       "item_",
-	})
-
-	needsJson := false
-	enumImports := make([]string, 0)
-
-	// Add custom method routes from GPA
-	if gpa != nil && gpa.Method != nil {
-		for _, method := range gpa.Method {
-			if strings.HasPrefix(strings.ToLower(method), "update") && strings.Contains(strings.ToLower(method), "by") {
-				needsJson = true
-			}
-
-			route := generateRouteFromMethod(method, domainName, items, controllerName)
-			if route != nil {
-				routes = append(routes, *route)
-			}
+	// 커스텀 메서드 경로: 컨트롤러와 같은 해석 결과(funcs)로 매개변수를 만든다.
+	for _, fn := range funcs {
+		if r := routeFromFunc(fn, domainName, controllerName); r != nil {
+			routes = append(routes, *r)
 		}
 	}
 
-	for _, item := range items {
-		if strings.Contains(item.Type, ".") {
-			parts := strings.Split(item.Type, ".")
-			enumPkg := parts[0]
-
-			found := false
-			for _, e := range enumImports {
-				if e == enumPkg {
-					found = true
-					break
-				}
-			}
-			if !found {
-				enumImports = append(enumImports, enumPkg)
-			}
-		}
+	code := ""
+	for _, r := range routes {
+		code += r.ParamCode
 	}
 
 	v := make(jet.VarMap)
 	v.Set("packageName", packageName)
 	v.Set("domainName", domainName)
+	v.Set("modelName", modelName)
 	v.Set("routes", routes)
 	v.Set("controllerType", "rest")
-	v.Set("needsLog", true)
-	v.Set("needsJson", needsJson)
-	v.Set("enumImports", enumImports)
+	v.Set("needsLog", strings.Contains(code, "log."))
+	v.Set("needsJson", strings.Contains(code, "json."))
+	v.Set("needsStrings", strings.Contains(code, "strings."))
+	v.Set("needsStrconv", strings.Contains(code, "strconv."))
+	v.Set("needsModels", strings.Contains(code, "models."))
+	v.Set("needsConst", strings.Contains(code, constPkg+"."))
+	v.Set("constImport", constImport)
 
 	var b bytes.Buffer
 	t, err := views.GetTemplate("go/domain_router.jet")
@@ -606,138 +470,97 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 	}
 }
 
-func generateRouteFromMethod(method string, domainName string, items []util.Column, controllerName string) *Route {
-	methodLower := strings.ToLower(method)
-
-	// GetBy methods
-	if strings.HasPrefix(methodLower, "getby") {
-		fieldName := method[5:]
-		fieldLower := strings.ToLower(fieldName)
-		paramType := getParamType(fieldName, items)
-
-		return &Route{
-			Method:         "Get",
-			URL:            fmt.Sprintf("/%s/get/%s/:%s", domainName, fieldLower, fieldLower),
-			FuncName:       method,
-			ControllerName: controllerName,
-			ParamCode:      generateParamCode(fieldName, fieldLower, paramType),
-			ParamStr:       fieldLower + "_",
-		}
+// routeFromFunc 는 커스텀 메서드 하나의 경로를 만든다.
+// Get/Find/Count: GET /{domain}/{get|find|count}/{by 뒤 이름}/:{매개변수}..., 값을 해석하지 못하면 400.
+// UpdateXByY: PUT /{domain}/{x}/{y}, JSON 본문에서 값을 꺼낸다. DeleteBy 는 경로를 만들지 않는다 (예전과 같음).
+func routeFromFunc(fn util.Func, domainName string, controllerName string) *Route {
+	vars := make([]string, 0)
+	for _, w := range fn.Wheres {
+		vars = append(vars, strings.ToLower(w.Column)+"_")
 	}
 
-	// FindBy methods
-	if strings.HasPrefix(methodLower, "findby") {
-		fieldName := method[6:]
-		fieldLower := strings.ToLower(fieldName)
-		paramType := getParamType(fieldName, items)
-
-		return &Route{
-			Method:         "Get",
-			URL:            fmt.Sprintf("/%s/find/%s/:%s", domainName, fieldLower, fieldLower),
-			FuncName:       method,
-			ControllerName: controllerName,
-			ParamCode:      generateParamCode(fieldName, fieldLower, paramType),
-			ParamStr:       fieldLower + "_",
-		}
-	}
-
-	// CountBy methods
-	if strings.HasPrefix(methodLower, "countby") {
-		fieldName := method[7:]
-		fieldLower := strings.ToLower(fieldName)
-		paramType := getParamType(fieldName, items)
-
-		return &Route{
-			Method:         "Get",
-			URL:            fmt.Sprintf("/%s/count/%s/:%s", domainName, fieldLower, fieldLower),
-			FuncName:       method,
-			ControllerName: controllerName,
-			ParamCode:      generateParamCode(fieldName, fieldLower, paramType),
-			ParamStr:       fieldLower + "_",
-		}
-	}
-
-	// UpdateXxxByYyy methods
-	if strings.HasPrefix(methodLower, "update") && strings.Contains(methodLower, "by") {
-		parts := strings.Split(method[6:], "By")
-		if len(parts) == 2 {
-			updateField := parts[0]
-			whereField := parts[1]
-			updateFieldLower := strings.ToLower(updateField)
-			whereFieldLower := strings.ToLower(whereField)
-
-			updateType := getParamType(updateField, items)
-			whereType := getParamType(whereField, items)
-
-			paramCode := fmt.Sprintf("\t\tvar results map[string]interface{}\n\t\tjsonData := c.Body()\n\t\tjsonErr := json.Unmarshal(jsonData, &results)\n\t\tif jsonErr != nil {\n\t\t    log.Error().Msg(jsonErr.Error())\n\t\t    return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{\"code\": \"bad request\"})\n\t\t}\n")
-			paramCode += generateUpdateParamExtract(updateFieldLower, updateType)
-			paramCode += generateUpdateParamExtract(whereFieldLower, whereType)
-
-			return &Route{
-				Method:         "Put",
-				URL:            fmt.Sprintf("/%s/%s/%s", domainName, updateFieldLower, whereFieldLower),
-				FuncName:       method,
-				ControllerName: controllerName,
-				ParamCode:      paramCode,
-				ParamStr:       fmt.Sprintf("%s_, %s_", updateFieldLower, whereFieldLower),
+	switch fn.Kind {
+	case "Get", "Find", "Count":
+		segment := strings.ToLower(fn.Name[len(fn.Kind)+2:])
+		url := fmt.Sprintf("/%s/%s/%s", domainName, strings.ToLower(fn.Kind), segment)
+		code := make([]string, 0)
+		for i, w := range fn.Wheres {
+			// 조건이 하나면 예전과 같이 경로 변수 이름을 by 뒤 이름으로 쓴다 (/item/find/ids/:ids).
+			name := strings.ToLower(w.Column)
+			if len(fn.Wheres) == 1 {
+				name = segment
 			}
+			url += "/:" + name
+			code = append(code, pathParamCode(vars[i], name, w.Type))
 		}
+		return &Route{Method: "Get", URL: url, FuncName: fn.Name, ControllerName: controllerName, ParamCode: strings.Join(code, "\n"), ParamStr: strings.Join(vars, ", ")}
+	case "Update":
+		sets := make([]string, 0)
+		wheres := make([]string, 0)
+		code := "\t\tvar results map[string]interface{}\n\t\tjsonData := c.Body()\n\t\tjsonErr := json.Unmarshal(jsonData, &results)\n\t\tif jsonErr != nil {\n\t\t    log.Error().Msg(jsonErr.Error())\n\t\t    " + badRequest + "\n\t\t}\n"
+		for i, w := range fn.Wheres {
+			if w.Compare == "column" {
+				sets = append(sets, strings.ToLower(w.Column))
+			} else {
+				wheres = append(wheres, strings.ToLower(w.Column))
+			}
+			code += bodyParamCode(vars[i], strings.ToLower(w.Column), w.Type)
+		}
+		return &Route{Method: "Put", URL: fmt.Sprintf("/%s/%s/%s", domainName, strings.Join(sets, ""), strings.Join(wheres, "")), FuncName: fn.Name, ControllerName: controllerName, ParamCode: code, ParamStr: strings.Join(vars, ", ")}
 	}
-
 	return nil
 }
 
-func getParamType(fieldName string, items []util.Column) string {
-	for _, item := range items {
-		if strings.EqualFold(item.Name, fieldName) {
-			return item.Type
-		}
+// parseCode 는 문자열 식 src 를 typeName 으로 바꿔 변수 v 에 담는 코드다. 해석에 실패하면 400 을 돌려준다.
+func parseCode(v string, src string, typeName string, indent string) string {
+	fail := indent + "if err != nil {\n" + indent + "\t" + badRequest + "\n" + indent + "}\n"
+	switch {
+	case typeName == "int":
+		return indent + v + ", err := strconv.Atoi(" + src + ")\n" + fail
+	case typeName == "int64":
+		return indent + v + ", err := strconv.ParseInt(" + src + ", 10, 64)\n" + fail
+	case typeName == "bool":
+		return indent + v + ", err := strconv.ParseBool(" + src + ")\n" + fail
+	case typeName == "float64":
+		return indent + v + ", err := strconv.ParseFloat(" + src + ", 64)\n" + fail
+	case typeName == "[]byte":
+		return indent + v + " := []byte(" + src + ")\n"
+	case strings.Contains(typeName, "."):
+		// enum (상수 패키지의 int 기반 타입)
+		return indent + v + "_, err := strconv.Atoi(" + src + ")\n" + fail + indent + v + " := " + typeName + "(" + v + "_)\n"
 	}
-	return "string"
+	return indent + v + " := " + src + "\n"
 }
 
-func generateParamCode(fieldName string, fieldLower string, paramType string) string {
-	// Check if it's an enum type (contains ".")
-	if strings.Contains(paramType, ".") {
-		// Enum type from models package
-		parts := strings.Split(paramType, ".")
-		enumPkg := parts[0]
-		enumType := parts[1]
-		return fmt.Sprintf("\t\tvar %s_ %s.%s\n\t\t%s__, _ := strconv.Atoi(c.Params(\"%s\"))\n\t\t%s_ = %s.%s(%s__)",
-			fieldLower, enumPkg, enumType, fieldLower, fieldLower, fieldLower, enumPkg, enumType, fieldLower)
+// pathParamCode 는 경로 변수 name 을 typeName 으로 해석해 변수 v 에 담는 코드다. 슬라이스는 쉼표로 나눈다.
+func pathParamCode(v string, name string, typeName string) string {
+	src := fmt.Sprintf("c.Params(%q)", name)
+	if strings.HasPrefix(typeName, "[]") && typeName != "[]byte" {
+		code := parseCode("e", "strings.TrimSpace(s)", typeName[2:], "\t\t\t")
+		return fmt.Sprintf("\t\t%s := make(%s, 0)\n\t\tfor _, s := range strings.Split(%s, \",\") {\n%s\t\t\t%s = append(%s, e)\n\t\t}", v, typeName, src, code, v, v)
 	}
-
-	switch paramType {
-	case "int", "int32":
-		return fmt.Sprintf("\t\t%s_, _ := strconv.Atoi(c.Params(\"%s\"))", fieldLower, fieldLower)
-	case "int64":
-		return fmt.Sprintf("\t\t%s_, _ := strconv.ParseInt(c.Params(\"%s\"), 10, 64)", fieldLower, fieldLower)
-	case "bool":
-		return fmt.Sprintf("\t\t%s_, _ := strconv.ParseBool(c.Params(\"%s\"))", fieldLower, fieldLower)
-	case "float64":
-		return fmt.Sprintf("\t\t%s_, _ := strconv.ParseFloat(c.Params(\"%s\"), 64)", fieldLower, fieldLower)
-	default:
-		return fmt.Sprintf("\t\t%s_ := c.Params(\"%s\")", fieldLower, fieldLower)
-	}
+	return strings.TrimSuffix(parseCode(v, src, typeName, "\t\t"), "\n")
 }
 
-func generateUpdateParamExtract(fieldLower string, paramType string) string {
-	// JSON 값의 타입이 맞지 않으면 패닉 대신 400 을 반환하도록 타입 단언 결과를 확인한다.
-	extract := func(varType string, assertType string, convert string) string {
-		return fmt.Sprintf("\t\tvar %[1]s_ %[2]s\n\t\tif v, flag := results[\"%[1]s\"]; flag {\n\t\t\t%[1]s__, ok := v.(%[3]s)\n\t\t\tif !ok {\n\t\t\t\treturn c.Status(fiber.StatusBadRequest).JSON(fiber.Map{\"code\": \"bad request\"})\n\t\t\t}\n\t\t\t%[1]s_ = %[4]s\n\t\t}\n",
-			fieldLower, varType, assertType, fmt.Sprintf(convert, fieldLower+"__"))
+// bodyParamCode 는 JSON 본문(results)의 key 값을 typeName 으로 꺼내 변수 v 에 담는 코드다. 타입이 맞지 않으면 400.
+func bodyParamCode(v string, key string, typeName string) string {
+	extract := func(assertType string, convert string) string {
+		return fmt.Sprintf("\t\tvar %[1]s %[2]s\n\t\tif v, flag := results[%[3]q]; flag {\n\t\t\t%[1]s_, ok := v.(%[4]s)\n\t\t\tif !ok {\n\t\t\t\t%[5]s\n\t\t\t}\n\t\t\t%[1]s = %[6]s\n\t\t}\n",
+			v, typeName, key, assertType, badRequest, fmt.Sprintf(convert, v+"_"))
 	}
 
-	switch paramType {
-	case "int", "int32":
-		return extract("int", "float64", "int(%s)")
-	case "int64":
-		return extract("int64", "float64", "int64(%s)")
-	case "bool":
-		return extract("bool", "bool", "%s")
-	case "float64":
-		return extract("float64", "float64", "%s")
+	switch {
+	case typeName == "int" || typeName == "int64":
+		return extract("float64", typeName+"(%s)")
+	case typeName == "bool":
+		return extract("bool", "%s")
+	case typeName == "float64":
+		return extract("float64", "%s")
+	case typeName == "[]byte":
+		return extract("string", "[]byte(%s)")
+	case strings.Contains(typeName, ".") && !strings.HasPrefix(typeName, "[]"):
+		return extract("float64", typeName+"(int(%s))")
 	default:
-		return extract("string", "string", "%s")
+		return extract("string", "%s")
 	}
 }

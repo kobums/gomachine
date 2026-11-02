@@ -34,7 +34,7 @@ buildtool-model <target_path> [language] [package_name]
 
 2. **Template Engine** (`views/`)
    - Uses CloudyKit Jet templating engine
-   - `views/go/`: Go templates (model.jet, rest.jet, const.jet)
+   - `views/go/`: Go templates (model.jet, rest.jet, const.jet, domain_router.jet)
    - `views/dart/`: Dart/Flutter templates (model.jet, params.jet, provider.jet, repository.jet)
    - `views/kotlin/`: Kotlin/Spring Boot templates (entity.jet, repository.jet, service.jet, controller.jet)
    - `views/react/`: React TypeScript templates (model.jet, type.jet)
@@ -49,7 +49,7 @@ buildtool-model <target_path> [language] [package_name]
 ### Database Integration
 
 - Uses MySQL with connection pooling
-- Queries `information_schema.tables` and `information_schema.columns`
+- Queries `information_schema.tables` and `information_schema.columns` (columns in `ordinal_position` order)
 - Generates code based on database schema and naming conventions
 - Table naming: `prefix_tablename` format where prefix becomes model prefix
 
@@ -59,16 +59,16 @@ buildtool-model <target_path> [language] [package_name]
 - Models: `./models/{tablename}.go`
 - Controllers: `./controllers/rest/{tablename}.go`
 - Constants: `./models/{tablename}/{tablename}.go`
+- Routes: `./router/routers/{tablename}.go`
 
 **For Dart/Flutter:**
 - Generates to `../gym/gym/lib/{type}/{tablename}_{type}.dart`
 - Types: model, params, provider, repository
 
 **For Kotlin/Spring Boot:**
-- Entities: `../gym/gymspring/src/main/kotlin/com/gowoobro/gymspring/entity/{ModelName}.kt`
-- Repositories: `../gym/gymspring/src/main/kotlin/com/gowoobro/gymspring/repository/{ModelName}Repository.kt`
-- Services: `../gym/gymspring/src/main/kotlin/com/gowoobro/gymspring/service/{ModelName}Service.kt`
-- Controllers: `../gym/gymspring/src/main/kotlin/com/gowoobro/gymspring/controller/{ModelName}Controller.kt`
+- Written under `kotlinModelFilePath` (must point at the package directory, e.g. `.../src/main/kotlin/com/example/app`):
+  `entity/{ModelName}.kt`, `repository/{ModelName}Repository.kt`, `service/{ModelName}Service.kt`, `controller/{ModelName}Controller.kt`, `enums/{model}/Enums.kt`
+- Package is `kotlinPackage` from model.json (default `com.gowoobro.gymspring`)
 - Creates complete REST API with JPA entities, repositories, services, and controllers
 
 ### Configuration Schema
@@ -83,14 +83,30 @@ The `config.json` supports:
 
 ### Type Mapping
 
-The tool automatically maps MySQL types to target language types:
-- `int` → `int` (Go) / `int` (Dart) / `Int` (Kotlin)
-- `bigint` → `int64` (Go) / `int` (Dart) / `Long` (Kotlin)
-- `varchar`/`text` → `string` (Go) / `String` (Dart) / `String` (Kotlin)
-- `datetime`/`date` → `string` (Go) / `String` (Dart) / `LocalDateTime` (Kotlin)
-- `tinyint` → `bool` (Go) / `bool` (Dart) / `Int` (Kotlin)
-- `double`/`float` → `Double` (Go) / `double` (Dart) / `BigDecimal/Double` (Kotlin)
-- `decimal` → `int` (Go) / `int` (Dart) / `BigDecimal` (Kotlin)
+`util.GetType` maps MySQL `data_type` per language. Unknown types log a warning and fall back to `string`/`String`.
+
+| MySQL | Go | Kotlin | Dart |
+|---|---|---|---|
+| `int`, `integer`, `smallint`, `mediumint`, `year` | `int` | `Int` | `int` |
+| `bigint` | `int64` | `Long` | `int` |
+| `tinyint` | `bool` | `Int` | `bool` |
+| `float`, `double`, `real` | `float64` | `Double` | `double` |
+| `decimal`, `numeric` | `float64` | `BigDecimal` | `double` |
+| `char`, `varchar`, `*text`, `enum`, `set`, `json` | `string` | `String` | `String` |
+| `datetime`, `timestamp` | `string` | `LocalDateTime` | `String` |
+| `date` | `string` | `LocalDate` | `String` |
+| `time` | `string` | `String` | `String` |
+| `binary`, `varbinary`, `*blob` | `[]byte` | `ByteArray` | `String` |
+| `bit` | `[]byte` (driver returns raw bytes) | `Boolean` | `bool` |
+
+Columns listed in `table[].map` become enum types (Go: `{table}.{Name}` in `models/{table}`, Kotlin/Dart: `{Name}`).
+
+### Naming
+
+- Tables: `_tb` / `_vw` suffix is stripped (`user_role_tb` → model `UserRole`, files/packages/URLs `userrole`). `_vw` tables are read-only (no insert/update/delete code). If two tables produce the same name (e.g. `user_tb` and `user_vw`) the `_tb` keeps it and the other is renamed (`UserView`).
+- Columns: the prefix before the first `_` is dropped (`p_created_at` → key `created_at`, Go field `CreatedAt`, Kotlin property `createdAt`). Single-underscore columns keep the old names (`u_createddate` → `Createddate` / `createddate`).
+- Columns that are Go/Kotlin keywords get safe identifiers (Go parameter `type_`, Kotlin `` `class` ``).
+- Custom methods (`table[].method`) are parsed by `util.ParseFuncs`; methods that don't match columns are skipped with a warning.
 
 ## Dependencies
 

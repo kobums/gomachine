@@ -18,7 +18,8 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
 
 ```json
 "languages": { "all": false, "go": true, "spring": true, "flutter": false, "react": true, "vue": true },
-"kotlinModelFilePath": "../proj/proj_spring",
+"kotlinModelFilePath": "../proj/proj_spring/src/main/kotlin/com/example/proj",
+"kotlinPackage": "com.example.proj",
 "reactModelFilePath": "../proj/proj_front",
 "vueModelFilePath": "../proj/proj_vue"
 ```
@@ -27,6 +28,69 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
 - go 외 언어는 `*ModelFilePath` 가 비어 있으면 경고만 찍고 건너뛴다.
 - `languages` 가 없으면 예전 `language` 문자열을 쓰고, 그것도 없으면 go 만 생성한다.
 - 실행 인자로 덮어쓸 수 있다: `buildtool-model . go,react` 또는 `buildtool-model . all`
+
+## 이름 규칙
+
+- 테이블: 끝의 `_tb` / `_vw` 만 떼고 나머지를 쓴다. `user_tb` → `User` (파일/패키지/URL `user`),
+  `user_role_tb` → `UserRole` (파일/패키지/URL `userrole`). 예전에는 첫 `_` 앞만 써서 `user_role_tb` 가 `user_tb` 를 덮어썼다.
+  - `_tb` 가 없는 테이블도 전체 이름을 쓴다 (`member_info` → `MemberInfo`, 예전에는 `Member`).
+  - 이름이 겹치면 (`user_tb` 와 `user_vw`) `_tb` 가 원래 이름을 갖고 나머지는 경고와 함께 다른 이름이 된다 (`user_vw` → `UserView`).
+  - `model.json` 의 `table[].name` 은 `user_role`, `userrole`, `UserRole` 어느 것으로 써도 된다.
+- view(`_vw`)는 읽기 전용이다. Go 는 Insert/Update/Delete 계열 모델 메서드·핸들러·경로를, Spring 은 POST/PUT/PATCH/DELETE 와
+  서비스 쓰기 메서드를 만들지 않는다. view 에 설정한 `UpdateXByY` / `DeleteByX` 는 경고를 찍고 건너뛴다.
+- 컬럼: 첫 `_` 앞(접두사)만 뗀다. `p_created_at` → SQL `created_at`, Go 필드 `CreatedAt`, Kotlin/TypeScript 프로퍼티 `createdAt`.
+  밑줄이 하나인 컬럼은 예전과 같은 이름이다 (`u_createddate` → `Createddate` / `createddate`).
+- 컬럼 이름이 예약어면 Go 매개변수는 뒤에 `_` 를 붙이고 (`type_`), Kotlin 은 backtick 으로 감싼다 (`` `class` ``).
+- Go 상수 패키지(`models/{table}`) 이름이 생성 코드의 import(`log`, `config`, `time` ...)나 지역 변수와 겹치면
+  생성 파일에서는 별칭(`logpkg`)으로 import 한다. 디렉터리와 `package` 이름은 그대로다 (예약어인 `type` 등은 `package typepkg`).
+- 컬럼 순서는 `information_schema.columns.ordinal_position` 순서다.
+
+## 컬럼 타입
+
+| MySQL | Go | Kotlin |
+|---|---|---|
+| `int`, `smallint`, `mediumint`, `year` | `int` | `Int` |
+| `bigint` | `int64` | `Long` |
+| `tinyint` | `bool` | `Int` |
+| `float`, `double` | `float64` | `Double` |
+| `decimal` | `float64` | `BigDecimal` |
+| `char`, `varchar`, `*text`, `enum`, `set`, `json` | `string` | `String` |
+| `datetime`, `timestamp` | `string` | `LocalDateTime` |
+| `date` | `string` | `LocalDate` |
+| `time` | `string` | `String` |
+| `*blob`, `binary`, `varbinary` | `[]byte` | `ByteArray` |
+| `bit` | `[]byte` | `Boolean` |
+
+- 모르는 타입은 경고를 찍고 문자열로 처리한다.
+- Go `decimal` 은 예전 `int` 에서 `float64` 로 바뀌었다 (`int` 는 소수점이 잘리고 `"12.50"` Scan 이 실패했다). 정밀도가 중요하면 직접 바꿔 쓴다.
+- Go `double`/`float` 은 예전 `Double`(대상 프로젝트에 정의가 필요했다)에서 `float64` 로 바뀌었다.
+- Go `bit` 는 MySQL 드라이버가 원시 바이트를 돌려줘서 `bool` 로 Scan 할 수 없으므로 `[]byte` 다.
+- Kotlin `double` 은 예전 `BigDecimal` 에서 `Double` 로, `date` 는 `LocalDateTime` 에서 `LocalDate` 로 바뀌었다.
+  날짜 검색 파라미터는 `@DateTimeFormat` ISO 형식(`2024-01-31T10:00:00`, `2024-01-31`)으로 받는다.
+
+## Go 커스텀 메서드 (`table[].method`)
+
+- `GetBy{컬럼}`, `FindBy{컬럼}`, `CountBy{컬럼}`, `DeleteBy{컬럼}`, `Update{컬럼}By{컬럼}`. 컬럼은 여러 개 이어 쓸 수 있다
+  (`FindByUserStatus`, `FindByUserAndStatus`). `{컬럼}s` 는 in (`FindByIds`), `{컬럼}like` 는 like 조건이다.
+- 컬럼 이름은 대소문자까지 같은 조합을 먼저 찾고, 없으면 대소문자를 무시한다 (`GetByUserId` → `userid` 컬럼).
+- 컬럼과 맞지 않는 메서드는 깨진 코드를 만들지 않고 경고를 찍고 건너뛴다.
+- Get/Find/Count 는 값이 0 / "" 인 매개변수의 조건을 빼지만, bool 과 in(슬라이스) 조건은 항상 붙인다.
+- 경로: `GET /{table}/{get|find|count}/{by 뒤 이름}/:{값}` (컬럼이 여러 개면 `/:{컬럼}/:{컬럼}`, in 은 쉼표로 구분),
+  `PUT /{table}/{바꿀 컬럼}/{조건 컬럼}` (JSON 본문). 값을 해석하지 못하면 400 을 돌려준다 (예전에는 0 으로 바꿔 조건이 빠졌다).
+  `DeleteBy` 는 예전처럼 경로를 만들지 않는다.
+
+## id 컬럼이 없는 테이블 (Go)
+
+`id` 컬럼이 없으면 id 기준 메서드와 핸들러(모델 `Get/Update/Delete`, REST `Read/Update/Delete/Deletebatch` 와 그 경로)를 만들지 않는다.
+조회/추가/개수와 커스텀 메서드(`GetByKey`, `UpdateValueByKey`, `DeleteByKey` ...)를 쓴다. 기본 정렬은 `gpa.primary` 컬럼, 없으면 첫 컬럼이다.
+User 테이블에 id 가 없고 `auth: "jwt"` 면 본인 확인을 할 수 없으므로 커스텀 `UpdateXByY` / `DeleteBy` 는 항상 `auth error` 다.
+
+Spring 은 기본 키를 `gpa.primary` > `id` 컬럼 > 첫 컬럼 순서로 정하고, 그 타입으로 `JpaRepository<X, 타입>` 과 경로 변수를 만든다.
+
+## Spring (Kotlin) 패키지와 경로
+
+- `kotlinPackage` 로 생성 코드의 패키지를 정한다. 없으면 예전 값 `com.gowoobro.gymspring` 이다.
+- `kotlinModelFilePath` 는 그 패키지의 디렉터리를 가리켜야 한다 (아래에 `entity/`, `repository/`, `service/`, `controller/`, `enums/`, `config/` 를 만든다).
 
 ## Vue (Vue 3 + TypeScript)
 
@@ -83,7 +147,7 @@ API 경로는 react 와 같이 spring 백엔드(`/{table}/{id}`, `/{table}/searc
   응답(`{Model}Response`), 목록 필터, `/search/{field}`, 리포지토리 `findBy` 에서 비밀번호 컬럼은 빠진다.
 - Create/Update/Patch 요청 DTO 에는 `protect` 컬럼(기본: User 의 level)이 없다. id 는 경로 변수로만 정한다.
   Spring 쪽에는 관리자 예외가 없다.
-- `"auth": "jwt"` 이고 `session` 이 있는 테이블은 컨트롤러가 `com.gowoobro.gymspring.config.SessionProvider` 를 주입받아
+- `"auth": "jwt"` 이고 `session` 이 있는 테이블은 컨트롤러가 `{kotlinPackage}.config.SessionProvider` 를 주입받아
   목록/검색/개수를 본인 소유 행으로 거르고, 단건 조회/수정/삭제는 남의 행이면 404(일괄 삭제는 403), 비로그인이면 401 을 돌려준다.
   생성/수정 요청의 세션 컬럼은 세션 값으로 고정한다. User 의 생성(회원가입)은 세션 없이 호출할 수 있다.
   - `config/SessionProvider.kt` 인터페이스는 파일이 없을 때만 생성한다(덮어쓰지 않음). 대상 프로젝트에서 `@Component` 로

@@ -23,7 +23,7 @@ type ReactEnumData struct {
 
 type ReactEnumItem struct {
 	Index int
-	Key   string
+	Key   string // TypeScript 객체 key 로 쓸 수 있게 바꾼 이름 (대문자). 빈 항목은 ""
 	Label string
 }
 
@@ -68,14 +68,11 @@ type ReactTemplateData struct {
 }
 
 func ProcessReact(packageName string, tableName string, prefix string, items []util.Column, db *sql.DB, gpa *config.Gpa, version string, auth string, cnf config.ModelConfig) {
-	// Determine target path
-	var targetPath string
-	if cnf.ReactModelFilePath != "" {
-		targetPath = cnf.ReactModelFilePath
-	} else if len(os.Args) > 1 && os.Args[1] != "" {
-		targetPath = os.Args[1]
-	} else {
-		targetPath = "../gym/front"
+	// 출력 경로는 reactModelFilePath 만 쓴다 (main.go 가 경로 없는 언어는 건너뛴다).
+	targetPath := cnf.ReactModelFilePath
+	if targetPath == "" {
+		log.Println("reactModelFilePath is not set, skip react")
+		return
 	}
 
 	// Make sure the target directory exists
@@ -94,7 +91,9 @@ func ProcessReact(packageName string, tableName string, prefix string, items []u
 
 // BuildTemplateData 는 TypeScript 계열 생성기(react, vue)가 함께 쓰는 템플릿 데이터를 만든다.
 func BuildTemplateData(packageName string, tableName string, items []util.Column, gpa *config.Gpa) ReactTemplateData {
-	modelName := strings.Title(util.GetTableName(tableName))
+	modelName := util.ModelName(tableName)
+	// URL 과 파일 이름은 spring 의 /api/{모델 소문자} 와 같은 이름을 쓴다 (user_role_tb → userrole).
+	fileName := util.FileName(tableName)
 
 	// Get enum data from GPA
 	var enums []ReactEnumData
@@ -104,20 +103,15 @@ func BuildTemplateData(packageName string, tableName string, items []util.Column
 			// Convert string data to ReactEnumItem with index
 			enumItems := make([]ReactEnumItem, 0)
 			indices := make([]string, 0)
+			used := map[string]bool{}
 			for idx, data := range gpaMap.Data {
 				var key, label string
 				if data == "" {
 					key = ""
 					label = ""
 				} else {
-					parts := strings.Split(data, ":")
-					if len(parts) >= 2 {
-						key = parts[0]
-						label = parts[1]
-					} else {
-						key = data
-						label = data
-					}
+					key = util.DedupeIdent(util.SanitizeIdent(strings.ToUpper(util.EnumKey(data)), "V"), used)
+					label = util.EnumLabel(data)
 				}
 				enumItems = append(enumItems, ReactEnumItem{
 					Index: idx,
@@ -155,7 +149,7 @@ func BuildTemplateData(packageName string, tableName string, items []util.Column
 			methodLower := strings.ToLower(method)
 
 			// Handle GetBy methods (single result)
-			if strings.HasPrefix(methodLower, "getby") {
+			if strings.HasPrefix(methodLower, "getby") && len(method) > 5 {
 				fieldName := method[5:] // Remove "GetBy"
 				paramName := strings.ToLower(fieldName[:1]) + fieldName[1:]
 				searchMethods = append(searchMethods, ReactSearchMethod{
@@ -163,7 +157,7 @@ func BuildTemplateData(packageName string, tableName string, items []util.Column
 					ParamName:     paramName,
 					ParamType:     getTypeScriptType(fieldName, items, enums),
 					FieldName:     fieldName,
-					TableName:     util.GetTableName(tableName),
+					TableName:     fileName,
 					ModelName:     modelName,
 					TemplateParam: fmt.Sprintf("${%s}", paramName),
 					IsSingle:      true,
@@ -171,7 +165,7 @@ func BuildTemplateData(packageName string, tableName string, items []util.Column
 			}
 
 			// Handle FindBy methods (array result)
-			if strings.HasPrefix(methodLower, "findby") {
+			if strings.HasPrefix(methodLower, "findby") && len(method) > 6 {
 				fieldName := method[6:] // Remove "FindBy"
 				paramName := strings.ToLower(fieldName[:1]) + fieldName[1:]
 				searchMethods = append(searchMethods, ReactSearchMethod{
@@ -179,7 +173,7 @@ func BuildTemplateData(packageName string, tableName string, items []util.Column
 					ParamName:     paramName,
 					ParamType:     getTypeScriptType(fieldName, items, enums),
 					FieldName:     fieldName,
-					TableName:     util.GetTableName(tableName),
+					TableName:     fileName,
 					ModelName:     modelName,
 					TemplateParam: fmt.Sprintf("${%s}", paramName),
 					IsSingle:      false,
@@ -218,7 +212,7 @@ func BuildTemplateData(packageName string, tableName string, items []util.Column
 				Name:      join.Name,
 				Column:    join.Column,
 				Alias:     alias,
-				ModelName: strings.Title(join.Name),
+				ModelName: util.CamelCase(join.Name),
 			})
 		}
 	} else {
@@ -237,7 +231,7 @@ func BuildTemplateData(packageName string, tableName string, items []util.Column
 
 	templateData := ReactTemplateData{
 		PackageName:     packageName,
-		TableName:       util.GetTableName(tableName),
+		TableName:       fileName,
 		ModelName:       modelName,
 		Columns:         reactColumns,
 		Enums:           enums,
@@ -255,19 +249,21 @@ func mapMySQLTypeToTypeScript(mysqlType string) string {
 	mysqlType = strings.ToLower(mysqlType)
 
 	switch mysqlType {
-	case "int", "bigint", "tinyint", "smallint", "mediumint":
+	case "int", "integer", "bigint", "tinyint", "smallint", "mediumint", "year":
 		return "number"
-	case "float", "double", "decimal":
+	case "float", "double", "real", "decimal", "numeric":
 		return "number"
-	case "varchar", "text", "longtext", "mediumtext", "char":
+	case "varchar", "char", "tinytext", "text", "mediumtext", "longtext", "enum", "set":
 		return "string"
 	case "datetime", "date", "timestamp", "time":
 		return "string"
-	case "boolean", "bool":
+	case "boolean", "bool", "bit":
+		// spring 은 bit 를 Boolean 으로 매핑한다
 		return "boolean"
 	case "json":
 		return "any"
 	default:
+		// blob / binary 는 JSON 에서 base64 문자열이다
 		return "string"
 	}
 }
@@ -304,6 +300,9 @@ func SetupJetGlobals(views *jet.Set) {
 	})
 
 	views.AddGlobal("untitle", func(str string) string {
+		if str == "" {
+			return ""
+		}
 		a := []rune(str)
 		a[0] = unicode.ToLower(a[0])
 		return string(a)

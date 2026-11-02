@@ -59,9 +59,12 @@ type ModelConfig struct {
 	GoModelFilePath     string `json:"goModelFilePath"`
 	DartModelFilePath   string `json:"dartModelFilePath"`
 	KotlinModelFilePath string `json:"kotlinModelFilePath"`
-	ReactModelFilePath  string `json:"reactModelFilePath"`
-	VueModelFilePath    string `json:"vueModelFilePath"`
-	ModelJsonPath       string `json:"modelJsonPath"`
+	// 생성되는 Kotlin 코드의 기본 패키지. 비어 있으면 예전 값 com.gowoobro.gymspring 을 쓴다.
+	// kotlinModelFilePath 는 이 패키지의 디렉터리(예: src/main/kotlin/com/example/app)를 가리켜야 한다.
+	KotlinPackage      string `json:"kotlinPackage"`
+	ReactModelFilePath string `json:"reactModelFilePath"`
+	VueModelFilePath   string `json:"vueModelFilePath"`
+	ModelJsonPath      string `json:"modelJsonPath"`
 	// 생성할 언어별 on/off. 예: {"go": true, "react": true, "spring": false}. "all": true 면 전부 생성.
 	// 비어 있으면 예전 방식대로 language 필드를 쓴다.
 	Languages map[string]bool `json:"languages"`
@@ -208,6 +211,17 @@ func (c ModelConfig) EnabledLanguages() []string {
 		return ResolveLanguages(strings.Split(c.Language, ","))
 	}
 	return []string{"go"}
+}
+
+// DefaultKotlinPackage 는 kotlinPackage 가 없을 때 쓰는 예전 패키지 이름이다.
+const DefaultKotlinPackage = "com.gowoobro.gymspring"
+
+// GetKotlinPackage 는 생성할 Kotlin 코드의 기본 패키지다.
+func (c ModelConfig) GetKotlinPackage() string {
+	if p := strings.TrimSpace(c.KotlinPackage); p != "" {
+		return p
+	}
+	return DefaultKotlinPackage
 }
 
 // OutputPath 는 언어별 생성 경로 설정값을 돌려준다.

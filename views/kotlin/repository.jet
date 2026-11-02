@@ -1,22 +1,20 @@
-package com.gowoobro.gymspring.repository
+package {{.BasePackage}}.repository
 
-import com.gowoobro.gymspring.entity.{{.ModelName}}
-import com.gowoobro.gymspring.entity.{{.ModelName}}CreateRequest
-import com.gowoobro.gymspring.entity.{{.ModelName}}UpdateRequest
+import {{.BasePackage}}.entity.{{.ModelName}}
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.Pageable
 {{if len(.Joins) > 0 }}import org.springframework.data.jpa.repository.EntityGraph{{end}}
 import org.springframework.data.jpa.repository.JpaRepository
-import org.springframework.data.jpa.repository.Query
 import org.springframework.stereotype.Repository
-{{if .HasDateTime}}import java.time.LocalDateTime{{end}}
-{{if .HasDecimal}}import java.math.BigDecimal{{end}}
-{{range .Enums}}import com.gowoobro.gymspring.enums.{{.EnumPackage}}.{{.Name|title}}
+{{if .HasDateTime}}import java.time.LocalDateTime
+{{end}}{{if .HasDate}}import java.time.LocalDate
+{{end}}{{if .HasDecimal}}import java.math.BigDecimal
+{{end}}{{base := .BasePackage}}{{range .Enums}}import {{base}}.enums.{{.EnumPackage}}.{{.Name}}
 {{end}}
 {{allJoins := .Joins}}
 {{entityGraphPaths := .EntityGraphPaths}}
 @Repository
-interface {{.ModelName}}Repository : JpaRepository<{{.ModelName}}, Long> {
+interface {{.ModelName}}Repository : JpaRepository<{{.ModelName}}, {{.PK.KotlinType}}> {
 {{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
 {{range entityGraphPaths}}{{if .IsLast}}        "{{.Path}}"{{else}}        "{{.Path}}",{{end}}
 {{end}}    ])
@@ -25,13 +23,13 @@ interface {{.ModelName}}Repository : JpaRepository<{{.ModelName}}, Long> {
 {{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
 {{range entityGraphPaths}}{{if .IsLast}}        "{{.Path}}"{{else}}        "{{.Path}}",{{end}}
 {{end}}    ])
-{{end}}    override fun findById(id: Long): java.util.Optional<{{.ModelName}}>
-{{range .Columns }}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{ if .Name != "Id" && not .IsPassword}}{{"\n"}}{{if not joinData}}{{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
+{{end}}    override fun findById(id: {{.PK.KotlinType}}): java.util.Optional<{{.ModelName}}>
+{{range .Columns }}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{ if .IsSearchable}}{{"\n"}}{{if not joinData}}{{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
 {{range entityGraphPaths}}{{if .IsLast}}        "{{.Path}}"{{else}}        "{{.Path}}",{{end}}
 {{end}}    ])
-{{end}}    fun findBy{{.Name}}({{.Name|lower}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): List<{{.ModelName}}>
+{{end}}    fun findBy{{.Name}}({{.Field|raw}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): List<{{.ModelName}}>
 {{end}}{{if joinData}}{{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
 {{range entityGraphPaths}}{{if .IsLast}}        "{{.Path}}"{{else}}        "{{.Path}}",{{end}}
 {{end}}    ])
-{{end}}    fun findBy{{joinData.ColumnName}}Id({{joinData.Alias|lower}}: Long): List<{{.ModelName}}>
+{{end}}    fun findBy{{joinData.ColumnName}}Id({{joinData.AliasVar|raw}}: {{.KotlinType}}): List<{{.ModelName}}>
 {{end}}{{- end}}{{end}}}

@@ -2,12 +2,12 @@ package models
 
 import (
     "{{packageName}}/global/config"
-    "{{packageName}}/models/{{name|lower}}"
+    {{if modelUsesConst}}{{constImport|raw}}{{end}}
     "database/sql"
-    "errors"
+    {{if !isView}}"errors"{{end}}
     "fmt"
     "strings"
-    "time"
+    {{if createdDefault && !isView}}"time"{{end}}
 
     log "{{packageName}}/global/log"
     _ "github.com/go-sql-driver/mysql"
@@ -17,14 +17,14 @@ import (
 
 type {{name}} struct {
     {{range items}}        
-    {{.Name|title}}                {{if .Name == "Id"}}int64{{else}}{{.Type}}{{end}} `json:{{if .Name == passwordColumn}}"-"{{else}}"{{.Name|lower}}"{{end}}` {{end}}
+    {{.Name}}                {{if .Name == "Id"}}int64{{else}}{{.Type}}{{end}} `json:{{if .Name == passwordColumn}}"-"{{else}}"{{.Name|lower}}"{{end}}` {{end}}
     
     Extra                    map[string]interface{} `json:"extra"`
 }
 {{if inputName != name}}// {{name}}Update 는 REST 입력용 구조체다. 비밀번호를 입력받을 수 있고, 출력용 {{name}} 은 비밀번호를 json 에서 숨긴다.
 type {{name}}Update struct {
     {{range items}}        
-    {{.Name|title}}                {{if .Name == "Id"}}int64{{else}}{{.Type}}{{end}} `json:"{{.Name|lower}}"` {{end}}
+    {{.Name}}                {{if .Name == "Id"}}int64{{else}}{{.Type}}{{end}} `json:"{{.Name|lower}}"` {{end}}
     
     Extra                    map[string]interface{} `json:"extra"`
 }
@@ -44,7 +44,7 @@ type {{name}}Manager struct {
 {{if inputName != name}}func (c *{{name}}) ConvertUpdate() *{{name}}Update {    
     item := &{{name}}Update{}
     {{range items}}        
-    item.{{.Name|title}} = c.{{.Name|title}}{{end}}
+    item.{{.Name}} = c.{{.Name}}{{end}}
 
     return item
 }
@@ -125,7 +125,7 @@ func (p *{{name}}Manager) GetQuery() string {
 
     var ret strings.Builder
 
-    ret.WriteString("select {{range i, v := items}}{{if i > 0}}, {{end}}{{v.Column}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, {{v2.Prefix}}_{{.Name|lower}}{{end}}{{end}} from {{tableName}}{{range joins}}, {{.Name}}_tb{{end}}")
+    ret.WriteString("select {{range i, v := items}}{{if i > 0}}, {{end}}{{v.Column}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, {{.Column}}{{end}}{{end}} from {{tableName}}{{range joins}}, {{.Name}}_tb{{end}}")
 
     if p.Index != "" {
         ret.WriteString(" use index(")
@@ -198,7 +198,7 @@ func (p *{{name}}Manager) GetQueryGroup(name string) string {
     return ret.String()
 }
 
-func (p *{{name}}Manager) Truncate() error {
+{{if !isView}}func (p *{{name}}Manager) Truncate() error {
     if !p.Conn.IsConnect() {
         return errors.New("Connection Error")
     }
@@ -220,28 +220,32 @@ func (p *{{name}}Manager) Insert(item *{{inputName}}) error {
         return errors.New("Connection Error")
     }
 
+    {{if createdDefault}}
     if item.Createddate == "" {
         t := time.Now().UTC().Add(time.Hour * 9)
         //t := time.Now()
         item.Createddate = fmt.Sprintf("%04d-%02d-%02d %02d:%02d:%02d", t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second())
     }
+    {{end}}
 
     {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime"}}
-    if item.{{v.Name|title}} == "" {
-       item.{{v.Name|title}} = "1000-01-01 00:00:00"
+    if item.{{v.Name}} == "" {
+       item.{{v.Name}} = "1000-01-01 00:00:00"
     }
 	{{end}}{{end}}
 
     query := ""
     var res sql.Result
     var err error
-    if item.Id > 0 {
+    {{if hasId}}if item.Id > 0 {
         query = "insert into {{tableName}} ({{range i, v := items}}{{if i > 0}}, {{end}}{{v.Column}}{{end}}) values ({{range i, v := items}}{{if i > 0}}, {{end}}?{{end}})"
-        res, err = p.Exec(query{{range items}}, item.{{.Name|title}}{{end}})
+        res, err = p.Exec(query{{range items}}, item.{{.Name}}{{end}})
     } else {
-        query = "insert into {{tableName}} ({{range i, v := items}}{{if v.Name != "Id"}}{{if i > 1}}, {{end}}{{v.Column}}{{end}}{{end}}) values ({{range i, v := items}}{{if v.Name != "Id"}}{{if i > 1}}, {{end}}?{{end}}{{end}})"
-        res, err = p.Exec(query{{range items}}{{if .Name != "Id"}}, item.{{.Name|title}}{{end}}{{end}})
-    }
+        query = "insert into {{tableName}} ({{range i, v := nonIdItems}}{{if i > 0}}, {{end}}{{v.Column}}{{end}}) values ({{range i, v := nonIdItems}}{{if i > 0}}, {{end}}?{{end}})"
+        res, err = p.Exec(query{{range nonIdItems}}, item.{{.Name}}{{end}})
+    }{{else}}
+    query = "insert into {{tableName}} ({{range i, v := items}}{{if i > 0}}, {{end}}{{v.Column}}{{end}}) values ({{range i, v := items}}{{if i > 0}}, {{end}}?{{end}})"
+    res, err = p.Exec(query{{range items}}, item.{{.Name}}{{end}}){{end}}
     
     if err == nil {
         p.Result = &res
@@ -256,7 +260,7 @@ func (p *{{name}}Manager) Insert(item *{{inputName}}) error {
     return err
 }
 
-func (p *{{name}}Manager) Delete(id int64) error {
+{{if hasId}}func (p *{{name}}Manager) Delete(id int64) error {
     if !p.Conn.IsConnect() {
         return errors.New("Connection Error")
     }
@@ -273,6 +277,7 @@ func (p *{{name}}Manager) Delete(id int64) error {
     
     return err
 }
+{{end}}
 
 func (p *{{name}}Manager) DeleteAll() error {
     if !p.Conn.IsConnect() {
@@ -291,6 +296,7 @@ func (p *{{name}}Manager) DeleteAll() error {
     return err
 }
 
+{{end}}
 func (p *{{name}}Manager) MakeQuery(initQuery string , postQuery string, initParams []interface{}, args []interface{}) (string, []interface{}) {
     var params []interface{}
     if initParams != nil {
@@ -322,7 +328,7 @@ func (p *{{name}}Manager) MakeQuery(initQuery string , postQuery string, initPar
     return query.String(), params
 }
 
-func (p *{{name}}Manager) DeleteWhere(args []interface{}) error {
+{{if !isView}}func (p *{{name}}Manager) DeleteWhere(args []interface{}) error {
     if !p.Conn.IsConnect() {
         return errors.New("Connection Error")
     }
@@ -339,19 +345,19 @@ func (p *{{name}}Manager) DeleteWhere(args []interface{}) error {
     return err
 }
 
-func (p *{{name}}Manager) Update(item *{{inputName}}) error {
+{{if hasId}}func (p *{{name}}Manager) Update(item *{{inputName}}) error {
     if !p.Conn.IsConnect() {
         return errors.New("Connection Error")
     }
     
     {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime"}}
-    if item.{{v.Name|title}} == "" {
-       item.{{v.Name|title}} = "1000-01-01 00:00:00"
+    if item.{{v.Name}} == "" {
+       item.{{v.Name}} = "1000-01-01 00:00:00"
     }
 	{{end}}{{end}}
 
-	query := "update {{tableName}} set {{range i, v := items}}{{if v.Name != "Id"}}{{if i > 1}}, {{end}}{{v.Column}} = ?{{end}}{{end}} where {{prefix}}_id = ?"
-	_, err := p.Exec(query{{range items}}{{if .Name != "Id"}}, item.{{.Name|title}}{{end}}{{end}}, item.Id)
+	query := "update {{tableName}} set {{range i, v := nonIdItems}}{{if i > 0}}, {{end}}{{v.Column}} = ?{{end}} where {{prefix}}_id = ?"
+	_, err := p.Exec(query{{range nonIdItems}}, item.{{.Name}}{{end}}, item.Id)
 
     if err != nil {
         if p.Log {
@@ -362,8 +368,9 @@ func (p *{{name}}Manager) Update(item *{{inputName}}) error {
         
     return err
 }
+{{end}}
 
-func (p *{{name}}Manager) UpdateWhere(columns []{{name|lower}}.Params, args []interface{}) error {
+func (p *{{name}}Manager) UpdateWhere(columns []{{constPkg}}.Params, args []interface{}) error {
     if !p.Conn.IsConnect() {
         return errors.New("Connection Error")
     }
@@ -377,7 +384,7 @@ func (p *{{name}}Manager) UpdateWhere(columns []{{name|lower}}.Params, args []in
             initQuery.WriteString(", ")
         }
 
-        {{range items}}if v.Column == {{name|lower}}.Column{{.Name|title}} {
+        {{range items}}if v.Column == {{constPkg}}.Column{{.Name}} {
         initQuery.WriteString("{{.Column}} = ?")
         initParams = append(initParams, v.Value)
         } else {{end}}{
@@ -400,28 +407,7 @@ func (p *{{name}}Manager) UpdateWhere(columns []{{name|lower}}.Params, args []in
     return err
 }
 
-/*
-
-{{range items}}{{if .Name != "Id"}}
-func (p *{{name}}Manager) Update{{.Name|title}}(value {{.Type}}, id int64) error {
-    if !p.Conn.IsConnect() {
-        return errors.New("Connection Error")
-    }
-
-	query := "update {{tableName}} set {{.Column}} = ? where {{prefix}}_id = ?"
-	_, err := p.Exec(query, value, id)
-
-    if err != nil {
-        if p.Log {
-          log.Error().Str("error", err.Error()).Msg("SQL")
-        }
-    }
-
-    return err
-}
-{{end}}{{end}}
-
-*/
+{{end}}
 
 func (p *{{name}}Manager) GetIdentity() int64 {
     if !p.Conn.IsConnect() {
@@ -442,8 +428,8 @@ func (p *{{name}}Manager) GetIdentity() int64 {
 
 func (p *{{name}}) InitExtra() {
     p.Extra = map[string]interface{}{
-{{range consts}}            "{{.Name|lower}}":     {{name|lower}}.Get{{.Name|title}}(p.{{.Name|title}}),
-{{end}}
+{{range consts}}{{if .Field != ""}}            "{{.Key}}":     {{constPkg}}.Get{{.Name}}(p.{{.Field}}),
+{{end}}{{end}}
     }
 }
 
@@ -451,18 +437,18 @@ func (p *{{name}}Manager) ReadRow(rows *sql.Rows) *{{name}} {
     var item {{name}}
     var err error
 
-    {{range joins}}var _{{joinVar(.)}} {{.Name|title}}
+    {{range joins}}var _{{joinVar(.)}} {{camel(.Name)}}
     {{end}}
 
     if rows.Next() {
-        err = rows.Scan({{range i, v := items}}{{if i > 0}}, {{end}}&item.{{v.Name|title}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, &_{{joinVar(v2)}}.{{.Name}}{{end}}{{end}})
-        {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime"}}
-        if item.{{v.Name|title}} == "0000-00-00 00:00:00" || item.{{v.Name|title}} == "1000-01-01 00:00:00" || item.{{v.Name|title}} == "9999-01-01 00:00:00" {
-            item.{{v.Name|title}} = ""
+        err = rows.Scan({{range i, v := items}}{{if i > 0}}, {{end}}&item.{{v.Name}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, &_{{joinVar(v2)}}.{{.Name}}{{end}}{{end}})
+        {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime" || v.OriginalType == "timestamp"}}
+        if item.{{v.Name}} == "0000-00-00 00:00:00" || item.{{v.Name}} == "1000-01-01 00:00:00" || item.{{v.Name}} == "9999-01-01 00:00:00" {
+            item.{{v.Name}} = ""
         }
 
         if config.Database.Type == config.Postgresql {
-            item.{{v.Name|title}} = strings.ReplaceAll(strings.ReplaceAll(item.{{v.Name|title}}, "T", " "), "Z", "")
+            item.{{v.Name}} = strings.ReplaceAll(strings.ReplaceAll(item.{{v.Name}}, "T", " "), "Z", "")
         }
 		{{end}}{{end}}
 
@@ -490,10 +476,10 @@ func (p *{{name}}Manager) ReadRows(rows *sql.Rows) []{{name}} {
 
     for rows.Next() {
         var item {{name}}
-        {{range joins}}var _{{joinVar(.)}} {{.Name|title}}
+        {{range joins}}var _{{joinVar(.)}} {{camel(.Name)}}
         {{end}}
 
-        err := rows.Scan({{range i, v := items}}{{if i > 0}}, {{end}}&item.{{v.Name|title}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, &_{{joinVar(v2)}}.{{.Name}}{{end}}{{end}})
+        err := rows.Scan({{range i, v := items}}{{if i > 0}}, {{end}}&item.{{v.Name}}{{end}}{{range i2, v2 := joins}}{{range columns(v2.Name)}}, &_{{joinVar(v2)}}.{{.Name}}{{end}}{{end}})
         if err != nil {
            if p.Log {
              log.Error().Str("error", err.Error()).Msg("SQL")
@@ -501,13 +487,13 @@ func (p *{{name}}Manager) ReadRows(rows *sql.Rows) []{{name}} {
            break
         }
 
-        {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime"}}
-        if item.{{v.Name|title}} == "0000-00-00 00:00:00" || item.{{v.Name|title}} == "1000-01-01 00:00:00" || item.{{v.Name|title}} == "9999-01-01 00:00:00" {
-            item.{{v.Name|title}} = ""
+        {{range i, v := items}}{{if v.OriginalType == "date" || v.OriginalType == "datetime" || v.OriginalType == "timestamp"}}
+        if item.{{v.Name}} == "0000-00-00 00:00:00" || item.{{v.Name}} == "1000-01-01 00:00:00" || item.{{v.Name}} == "9999-01-01 00:00:00" {
+            item.{{v.Name}} = ""
         }
 
         if config.Database.Type == config.Postgresql {
-            item.{{v.Name|title}} = strings.ReplaceAll(strings.ReplaceAll(item.{{v.Name|title}}, "T", " "), "Z", "")
+            item.{{v.Name}} = strings.ReplaceAll(strings.ReplaceAll(item.{{v.Name}}, "T", " "), "Z", "")
         }
 		{{end}}{{end}}
 
@@ -522,7 +508,7 @@ func (p *{{name}}Manager) ReadRows(rows *sql.Rows) []{{name}} {
      return items
 }
 
-func (p *{{name}}Manager) Get(id int64) *{{name}} {
+{{if hasId}}func (p *{{name}}Manager) Get(id int64) *{{name}} {
     if !p.Conn.IsConnect() {
         return nil
     }
@@ -548,6 +534,7 @@ func (p *{{name}}Manager) Get(id int64) *{{name}} {
 
     return p.ReadRow(rows)
 }
+{{end}}
 
 func (p *{{name}}Manager) GetWhere(args []interface{}) *{{name}} {
     items := p.Find(args)
@@ -656,7 +643,7 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
     
     if page > 0 && pagesize > 0 {
         if orderby == "" {
-            orderby = "{{prefix}}_id desc"
+            orderby = "{{prefix}}_{{orderKey}} desc"
         } else {
             if !strings.Contains(orderby, "_") {                   
                 if strings.ToUpper(orderby) != "RAND()" {
@@ -676,13 +663,13 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
             params = append(params, pagesize)
             params = append(params, startpage)
         } else if config.Database.Type == config.Sqlserver {
-            query.WriteString("OFFSET ? ROWS FETCH NEXT ? ROWS ONLY")
+            query.WriteString(" OFFSET ? ROWS FETCH NEXT ? ROWS ONLY")
             params = append(params, startpage)
             params = append(params, pagesize)
         }
     } else {
         if orderby == "" {
-            orderby = "{{prefix}}_id"
+            orderby = "{{prefix}}_{{orderKey}}"
         } else {
             if !strings.Contains(orderby, "_") {
                 if strings.ToUpper(orderby) != "RAND()" {
@@ -709,55 +696,45 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
     return p.ReadRows(rows)
 }
 
-{{range funcs}}
-{{if querytype(.Name) == "Get"}}func (p *{{name}}Manager) {{.Name}}({{range .Wheres}}{{.Column|lower}} {{.Type}}, {{end}}args ...interface{}) *{{name}} {
+{{range _, f := funcs}}
+{{if f.Kind == "Get" || f.Kind == "Find" || f.Kind == "Count"}}func (p *{{name}}Manager) {{f.Name}}({{range f.Wheres}}{{.Param}} {{.Type}}, {{end}}args ...interface{}) {{if f.Kind == "Get"}}*{{name}}{{else if f.Kind == "Find"}}[]{{name}}{{else}}int{{end}} {
     rets := make([]interface{}, 0)
     rets = append(rets, args...)
-    {{range .Wheres}}if {{.Column|lower}}{{if .Type == "int" || .Type == "int64"}} != 0 {{else if .Type == "string"}} != "" {{else}} != 0 {{end}}{
-        args = append(args, Where{Column:"{{.Column|lower}}", Value:{{.Column|lower}}, Compare:"{{.Compare}}"})        
-    }
+
+    {{range f.Wheres}}{{if .Check != ""}}if {{.Check|raw}} {
+        rets = append(rets, Where{Column:"{{.Key}}", Value:{{.Param}}, Compare:"{{.Compare}}"})
+    }{{else}}rets = append(rets, Where{Column:"{{.Key}}", Value:{{.Param}}, Compare:"{{.Compare}}"}){{end}}
     {{end}}
-    items := p.Find(args)
+    {{if f.Kind == "Get"}}items := p.Find(rets)
 
     if len(items) > 0 {
         return &items[0]
     } else {
         return nil
-    }
-}{{end}}{{if querytype(.Name) == "Find"}}func (p *{{name}}Manager) {{.Name}}({{range .Wheres}}{{if .Column == "Type"}}typeid{{else}}{{.Column|lower}}{{end}} {{.Type}}, {{end}}args ...interface{}) []{{name}} {
-    rets := make([]interface{}, 0)
-    rets = append(rets, args...)
-
-    {{range .Wheres}}{{if !hasPrefix(.Type, "[]")}}if {{.Column|lower}}{{if .Type == "int" || .Type == "int64"}} != 0 {{else if .Type == "string"}} != "" {{else}} != 0 {{end}}{ {{end}}
-        rets = append(rets, Where{Column:"{{.Column|lower}}", Value:{{if .Column == "Type"}}typeid{{else}}{{.Column|lower}}{{end}}, Compare:"{{.Compare}}"})
-    {{if !hasPrefix(.Type, "[]")}} }{{end}}
-    {{end}}
-    return p.Find(rets)
-}{{end}}{{if querytype(.Name) == "Count"}}func (p *{{name}}Manager) {{.Name}}({{range .Wheres}}{{if .Column == "Type"}}typeid{{else}}{{.Column|lower}}{{end}} {{.Type}}, {{end}}args ...interface{}) int {
-    rets := make([]interface{}, 0)
-    rets = append(rets, args...)
-    
-    {{range .Wheres}}{{if !hasPrefix(.Type, "[]")}}if {{.Column|lower}}{{if .Type == "int" || .Type == "int64"}} != 0 {{else if .Type == "string"}} != "" {{else}} != 0 {{end}}{ {{end}}
-        rets = append(rets, Where{Column:"{{.Column|lower}}", Value:{{if .Column == "Type"}}typeid{{else}}{{.Column|lower}}{{end}}, Compare:"{{.Compare}}"})
-    {{if !hasPrefix(.Type, "[]")}} }{{end}}
-    {{end}}
-    return p.Count(rets)
-}{{end}}{{if querytype(.Name) == "Delete"}}func (p *{{name}}Manager) {{.Name}}({{range i, v := .Wheres}}{{if i > 0}}, {{end}}{{v.Column|lower}} {{v.Type}}{{end}}) error {
+    }{{else if f.Kind == "Find"}}return p.Find(rets){{else}}return p.Count(rets){{end}}
+}{{end}}{{if f.Kind == "Delete"}}func (p *{{name}}Manager) {{f.Name}}({{range i, v := f.Wheres}}{{if i > 0}}, {{end}}{{v.Param}} {{v.Type}}{{end}}) error {
      if !p.Conn.IsConnect() {
         return errors.New("Connection Error")
     }
 
-    query := "delete from {{tableName}} where {{range i, v := .Wheres}}{{if i > 0}} and {{end}}{{prefix}}_{{v.Column|lower}} = ?{{end}}"
-    _, err := p.Exec(query{{range .Wheres}}, {{.Column|lower}}{{end}})
+    // 조건은 Find 와 같이 WhereClause 로 만든다 (in / like 지원).
+    query, params := p.MakeQuery("delete from {{tableName}} where 1=1", "", nil, []interface{}{ {{range f.Wheres}}Where{Column:"{{.Key}}", Value:{{.Param}}, Compare:"{{.Compare}}"}, {{end}} })
+    _, err := p.Exec(query, params...)
+
+    if err != nil {
+       if p.Log {
+          log.Error().Str("error", err.Error()).Msg("SQL")
+       }
+    }
 
     return err
-}{{end}}{{if querytype(.Name) == "Update"}}func (p *{{name}}Manager) {{.Name}}({{range i, v := .Wheres}}{{if i > 0}}, {{end}}{{v.Column|lower}} {{v.Type}}{{end}}) error {
+}{{end}}{{if f.Kind == "Update"}}func (p *{{name}}Manager) {{f.Name}}({{range i, v := f.Wheres}}{{if i > 0}}, {{end}}{{v.Param}} {{v.Type}}{{end}}) error {
      if !p.Conn.IsConnect() {
         return errors.New("Connection Error")
     }
 
-    query := "update {{tableName}} set {{range i, v := .Wheres}}{{if v.Compare == "column"}}{{if i > 0}}, {{end}}{{prefix}}_{{v.Column|lower}} = ?{{end}}{{end}} where 1=1{{range i, v := .Wheres}}{{if v.Compare == "where"}} and {{prefix}}_{{v.Column|lower}} = ?{{end}}{{end}}"
-	_, err := p.Exec(query{{range .Wheres}}, {{.Column|lower}}{{end}})
+    query := "update {{tableName}} set {{range i, v := f.Wheres}}{{if v.Compare == "column"}}{{if i > 0}}, {{end}}{{prefix}}_{{v.Key}} = ?{{end}}{{end}} where 1=1{{range i, v := f.Wheres}}{{if v.Compare == "where"}} and {{prefix}}_{{v.Key}} = ?{{end}}{{end}}"
+	_, err := p.Exec(query{{range f.Wheres}}, {{.Param}}{{end}})
 
     if err != nil {
        if p.Log {
@@ -816,8 +793,8 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
         case Where:
             item := v
             if item.Compare == "in" {
-                // 예전 생성 코드와 같이 이 함수의 in 조건은 항상 id 컬럼에 건다.
-                item.Column = "id"
+                // 예전 생성 코드와 같이 이 함수의 in 조건은 항상 기본 키 컬럼에 건다.
+                item.Column = "{{orderKey}}"
             }
             clause, whereParams := WhereClause("{{prefix}}_", item, nil)
             query += clause
@@ -834,7 +811,7 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
     
     if page > 0 && pagesize > 0 {
         if orderby == "" {
-            orderby = "{{prefix}}_id desc"
+            orderby = "{{prefix}}_{{orderKey}} desc"
         } else {
             if !strings.Contains(orderby, "_") {                   
                 orderby = "{{prefix}}_" + orderby
@@ -855,7 +832,7 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
         */
     } else {
         if orderby == "" {
-            orderby = "{{prefix}}_id"
+            orderby = "{{prefix}}_{{orderKey}}"
         } else {
             if !strings.Contains(orderby, "_") {
                 orderby = "{{prefix}}_" + orderby
@@ -869,7 +846,9 @@ func (p *{{name}}Manager) Find(args []interface{}) []{{name}} {
     var item {{name}}
     
     if err != nil {
-        log.Printf("query error : %v, %v\n", err, query)
+        if p.Log {
+            log.Error().Str("error", err.Error()).Msg("SQL")
+        }
         return &item
     }
 

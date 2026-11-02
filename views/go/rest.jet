@@ -3,10 +3,10 @@ package rest
 
 import (
 	"{{packageName}}/controllers"
-	{{if passwordColumn != ""}}"{{packageName}}/global/jwt"{{end}}
+	{{if passwordColumn != "" && !isView}}"{{packageName}}/global/jwt"{{end}}
 	"{{packageName}}/models"
-{{range imports}}
-	"{{packageName}}/models/{{.|lower}}"
+{{if restUsesConst}}
+	{{constImport|raw}}
 {{end}}
     {{if adminCheck}}"reflect"{{end}}
     "regexp"
@@ -41,7 +41,7 @@ func (c *{{name}}Controller) isAdmin() bool {
 }
 {{end}}
 
-func (c *{{name}}Controller) Read(id int64) {
+{{if hasId}}func (c *{{name}}Controller) Read(id int64) {
     {{if auth == "jwt"}}
     if c.Session == nil {
         c.Result["code"] = "auth error"
@@ -67,7 +67,7 @@ func (c *{{name}}Controller) Read(id int64) {
         return
     }
     {{range sessions}}
-    if item.{{.Column|title}} != c.Session.{{.Key|title}} {
+    if item.{{.Field}} != c.Session.{{.Key|title}} {
         c.Result["code"] = "auth error"
         return
     }
@@ -76,6 +76,7 @@ func (c *{{name}}Controller) Read(id int64) {
     
     c.Set("item", item)
 }
+{{end}}
 
 func (c *{{name}}Controller) Index(page int, pagesize int) {
     {{if auth == "jwt"}}
@@ -97,44 +98,44 @@ func (c *{{name}}Controller) Index(page int, pagesize int) {
 
     var args []interface{}
     
-    {{range items}}{{if .Name != "Id" && .Name != "Passwd" && .Name != "Password"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}_start{{.Name|lower}} := c.Get("start{{.Name|lower}}")
+    {{range items}}{{if .Name != "Id" && .Name != "Passwd" && .Name != "Password" && .Type != "[]byte"}}{{if .OriginalType == "datetime" || .OriginalType == "date" || .OriginalType == "timestamp"}}_start{{.Name|lower}} := c.Get("start{{.Name|lower}}")
     _end{{.Name|lower}} := c.Get("end{{.Name|lower}}")
     if _start{{.Name|lower}} != "" && _end{{.Name|lower}} != "" {        
         var v [2]string
         v[0] = _start{{.Name|lower}}
         v[1] = _end{{.Name|lower}}  
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:v, Compare:"between"})    
+        args = append(args, models.Where{Column:"{{.Key}}", Value:v, Compare:"between"})    
     } else if  _start{{.Name|lower}} != "" {          
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_start{{.Name|lower}}, Compare:">="})
+        args = append(args, models.Where{Column:"{{.Key}}", Value:_start{{.Name|lower}}, Compare:">="})
     } else if  _end{{.Name|lower}} != "" {          
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_end{{.Name|lower}}, Compare:"<="})            
+        args = append(args, models.Where{Column:"{{.Key}}", Value:_end{{.Name|lower}}, Compare:"<="})            
     }
     {{else if .Type == "string"}}_{{.Name|lower}} := c.Get("{{.Name|lower}}")
     if _{{.Name|lower}} != "" {
-        {{if .Name == "Name" || .Name == "Title" || .Name == "Content"}}args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})
-        {{else}}args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"like"}){{end}}
+        {{if .Name == "Name" || .Name == "Title" || .Name == "Content"}}args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})
+        {{else}}args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"like"}){{end}}
     }
     {{else if .Type == "int"}}_{{.Name|lower}} := c.Geti("{{.Name|lower}}")
     if _{{.Name|lower}} != 0 {
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
+        args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
     }
     {{else if .Type == "int64"}}_{{.Name|lower}} := c.Geti64("{{.Name|lower}}")
     if _{{.Name|lower}} != 0 {
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
+        args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
     }
     {{else if .Type == "float64"}}_{{.Name|lower}} := c.Getf("{{.Name|lower}}")
     if _{{.Name|lower}} != 0.0 {
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
+        args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
     }        
     {{else}}_{{.Name|lower}} := c.Geti("{{.Name|lower}}")
     if _{{.Name|lower}} != 0 {
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
+        args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
     }
     {{end}}{{end}}{{end}}
 
     {{if auth == "jwt" && len(sessions) > 0}}
     {{range sessions}}
-    args = append(args, models.Where{Column:"{{.Column|lower}}", Value:c.Session.{{.Key|title}}, Compare:"="})    
+    args = append(args, models.Where{Column:"{{.Column}}", Value:c.Session.{{.Key|title}}, Compare:"="})    
     {{end}}
     {{end}}
     
@@ -145,7 +146,7 @@ func (c *{{name}}Controller) Index(page int, pagesize int) {
     orderby := c.Get("orderby")
     if orderby == "" {
         if page != 0 && pagesize != 0 {
-            orderby = "id desc"
+            orderby = "{{orderKey}} desc"
             args = append(args, models.Ordering(orderby))
         }
     } else {
@@ -199,46 +200,45 @@ func (c *{{name}}Controller) Count() {
 
     var args []interface{}
     
-    {{range items}}{{if .Name != "Id" && .Name != "Passwd" && .Name != "Password"}}{{if .OriginalType == "datetime" || .OriginalType == "date"}}_start{{.Name|lower}} := c.Get("start{{.Name|lower}}")
+    {{range items}}{{if .Name != "Id" && .Name != "Passwd" && .Name != "Password" && .Type != "[]byte"}}{{if .OriginalType == "datetime" || .OriginalType == "date" || .OriginalType == "timestamp"}}_start{{.Name|lower}} := c.Get("start{{.Name|lower}}")
     _end{{.Name|lower}} := c.Get("end{{.Name|lower}}")
-
     if _start{{.Name|lower}} != "" && _end{{.Name|lower}} != "" {        
         var v [2]string
         v[0] = _start{{.Name|lower}}
         v[1] = _end{{.Name|lower}}  
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:v, Compare:"between"})    
+        args = append(args, models.Where{Column:"{{.Key}}", Value:v, Compare:"between"})    
     } else if  _start{{.Name|lower}} != "" {          
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_start{{.Name|lower}}, Compare:">="})
+        args = append(args, models.Where{Column:"{{.Key}}", Value:_start{{.Name|lower}}, Compare:">="})
     } else if  _end{{.Name|lower}} != "" {          
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_end{{.Name|lower}}, Compare:"<="})            
+        args = append(args, models.Where{Column:"{{.Key}}", Value:_end{{.Name|lower}}, Compare:"<="})            
     }
     {{else if .Type == "string"}}_{{.Name|lower}} := c.Get("{{.Name|lower}}")
     if _{{.Name|lower}} != "" {
-        {{if .Name == "Name" || .Name == "Title" || .Name == "Content"}}args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})
-        {{else}}args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"like"}){{end}}
+        {{if .Name == "Name" || .Name == "Title" || .Name == "Content"}}args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})
+        {{else}}args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"like"}){{end}}
         
     }
     {{else if .Type == "int"}}_{{.Name|lower}} := c.Geti("{{.Name|lower}}")
     if _{{.Name|lower}} != 0 {
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
+        args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
     }
     {{else if .Type == "int64"}}_{{.Name|lower}} := c.Geti64("{{.Name|lower}}")
     if _{{.Name|lower}} != 0 {
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
+        args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
     }
     {{else if .Type == "float64"}}_{{.Name|lower}} := c.Getf("{{.Name|lower}}")
     if _{{.Name|lower}} != 0.0 {
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
+        args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
     }        
     {{else}}_{{.Name|lower}} := c.Geti("{{.Name|lower}}")
     if _{{.Name|lower}} != 0 {
-        args = append(args, models.Where{Column:"{{.Name|lower}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
+        args = append(args, models.Where{Column:"{{.Key}}", Value:_{{.Name|lower}}, Compare:"{{compareColumn(.Name, compares)}}"})    
     }
     {{end}}{{end}}{{end}}
     
     {{if auth == "jwt" && len(sessions) > 0}}
     {{range sessions}}
-    args = append(args, models.Where{Column:"{{.Column|lower}}", Value:c.Session.{{.Key|title}}, Compare:"="})    
+    args = append(args, models.Where{Column:"{{.Column}}", Value:c.Session.{{.Key|title}}, Compare:"="})    
     {{end}}
     {{end}}
     
@@ -246,7 +246,7 @@ func (c *{{name}}Controller) Count() {
 	c.Set("total", total)
 }
 
-func (c *{{name}}Controller) Insert(item *models.{{inputName}}) {
+{{if !isView}}func (c *{{name}}Controller) Insert(item *models.{{inputName}}) {
     {{if auth == "jwt" && name != "User"}}
     if c.Session == nil {
         c.Set("code", "error")
@@ -257,13 +257,15 @@ func (c *{{name}}Controller) Insert(item *models.{{inputName}}) {
         c.Set("code", "error")
         return
     } else {
-        item.{{.Column|title}} = c.Session.{{.Key|title}}
+        item.{{.Field}} = c.Session.{{.Key|title}}
     }    
     {{end}}
     {{end}}
 
+    {{if hasId}}
     // id 는 자동 증가 값을 쓴다. 클라이언트가 보낸 id 는 무시한다.
     item.Id = 0
+    {{end}}
     {{range protects}}
     // 보호 컬럼은 클라이언트 값을 받지 않는다.
     {{if adminCheck}}if !c.isAdmin() {
@@ -294,7 +296,7 @@ func (c *{{name}}Controller) Insert(item *models.{{inputName}}) {
 
     id := manager.GetIdentity()
     c.Result["id"] = id
-    item.Id = id
+    {{if hasId}}item.Id = id{{end}}
 }
 
 func (c *{{name}}Controller) Insertbatch(item *[]models.{{inputName}}) {  
@@ -316,7 +318,7 @@ func (c *{{name}}Controller) Insertbatch(item *[]models.{{inputName}}) {
         return
     } else {
         for i := 0; i < rows; i++ {
-            (*item)[i].{{.Column|title}} = c.Session.{{.Key|title}}
+            (*item)[i].{{.Field}} = c.Session.{{.Key|title}}
         }
     }    
     {{end}}
@@ -328,8 +330,10 @@ func (c *{{name}}Controller) Insertbatch(item *[]models.{{inputName}}) {
 	manager := models.New{{name}}Manager(conn)
 
     for i := 0; i < rows; i++ {
+        {{if hasId}}
         // id 는 자동 증가 값을 쓴다. 클라이언트가 보낸 id 는 무시한다.
         (*item)[i].Id = 0
+        {{end}}
         {{range protects}}
         // 보호 컬럼은 클라이언트 값을 받지 않는다.
         {{if adminCheck}}if !c.isAdmin() {
@@ -355,8 +359,9 @@ func (c *{{name}}Controller) Insertbatch(item *[]models.{{inputName}}) {
         }
     }
 }
+{{end}}
 
-func (c *{{name}}Controller) Update(item *models.{{inputName}}) {
+{{if !isView && hasId}}func (c *{{name}}Controller) Update(item *models.{{inputName}}) {
     {{if auth == "jwt"}}
     if c.Session == nil {
         c.Set("code", "error")
@@ -367,7 +372,7 @@ func (c *{{name}}Controller) Update(item *models.{{inputName}}) {
         c.Set("code", "error")
         return
     } else {
-        item.{{.Column|title}} = c.Session.{{.Key|title}}
+        item.{{.Field}} = c.Session.{{.Key|title}}
     }    
     {{end}}
     {{end}}
@@ -392,7 +397,7 @@ func (c *{{name}}Controller) Update(item *models.{{inputName}}) {
     {{if auth == "jwt"}}
     {{range sessions}}
     // 소유권 검사: 기존 행이 현재 세션 사용자 것인지 확인한다 (남의 행 수정/삭제 방지).
-    if existing.{{.Column|title}} != c.Session.{{.Key|title}} {
+    if existing.{{.Field}} != c.Session.{{.Key|title}} {
         c.Set("code", "auth error")
         return
     }
@@ -445,7 +450,7 @@ func (c *{{name}}Controller) Delete(item *models.{{name}}) {
         return
     } else {
         {{range sessions}}
-        if existing.{{.Column|title}} != c.Session.{{.Key|title}} {
+        if existing.{{.Field}} != c.Session.{{.Key|title}} {
             c.Set("code", "auth error")
             return
         }
@@ -495,7 +500,7 @@ func (c *{{name}}Controller) Deletebatch(item *[]models.{{name}}) {
             return
         } else {
             {{range sessions}}
-            if existing.{{.Column|title}} != c.Session.{{.Key|title}} {
+            if existing.{{.Field}} != c.Session.{{.Key|title}} {
                 c.Set("code", "auth error")
                 return
             }
@@ -518,11 +523,12 @@ func (c *{{name}}Controller) Deletebatch(item *[]models.{{name}}) {
         }
     }
 }
+{{end}}
 
 {{range _, f := funcs}}
-{{qt := querytype(f.Name)}}
+{{qt := f.Kind}}
 {{if qt == "Update"}}// @Put(){{end}}{{if qt == "Delete"}}// @Delete(){{end}}
-func (c *{{name}}Controller) {{f.Name}}({{range i, v := f.Wheres}}{{if i > 0}} ,{{end}}{{v.Column|lower}} {{v.Type}}{{end}}) {{if qt == "Get"}}*models.{{name}} {{else if qt == "Find"}}[]models.{{name}} {{else if qt == "Count"}}int {{end}}{
+func (c *{{name}}Controller) {{f.Name}}({{range i, v := f.Wheres}}{{if i > 0}} ,{{end}}{{v.Param}} {{v.Type}}{{end}}) {{if qt == "Get"}}*models.{{name}} {{else if qt == "Find"}}[]models.{{name}} {{else if qt == "Count"}}int {{end}}{
     {{if auth == "jwt"}}
     if c.Session == nil {
         c.Result["code"] = "auth error"
@@ -546,15 +552,19 @@ func (c *{{name}}Controller) {{f.Name}}({{range i, v := f.Wheres}}{{if i > 0}} ,
         {{end}}
     } else {
         {{range i, v := f.Wheres}}
-        {{if lower(s.Column) == lower(v.Column)}}
-        {{v.Column|lower}} = c.Session.{{s.Key|title}}
-        {{end}}
+        {{if s.Field == v.Column}}{{if !hasPrefix(v.Type, "[]")}}
+        {{v.Param}} = c.Session.{{s.Key|title}}
+        {{end}}{{end}}
         {{end}}
     }
     {{end}}
     {{end}}
     {{locked := false}}{{if qt == "Update"}}{{range i, v := f.Wheres}}{{if v.Compare == "column" && isProtected(v.Column, protects)}}{{locked = true}}{{end}}{{end}}{{end}}
-    {{if locked && !adminCheck}}
+    {{noOwner := auth == "jwt" && name == "User" && !hasId && (qt == "Update" || qt == "Delete")}}
+    {{if noOwner}}
+    // id 컬럼이 없어 본인 행인지 확인할 수 없으므로 회원 정보 수정/삭제는 거부한다.
+    c.Result["code"] = "auth error"
+    {{else if locked && !adminCheck}}
     // 보호 컬럼은 클라이언트가 바꿀 수 없다.
     c.Result["code"] = "auth error"
     {{else}}
@@ -569,7 +579,7 @@ func (c *{{name}}Controller) {{f.Name}}({{range i, v := f.Wheres}}{{if i > 0}} ,
 
 	manager := models.New{{name}}Manager(conn)
     {{if qt == "Get" || qt == "Find" || qt == "Count"}}
-    item := manager.{{f.Name}}({{range i, v := f.Wheres}}{{if i > 0}}, {{end}}{{v.Column|lower}}{{end}}{{if auth == "jwt"}}{{range sessions}}, models.Where{Column:"{{.Column|lower}}", Value:c.Session.{{.Key|title}}, Compare:"="}{{end}}{{end}})
+    item := manager.{{f.Name}}({{range i, v := f.Wheres}}{{if i > 0}}, {{end}}{{v.Param}}{{end}}{{if auth == "jwt"}}{{range sessions}}, models.Where{Column:"{{.Column}}", Value:c.Session.{{.Key|title}}, Compare:"="}{{end}}{{end}})
     {{if qt == "Get"}}
     c.Set("item", item)
     {{end}}
@@ -584,20 +594,20 @@ func (c *{{name}}Controller) {{f.Name}}({{range i, v := f.Wheres}}{{if i > 0}} ,
     {{if auth == "jwt"}}
     {{range sessions}}
     // 소유권 검사: 조건에 맞는 행 중 다른 사용자 소유 행이 있으면 거부한다 (남의 행 수정/삭제 방지).
-    if manager.Count([]interface{}{ {{range i, v := f.Wheres}}{{if qt == "Delete" || v.Compare == "where"}}models.Where{Column:"{{v.Column|lower}}", Value:{{v.Column|lower}}, Compare:"{{if v.Compare == "where"}}={{else}}{{v.Compare}}{{end}}"}, {{end}}{{end}}models.Where{Column:"{{.Column|lower}}", Value:c.Session.{{.Key|title}}, Compare:"<>"}}) > 0 {
+    if manager.Count([]interface{}{ {{range i, v := f.Wheres}}{{if qt == "Delete" || v.Compare == "where"}}models.Where{Column:"{{v.Key}}", Value:{{v.Param}}, Compare:"{{if v.Compare == "where"}}={{else}}{{v.Compare}}{{end}}"}, {{end}}{{end}}models.Where{Column:"{{.Column}}", Value:c.Session.{{.Key|title}}, Compare:"<>"}}) > 0 {
         c.Result["code"] = "auth error"
         return
     }
     {{end}}
-    {{if name == "User"}}
+    {{if name == "User" && hasId}}
     // 회원 정보는 본인만 수정/삭제할 수 있다{{if adminCheck}} (관리자 제외){{end}}.
-    if {{if adminCheck}}!c.isAdmin() && {{end}}manager.Count([]interface{}{ {{range i, v := f.Wheres}}{{if qt == "Delete" || v.Compare == "where"}}models.Where{Column:"{{v.Column|lower}}", Value:{{v.Column|lower}}, Compare:"{{if v.Compare == "where"}}={{else}}{{v.Compare}}{{end}}"}, {{end}}{{end}}models.Where{Column:"id", Value:c.Session.Id, Compare:"<>"}}) > 0 {
+    if {{if adminCheck}}!c.isAdmin() && {{end}}manager.Count([]interface{}{ {{range i, v := f.Wheres}}{{if qt == "Delete" || v.Compare == "where"}}models.Where{Column:"{{v.Key}}", Value:{{v.Param}}, Compare:"{{if v.Compare == "where"}}={{else}}{{v.Compare}}{{end}}"}, {{end}}{{end}}models.Where{Column:"{{orderKey}}", Value:c.Session.Id, Compare:"<>"}}) > 0 {
         c.Result["code"] = "auth error"
         return
     }
     {{end}}
     {{end}}
-    err := manager.{{f.Name}}({{range i, v := f.Wheres}}{{if i > 0}}, {{end}}{{v.Column|lower}}{{end}})
+    err := manager.{{f.Name}}({{range i, v := f.Wheres}}{{if i > 0}}, {{end}}{{v.Param}}{{end}})
     if err != nil {
         c.Set("code", "error")
         c.Set("error", err)

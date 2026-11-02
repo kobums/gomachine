@@ -1,62 +1,63 @@
-package com.gowoobro.gymspring.entity
+package {{.BasePackage}}.entity
 
 import jakarta.persistence.*
-{{if .HasDateTime}}import java.time.LocalDateTime{{end}}
-{{if .HasDecimal}}import java.math.BigDecimal{{end}}
-{{range .Enums}}import com.gowoobro.gymspring.enums.{{.EnumPackage}}.{{.Name|title}}
+{{if .HasDateTime}}import java.time.LocalDateTime
+{{end}}{{if .HasDate}}import java.time.LocalDate
+{{end}}{{if .HasDecimal}}import java.math.BigDecimal
+{{end}}{{base := .BasePackage}}{{range .Enums}}import {{base}}.enums.{{.EnumPackage}}.{{.Name}}
 {{end}}
 
-{{- allJoins := .Joins}}
+{{- allJoins := .Joins}}{{modelVar := .ModelVar}}
 @Entity
 @Table(name = "{{.TableName}}")
 data class {{.ModelName}}(
 {{range .Columns}}{{if .IsPrimaryKey}}    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-{{end}}{{joinData := findJoinByColumn(.DBName, allJoins)}}    @Column(name = "{{.DBName}}")
-    val {{if joinData}}{{joinData.ColumnName}}Id{{else}}{{.Name|lower}}{{end}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
+{{if .IsGenerated}}    @GeneratedValue(strategy = GenerationType.IDENTITY)
+{{end}}{{end}}{{joinData := findJoinByColumn(.DBName, allJoins)}}    @Column(name = "{{.DBName}}")
+    val {{if joinData}}{{joinData.ColumnName}}Id{{else}}{{.Field|raw}}{{end}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
 {{end}}) {{if len(.Joins) > 0}}{
 {{range .Joins}}    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "{{.Column}}", insertable = false, updatable = false)
-    var {{.Alias|lower}}: {{.Name|title}}? = null
+    var {{.Alias|lower}}: {{.ModelName}}? = null
 {{end}}}{{end}}
 
 // 보호 컬럼(protect)은 요청으로 받지 않는다. id 는 자동 증가 값을 쓴다.
 data class {{.ModelName}}CreateRequest(
-{{range .Columns}}{{if not .IsPrimaryKey}}{{if not .IsProtected}}    val {{.Name|lower}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
+{{range .Columns}}{{if not .IsPrimaryKey}}{{if not .IsProtected}}    val {{.Field|raw}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
 {{end}}{{end}}{{end}})
 
 // id 는 경로 변수로 덮어쓴다.
 data class {{.ModelName}}UpdateRequest(
-{{range .Columns}}{{if not .IsProtected}}    val {{.Name|lower}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
+{{range .Columns}}{{if not .IsProtected}}    val {{.Field|raw}}: {{.KotlinType}}{{if .IsNullable}}?{{end}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
 {{end}}{{end}})
 
 data class {{.ModelName}}PatchRequest(
-{{range .Columns}}{{if .IsPrimaryKey}}    val {{.Name|lower}}: {{.KotlinType}} = 0,
-{{else if not .IsProtected}}    val {{.Name|lower}}: {{.KotlinType}}? = null,
+{{range .Columns}}{{if .IsPrimaryKey}}    val {{.Field|raw}}: {{.KotlinType}}{{if .HasDefault}} = {{.DefaultValue|raw}}{{end}},
+{{else if not .IsProtected}}    val {{.Field|raw}}: {{.KotlinType}}? = null,
 {{end}}{{end}})
 
 {{if len(.Enums) > 0 || len(.Joins) > 0}}data class {{.ModelName}}ExtraInfo(
-{{range .Enums}}    val {{.Name|lower}}: String = "",
+{{range .Enums}}    val {{.ExtraField|raw}}: String = "",
 {{end}}
-{{range .Joins}}    val {{.Alias|lower}}: {{.Name|title}}Response? = null,
+{{range .Joins}}    val {{.Alias|lower}}: {{.ModelName}}Response? = null,
 {{end}})
 {{end}}
 
 data class {{.ModelName}}Response(
-{{range .Columns}}{{if not .IsPassword}}    val {{.Name|lower}}: {{.DBType}}{{if .IsNullable}}?{{end}},
+{{range .Columns}}{{if not .IsPassword}}    val {{.Field|raw}}: {{.DBType}}{{if .IsNullable}}?{{end}},
 {{end}}{{end}}
     val extra: {{if len(.Enums) > 0 || len(.Joins) > 0}}{{.ModelName}}ExtraInfo{{else}}Map<String, Any?> = emptyMap(){{end}}
 ){
     companion object {
-        fun from({{.ModelName|lower}}: {{.ModelName}}): {{.ModelName}}Response {
-            {{range .Joins}}val {{.Alias|lower}}Response = {{.ParentModelName|lower}}.{{.Alias|lower}}?.let { {{.Name|title}}Response.from(it) }
+        fun from({{modelVar|raw}}: {{.ModelName}}): {{.ModelName}}Response {
+            {{range .Joins}}val {{.Alias|lower}}Response = {{modelVar|raw}}.{{.Alias|lower}}?.let { {{.ModelName}}Response.from(it) }
             {{end}}return {{.ModelName}}Response(
-{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if not joinData}}{{if not .IsPassword}}                {{.Name|lower}} = {{if .IsEnum}}{{.ModelName|lower}}.{{.Name|lower}}.ordinal{{else if .KotlinType=="LocalDateTime"}}{{if .IsNullable}}{{.ModelName|lower}}.{{.Name|lower}}?.toString()?.replace("T", " ") ?: ""{{else}}{{.ModelName|lower}}.{{.Name|lower}}.toString().replace("T", " "){{end}}{{else}}{{.ModelName|lower}}.{{.Name|lower}}{{end}},
-{{end}}{{end}}{{if joinData}}                {{.Name|lower}} = {{.ModelName|lower}}.{{joinData.ColumnName}}Id,
+{{range .Columns}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if not joinData}}{{if not .IsPassword}}                {{.Field|raw}} = {{if .IsEnum}}{{modelVar|raw}}.{{.Field|raw}}.ordinal{{else if .DBType == "String" && .KotlinType != "String"}}{{if .IsNullable}}{{modelVar|raw}}.{{.Field|raw}}?.toString()?.replace("T", " ") ?: ""{{else}}{{modelVar|raw}}.{{.Field|raw}}.toString().replace("T", " "){{end}}{{else}}{{modelVar|raw}}.{{.Field|raw}}{{end}},
+{{end}}{{end}}{{if joinData}}                {{.Field|raw}} = {{modelVar|raw}}.{{joinData.ColumnName}}Id,
 {{end}}{{end}}
                 extra = {{if len(.Enums) > 0 || len(.Joins) > 0}}{{.ModelName}}ExtraInfo(
                     {{- if len(.Enums) > 0}}
-                    {{range .Enums}}{{.Name|lower}} = {{.Name|title}}.getDisplayName({{.EnumPackage|lower}}.{{.Name|lower}}),{{end}}{{end}}
+                    {{range .Enums}}{{if .ColumnField != ""}}{{.ExtraField|raw}} = {{.Name}}.getDisplayName({{modelVar|raw}}.{{.ColumnField|raw}}),{{end}}{{end}}{{end}}
                     {{range .Joins}}{{if .Columns}}{{.Alias|lower}} = {{.Alias|lower}}Response,{{end}}{{end}})
                 {{else}} emptyMap(){{end}}
             )

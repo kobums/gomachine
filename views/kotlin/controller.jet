@@ -1,27 +1,28 @@
-package com.gowoobro.gymspring.controller
+package {{.BasePackage}}.controller
 
-import com.gowoobro.gymspring.entity.{{.ModelName}}
-import com.gowoobro.gymspring.entity.{{.ModelName}}CreateRequest
-import com.gowoobro.gymspring.entity.{{.ModelName}}UpdateRequest
-import com.gowoobro.gymspring.entity.{{.ModelName}}PatchRequest
-import com.gowoobro.gymspring.service.{{.ModelName}}Service
-import com.gowoobro.gymspring.entity.{{.ModelName}}Response
-{{if len(.Sessions) > 0}}import com.gowoobro.gymspring.config.SessionProvider
-{{end}}{{range .Enums}}import com.gowoobro.gymspring.enums.{{.EnumPackage}}.{{.Name|title}}
+import {{.BasePackage}}.entity.{{.ModelName}}
+{{if not .IsView}}import {{.BasePackage}}.entity.{{.ModelName}}CreateRequest
+import {{.BasePackage}}.entity.{{.ModelName}}UpdateRequest
+import {{.BasePackage}}.entity.{{.ModelName}}PatchRequest
+{{end}}import {{.BasePackage}}.service.{{.ModelName}}Service
+import {{.BasePackage}}.entity.{{.ModelName}}Response
+{{if len(.Sessions) > 0}}import {{.BasePackage}}.config.SessionProvider
+{{end}}{{base := .BasePackage}}{{range .Enums}}import {{base}}.enums.{{.EnumPackage}}.{{.Name}}
 {{end}}{{- allJoins := .Joins}}
-import org.springframework.data.domain.Page
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
-{{if .HasDateTime}}import java.time.LocalDateTime{{end}}
-{{if .HasDecimal}}import java.math.BigDecimal{{end}}
-
+{{if .HasDateFilter}}import org.springframework.format.annotation.DateTimeFormat
+{{end}}{{if .HasDateTime}}import java.time.LocalDateTime
+{{end}}{{if .HasDate}}import java.time.LocalDate
+{{end}}{{if .HasDecimal}}import java.math.BigDecimal
+{{end}}
 @RestController
 @RequestMapping("/api/{{.ModelName|lower}}")
 class {{.ModelName}}Controller(
     private val {{.ModelName|lower}}Service: {{.ModelName}}Service{{if len(.Sessions) > 0}},
     private val sessionProvider: SessionProvider{{end}}) {
-{{sessions := .Sessions}}{{modelVar := lower(.ModelName)}}
+{{sessions := .Sessions}}{{modelVar := lower(.ModelName)}}{{pk := .PK}}
 {{if len(sessions) > 0}}
     // 로그인 여부: 소유권 검사에 쓰는 세션 값이 모두 있어야 한다.
     private fun isLoggedIn(): Boolean {
@@ -32,31 +33,31 @@ class {{.ModelName}}Controller(
     // 소유권 검사: 행이 현재 세션 사용자 것인지 확인한다 (남의 행 조회/수정/삭제 방지).
     private fun isOwned(entity: {{.ModelName}}): Boolean {
 {{range sessions}}        val {{.Key}}Value = sessionProvider.currentValue("{{.Key}}") ?: return false
-        if (entity.{{.Field}} != {{.Key}}Value{{.Convert}}) return false
+        if (entity.{{.Field|raw}} != {{.Key}}Value{{.Convert}}) return false
 {{end}}        return true
     }
 
-    private fun ownedOrNull(id: Long): {{.ModelName}}? {
+    private fun ownedOrNull(id: {{pk.KotlinType}}): {{.ModelName}}? {
         val entity = {{modelVar}}Service.findById(id) ?: return null
         return if (isOwned(entity)) entity else null
     }
 {{end}}
-{{if len(sessions) > 0 && .ModelName != "User"}}
+{{if len(sessions) > 0 && .ModelName != "User" && not .IsView}}
     // 생성 요청의 세션 컬럼은 클라이언트 값 대신 세션 값으로 고정한다.
     private fun withSession(request: {{.ModelName}}CreateRequest): {{.ModelName}}CreateRequest {
         var ret = request
-{{range sessions}}{{if not .IsPrimaryKey}}        ret = ret.copy({{.RequestField}} = sessionProvider.currentValue("{{.Key}}")!!{{.Convert}})
+{{range sessions}}{{if not .IsPrimaryKey}}        ret = ret.copy({{.RequestField|raw}} = sessionProvider.currentValue("{{.Key}}")!!{{.Convert}})
 {{end}}{{end}}        return ret
     }
 {{end}}
-    private fun toResponse({{.ModelName|lower}}: {{.ModelName}}): {{.ModelName}}Response {
-        return {{.ModelName}}Response.from({{.ModelName|lower}})
+    private fun toResponse(entity: {{.ModelName}}): {{.ModelName}}Response {
+        return {{.ModelName}}Response.from(entity)
     }
-
-    private fun filterByDateRange(
-        value: LocalDateTime?,
-        startRange: LocalDateTime?,
-        endRange: LocalDateTime?
+{{if .HasDateFilter}}
+    private fun <T : Comparable<T>> filterByDateRange(
+        value: T?,
+        startRange: T?,
+        endRange: T?
     ): Boolean {
         if (value == null) return false
         return when {
@@ -66,23 +67,23 @@ class {{.ModelName}}Controller(
             else -> true
         }
     }
-
+{{end}}
     @GetMapping
     fun get{{.ModelName}}s(
         @RequestParam(defaultValue = "0") page: Int,
         @RequestParam(defaultValue = "10") pagesize: Int,
-{{range .Columns}}{{if .Name != "Id" && not .IsPassword}}{{if .KotlinType == "LocalDateTime"}}        @RequestParam(required = false) start{{.Name|lower}}: LocalDateTime?,
-        @RequestParam(required = false) end{{.Name|lower}}: LocalDateTime?,
-{{else}}        @RequestParam(required = false) {{.Name|lower}}: {{if .IsEnum}}Int?{{else}}{{.KotlinType}}?{{end}},
+{{range .Columns}}{{if .IsSearchable}}{{if .DateFormat != ""}}        @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.{{.DateFormat}}) start{{.Name|lower}}: {{.KotlinType}}?,
+        @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.{{.DateFormat}}) end{{.Name|lower}}: {{.KotlinType}}?,
+{{else}}        @RequestParam(required = false) {{.Field|raw}}: {{if .IsEnum}}Int?{{else}}{{.KotlinType}}?{{end}},
 {{end}}{{end}}{{end}}    ): ResponseEntity<Map<String, Any>> {
 {{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
-{{end}}        var results = if ({{range .Columns}}{{if .Name != "Id" && not .IsPassword}}{{if .KotlinType == "LocalDateTime"}}start{{.Name|lower}} != null || end{{.Name|lower}} != null || {{else}}{{.Name|lower}} != null || {{end}}{{end}}{{end}}false) {
+{{end}}        var results = if ({{range .Columns}}{{if .IsSearchable}}{{if .DateFormat != ""}}start{{.Name|lower}} != null || end{{.Name|lower}} != null || {{else}}{{.Field|raw}} != null || {{end}}{{end}}{{end}}false) {
             var filtered = {{.ModelName|lower}}Service.findAll(0, Int.MAX_VALUE).content
-{{range .Columns}}{{if .Name != "Id" && not .IsPassword}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if .KotlinType == "LocalDateTime"}}            if (start{{.Name|lower}} != null || end{{.Name|lower}} != null) {
-                filtered = filtered.filter { filterByDateRange(it.{{.Name|lower}}, start{{.Name|lower}}, end{{.Name|lower}}) }
+{{range .Columns}}{{if .IsSearchable}}{{joinData := findJoinByColumn(.DBName, allJoins)}}{{if .DateFormat != ""}}            if (start{{.Name|lower}} != null || end{{.Name|lower}} != null) {
+                filtered = filtered.filter { filterByDateRange(it.{{.Field|raw}}, start{{.Name|lower}}, end{{.Name|lower}}) }
             }
-{{else}}            if ({{.Name|lower}} != null) {
-                filtered = filtered.filter { it.{{if joinData}}{{joinData.ColumnName}}Id{{else}}{{.Name|lower}}{{end}}{{if .IsEnum}}.ordinal{{end}} == {{.Name|lower}} }
+{{else}}            if ({{.Field|raw}} != null) {
+                filtered = filtered.filter { it.{{if joinData}}{{joinData.ColumnName}}Id{{else}}{{.Field|raw}}{{end}}{{if .IsEnum}}.ordinal{{end}} == {{.Field|raw}} }
             }
 {{end}}{{end}}{{end}}            filtered
         } else {
@@ -117,7 +118,7 @@ class {{.ModelName}}Controller(
     }
 
     @GetMapping("/{id}")
-    fun get{{.ModelName}}(@PathVariable id: Long): ResponseEntity<{{.ModelName}}Response> {
+    fun get{{.ModelName}}(@PathVariable id: {{pk.KotlinType}}): ResponseEntity<{{.ModelName}}Response> {
 {{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
         val res = ownedOrNull(id)
 {{else}}        val res = {{.ModelName|lower}}Service.findById(id)
@@ -128,12 +129,12 @@ class {{.ModelName}}Controller(
         }
     }
 
-{{range .Columns}}{{if .Name != "Id" && not .IsPassword}}
+{{range .Columns}}{{if .IsSearchable}}
     @GetMapping("/search/{{.Name|lower}}")
-    fun get{{.ModelName}}By{{.Name}}(@RequestParam {{.Name|lower}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): ResponseEntity<List<{{.ModelName}}Response>> {
+    fun get{{.ModelName}}By{{.Name}}(@RequestParam {{if .DateFormat != ""}}@DateTimeFormat(iso = DateTimeFormat.ISO.{{.DateFormat}}) {{end}}{{.Field|raw}}: {{if .IsEnum}}{{.EnumType}}{{else}}{{.KotlinType}}{{end}}): ResponseEntity<List<{{.ModelName}}Response>> {
 {{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
-        val res = {{.ModelName|lower}}Service.findBy{{.Name}}({{.Name|lower}}).filter { isOwned(it) }
-{{else}}        val res = {{.ModelName|lower}}Service.findBy{{.Name}}({{.Name|lower}})
+        val res = {{.ModelName|lower}}Service.findBy{{.Name}}({{.Field|raw}}).filter { isOwned(it) }
+{{else}}        val res = {{.ModelName|lower}}Service.findBy{{.Name}}({{.Field|raw}})
 {{end}}        return ResponseEntity.ok(res.map { toResponse(it) } )
     }
 {{end}}{{end}}
@@ -146,7 +147,7 @@ class {{.ModelName}}Controller(
 {{else}}        val count = {{.ModelName|lower}}Service.count()
 {{end}}        return ResponseEntity.ok(mapOf("count" to count))
     }
-
+{{if not .IsView}}
     @PostMapping
     fun create{{.ModelName}}(@RequestBody request: {{.ModelName}}CreateRequest): ResponseEntity<{{.ModelName}}Response> {
 {{if len(sessions) > 0 && .ModelName != "User"}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
@@ -171,14 +172,14 @@ class {{.ModelName}}Controller(
 
     @PutMapping("/{id}")
     fun update{{.ModelName}}(
-        @PathVariable id: Long,
+        @PathVariable id: {{pk.KotlinType}},
         @RequestBody request: {{.ModelName}}UpdateRequest
     ): ResponseEntity<{{.ModelName}}Response> {
 {{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
         if (ownedOrNull(id) == null) return ResponseEntity.notFound().build()
         // 세션 컬럼은 클라이언트 값 대신 세션 값으로 고정한다.
-        val updatedRequest = request.copy(id = id{{range sessions}}{{if not .IsPrimaryKey}}, {{.RequestField}} = sessionProvider.currentValue("{{.Key}}")!!{{.Convert}}{{end}}{{end}})
-{{else}}        val updatedRequest = request.copy(id = id)
+        val updatedRequest = request.copy({{pk.Field|raw}} = id{{range sessions}}{{if not .IsPrimaryKey}}, {{.RequestField|raw}} = sessionProvider.currentValue("{{.Key}}")!!{{.Convert}}{{end}}{{end}})
+{{else}}        val updatedRequest = request.copy({{pk.Field|raw}} = id)
 {{end}}        val res = {{.ModelName|lower}}Service.update(updatedRequest)
         return if (res != null) {
             ResponseEntity.ok(toResponse(res))
@@ -189,14 +190,14 @@ class {{.ModelName}}Controller(
 
     @PatchMapping("/{id}")
     fun patch{{.ModelName}}(
-        @PathVariable id: Long,
+        @PathVariable id: {{pk.KotlinType}},
         @RequestBody request: {{.ModelName}}PatchRequest
     ): ResponseEntity<{{.ModelName}}Response> {
 {{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
         if (ownedOrNull(id) == null) return ResponseEntity.notFound().build()
         // 세션 컬럼은 클라이언트 값 대신 세션 값으로 고정한다.
-        val patchRequest = request.copy(id = id{{range sessions}}{{if not .IsPrimaryKey}}, {{.RequestField}} = sessionProvider.currentValue("{{.Key}}")!!{{.Convert}}{{end}}{{end}})
-{{else}}        val patchRequest = request.copy(id = id)
+        val patchRequest = request.copy({{pk.Field|raw}} = id{{range sessions}}{{if not .IsPrimaryKey}}, {{.RequestField|raw}} = sessionProvider.currentValue("{{.Key}}")!!{{.Convert}}{{end}}{{end}})
+{{else}}        val patchRequest = request.copy({{pk.Field|raw}} = id)
 {{end}}        val res = {{.ModelName|lower}}Service.patch(patchRequest)
         return if (res != null) {
             ResponseEntity.ok(toResponse(res))
@@ -206,7 +207,7 @@ class {{.ModelName}}Controller(
     }
 
     @DeleteMapping("/{id}")
-    fun delete{{.ModelName}}(@PathVariable id: Long): ResponseEntity<Map<String, Boolean>> {
+    fun delete{{.ModelName}}(@PathVariable id: {{pk.KotlinType}}): ResponseEntity<Map<String, Boolean>> {
 {{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
         if (ownedOrNull(id) == null) return ResponseEntity.notFound().build()
 {{end}}        val success = {{.ModelName|lower}}Service.deleteById(id)
@@ -217,10 +218,10 @@ class {{.ModelName}}Controller(
     fun delete{{.ModelName}}s(@RequestBody entities: List<{{.ModelName}}>): ResponseEntity<Map<String, Boolean>> {
 {{if len(sessions) > 0}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
         // 클라이언트가 보낸 엔티티 대신 DB 에서 다시 읽은 본인 소유 행만 삭제한다.
-        val owned = entities.map { ownedOrNull(it.id) ?: return ResponseEntity.status(HttpStatus.FORBIDDEN).build() }
+        val owned = entities.map { ownedOrNull(it.{{pk.Field|raw}}) ?: return ResponseEntity.status(HttpStatus.FORBIDDEN).build() }
         val success = {{.ModelName|lower}}Service.deleteBatch(owned)
 {{else}}        val success = {{.ModelName|lower}}Service.deleteBatch(entities)
 {{end}}
         return ResponseEntity.ok(mapOf("success" to success))
     }
-}
+{{end}}}
