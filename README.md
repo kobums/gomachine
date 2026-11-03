@@ -20,6 +20,65 @@ buildtool-model <projectDir> [languages] [package] [--force]
 - `package`: 생성 Go 코드의 import 경로 앞부분. 없으면 `{goModelFilePath}/go.mod` 의 `module`, 그것도 없으면 경고를 찍고 `database` 이름을 쓴다.
 - `--force`: 생성 머리줄이 없는 기존 파일도 덮어쓴다 ([생성 파일 머리줄](#생성-파일-머리줄-덮어쓰기-보호)).
 
+## 새 프로젝트 만들기 (`init`)
+
+```bash
+buildtool-model init <name> [--go] [--spring] [--rust] [--react] [--vue] [flags]
+# 예: buildtool-model init safelog --go --react   → safelog/safelog_go, safelog/safelog_web
+```
+
+basicproject 템플릿 + 표준 DB 로 바로 실행할 수 있는 작업 공간을 만든다. 그다음은 `cd <name> && docker compose up -d db` 후 백엔드 / 프런트를 실행하면 된다.
+
+| 플래그 | 뜻 |
+|---|---|
+| `--go --spring --rust` | 백엔드 (하나 이상). 아무 언어도 고르지 않으면 `--go --react` (출력에 알린다) |
+| `--react --vue` | 프런트엔드 |
+| `--dir <parent>` | 작업 공간을 만들 상위 디렉터리 (기본: 현재 디렉터리, 있어야 한다) |
+| `--template-source github\|<dir>` | `github` (기본): `git clone --depth 1 https://github.com/kobums/<repo>.git`. 디렉터리면 그 아래 `basicproject_*` 를 복사한다 (`.git`, `node_modules`, `dist`, `build`, `target`, `bin`, `.gradle`, `.kotlin`, `.env.local`, `.env.yml` 제외) |
+| `--branch <name>` | 템플릿 브랜치 (기본 `main`) |
+| `--db-port <port>` | DB 포트 (기본 3306). 모든 `.env` 와 `model.json` 에 같이 쓴다 |
+| `--package <pkg>` | Spring 기본 패키지를 바꾼다 (기본 `com.basicproject.api` 그대로). `src/*/kotlin` 디렉터리 이동, 텍스트 치환, `build.gradle` 의 `group` |
+| `--no-git` | 하위 프로젝트에 `git init` / 첫 커밋을 하지 않는다 |
+| `--db-up` | `docker compose up -d --wait db` (docker 가 있을 때) |
+| `--gen` | DB 에 붙을 수 있으면 작업 공간 `model.json` 으로 모든 언어를 다시 생성한다 (없으면 건너뛴다. 템플릿에 user / board 생성 코드가 이미 있다) |
+| `--force` | 비어 있지 않은 `<name>` 디렉터리도 쓴다. 루트 `.env` 가 있으면 그 비밀번호 / `JWT_SECRET` 을 그대로 쓴다. 이미 있는 하위 프로젝트 디렉터리는 덮어쓰지 않는다 (에러) |
+
+- 이름은 `[a-z][a-z0-9_]*` (32자 이하, `_` 로 끝나지 않음). DB 이름 / 사용자 이름으로도 쓴다.
+- 비어 있지 않은 디렉터리는 `--force` 없이 거부한다. 중간에 실패하면 이번에 만든 디렉터리만 지운다. 작업 공간 밖은 건드리지 않는다.
+
+### 작업 공간
+
+```
+<name>/
+  db/schema.sql  docker-compose.yml  .env  .gitignore  Makefile  README.md   ← 표준 자산 (bootstrap/)
+  model.json                ← 테이블 설정의 기준 (고른 언어 모두 켜짐, 경로는 이 파일 기준)
+  <name>_go/                ← basicproject_go        (포트 8007)
+  <name>_spring/            ← basicproject_springboot (포트 8081)
+  <name>_rust/              ← basicproject_rust      (포트 8008)
+  <name>_web/               ← basicproject_web (React)
+  <name>_vue/               ← basicproject_vue
+```
+
+- DB 는 루트 `docker-compose.yml` 로 띄운다 (`make db-up` = `up -d --wait db`, `make db-reset`, `make gen` = `buildtool-model .`).
+  하위 프로젝트의 `docker-compose.yml` 은 따로 쓸 때용이라 그대로 둔다 (같은 3306 포트라 루트 DB 와 함께 띄우지 않는다).
+- 이름 바꾸기 (하위 프로젝트마다 자기 템플릿 이름만): Go `go.mod` module → `<name>_go` (import, Makefile `APP`, docker 이미지 이름 등 모든 텍스트),
+  Spring `settings.gradle` `rootProject.name` (+ `spring.application.name`) → `<name>_spring`, Rust `Cargo.toml` / `Cargo.lock` 패키지 이름 → `<name>_rust`,
+  `package.json` / `package-lock.json` / `index.html` 이름 → `<name>_web` / `<name>_vue`, README 제목. 다른 템플릿을 가리키는 설명(`basicproject_go 와 같다`)은 그대로다.
+  프런트는 `index.html` / `src/` 의 단독 단어 `basicproject` (화면 이름, 토큰 저장 key `basicproject.token`)도 `<name>` 으로 바꾼다.
+  텍스트 치환은 바이너리 / 4MB 넘는 파일 / 심볼릭 링크를 건너뛴다. Go 는 바꾼 뒤 `gofmt -w .` (module 이름에 따라 import 순서가 바뀐다).
+- `.env`: 루트와 모든 백엔드가 같은 값이다 — `MARIADB_DATABASE` / `MARIADB_USER` / `DB_NAME` / `DB_USER` = `<name>`, 무작위
+  `MARIADB_PASSWORD` (= `DB_PASSWORD`) / `MARIADB_ROOT_PASSWORD` (16 바이트 hex), `JWT_SECRET` (48 바이트 base64, 백엔드끼리 토큰 호환), `DB_PORT`.
+  백엔드 `.env` 는 템플릿 `.env.example` 에서 위 key 만 바꾼다 (`PORT` 등 나머지는 그대로). 프런트 `.env` 는 `.env.example` (없으면 템플릿 `.env`)에서
+  `VITE_PROXY_TARGET` 을 첫 백엔드(go > spring > rust)로 바꾼다. 백엔드 `.env` 는 0600 이고, git 첫 커밋 전에 `.gitignore` 에 없으면 넣는다.
+- `model.json` (루트): 표준 `bootstrap/model.json` 의 `auth` / `adminLevel` / `table` + 고른 언어, `*ModelFilePath` (`./<name>_go`,
+  `./<name>_spring/src/main/kotlin/com/basicproject/api` ...: 템플릿 model.json 의 경로를 옮긴 것), `kotlinPackage`, `springBoot`,
+  `reactTsOutDir` / `vueTsOutDir` / `reactTsSemicolons` / `vueTsSemicolons` (템플릿 값). DB 접속 비밀번호는 넣지 않는다 (`.env`).
+- 하위 프로젝트 `model.json` (Vue 처럼 `gomachine/model.json` 에 있으면 그 자리)은 **포인터**다:
+  `{"modelJsonPath": "..", "languages": {"go": true}}`. 하위 프로젝트에서 `make gen` / `./gradlew gen` (`buildtool-model .`)을 하면
+  루트 model.json 을 읽고 그 언어만 만든다 ([model.json 읽기](#modeljson-읽기)). 테이블 설정은 루트 하나만 고친다.
+- `git init -b main` + 첫 커밋 `init from basicproject_* via gomachine` (사용자 git 이름 / 이메일). git 이름이 없으면 경고만 하고 커밋은 직접 한다. 루트는 git 저장소로 만들지 않는다.
+- 표준 자산은 `~/bin/buildtool/bootstrap` (make install) 이 있으면 그것을, 없으면 바이너리에 넣은(go:embed) `bootstrap/` 을 쓴다 (소스에서 실행해도 된다).
+
 ## 표준 프로젝트 자산 (`bootstrap/`)
 
 새 프로젝트를 "basicproject 템플릿 + DB + gomachine" 으로 바로 시작하기 위한 파일이다 (`make install` 이 `~/bin/buildtool/bootstrap/` 에 복사한다).
@@ -72,6 +131,8 @@ buildtool-model <projectDir> [languages] [package] [--force]
 ## model.json 읽기
 
 - 첫 실행 인자 디렉터리에 `model.json` 이 있으면 그것을 읽고, 상대 출력 경로를 그 디렉터리 기준으로 바꾼다.
+- 그 `model.json` 에 `modelJsonPath` 가 있으면 **포인터**다: 그 디렉터리(포인터 기준 상대 경로)의 `model.json` 을 읽고, 상대 출력 경로는 그 디렉터리 기준이다.
+  포인터에 `languages` (또는 `language`)가 있으면 그 언어만 생성한다 (실행 인자 언어가 더 우선). 한 단계만 따라간다 (`init` 의 하위 프로젝트).
 - 아니면 예전처럼 실행한 디렉터리의 `config/model.json` 을 읽는다 (`modelJsonPath` 가 있으면 그 디렉터리의 `model.json`).
   이때 상대 출력 경로는 예전과 같이 실행한 디렉터리 기준이다.
 - JSON 문법 오류나 타입 오류(`"session": {...}` 처럼 배열 자리에 객체 등)가 있으면 에러를 찍고 **아무것도 생성하지 않고** 종료한다 (exit 1).
@@ -322,6 +383,8 @@ API 경로와 응답 처리는 [HTTP 계약](#http-계약-go--spring--react--vue
   React hook 은 Vue composable 과 같은 동작이다 (`items`, `item`, `total`, `loading`, `error`, `fetchPage`, `fetchAll`, `fetchOne`, `create`, `update`, `remove`).
   React 19 의 `useState` / `useCallback` 만 쓴다.
 - 엔티티 타입의 기본 키는 필수 (`id: number`), `Create{Model}Request` 에서만 선택이다.
+- `reactTsOutDir` / `vueTsOutDir`, `reactTsSemicolons` / `vueTsSemicolons`: 언어별 값 (있으면 `tsOutDir` / `tsSemicolons` 보다 우선). 한 model.json 으로
+  React(`src/gen`)와 Vue(`src`)를 함께 만들 때 쓴다 (`init` 작업 공간).
 - `tsSemicolons` (기본 true): false 면 문장 끝 `;` 를 뺀다 (prettier `semi: false` 프로젝트용). 다음 줄이 `(` `[` `` ` `` `+` `-` `/` 로 시작하면 ASI 때문에 `;` 를 남긴다.
 - `tsOutDir` (기본 `"src"`): 생성 파일을 `{react|vue}ModelFilePath/{tsOutDir}/` 아래에 둔다 (예: `"src/gen"`). models / types / composables / hooks / services 가
   모두 그 아래에 생기고 상대 import 는 그대로다. 손으로 만든 `src/hooks/useUser.ts` 같은 파일과 겹치면 머리줄이 없어 건너뛰므로 `src/gen` 을 권한다.

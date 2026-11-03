@@ -28,6 +28,21 @@ buildtool-model <projectDir> [languages] [package_name] [--force]
 - `package_name`: Go import path prefix of the target project; defaults to the `module` line of `{goModelFilePath}/go.mod` (`config.GoModule`), then model.json `database` with a warning
 - `--force`: overwrite existing files that lack the generated header (`util.Force`)
 - Templates are loaded at runtime from `$HOME/bin/buildtool/{go,kotlin,dart,react,vue,rust}` (so tests/harnesses point `HOME` at a dir whose `bin/buildtool` links to `views/`)
+- If that `model.json` has `modelJsonPath` it is a **pointer**: `config.FollowPointer` loads the target dir's model.json (path relative to the pointer), resolves output paths against the target, and the pointer's `languages` (if any) replace the target's.
+- `reactTsOutDir` / `vueTsOutDir` / `reactTsSemicolons` / `vueTsSemicolons` override `tsOutDir` / `tsSemicolons` per language (`GetTsOutDir` / `UseTsSemicolons` check `cnf.Language`).
+
+### New project workspace (`init`)
+
+```bash
+buildtool-model init <name> [--go --spring --rust --react --vue] [--dir P] [--template-source github|DIR] [--branch B] [--db-port N] [--package PKG] [--no-git] [--db-up] [--gen] [--force]
+```
+- `initcmd.go` (dispatched first in `main()`), tests `initcmd_test.go` (fixture templates). Default languages go+react; at least one backend required; name `[a-z][a-z0-9_]*` ≤ 32.
+- Creates `<name>/` with bootstrap assets (`~/bin/buildtool/bootstrap`, else the `go:embed` copy of `bootstrap/`), root `.env` / Makefile / README, authoritative root `model.json`,
+  and sub-projects `<name>_go|_spring|_rust|_web|_vue` cloned (`git clone --depth 1 --branch B https://github.com/kobums/basicproject_*`) or copied from DIR, `.git` stripped.
+- Per sub-project: own template identifier (go.mod module / rootProject.name / Cargo package / package.json name, plus repo name) replaced in all text files; frontends also bare `basicproject` in index.html + src/;
+  `.env` from `.env.example` with shared DB creds + JWT_SECRET (backends) or VITE_PROXY_TARGET = first backend port (go 8007 > spring 8081 > rust 8008);
+  model.json replaced by a pointer `{"modelJsonPath": "..", "languages": {<lang>: true}}`; `git init -b main` + first commit unless `--no-git`.
+- Refuses non-empty target without `--force`, never overwrites existing sub-project dirs, removes only what it created on failure.
 
 ## Architecture
 

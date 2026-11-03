@@ -39,6 +39,11 @@ func GetConnection(config config.ModelConfig) *sql.DB {
 }
 
 func main() {
+	// buildtool-model init <name> [flags]: basicproject 템플릿으로 새 작업 공간을 만든다 (initcmd.go).
+	if len(os.Args) > 1 && os.Args[1] == "init" {
+		os.Exit(runInit(os.Args[2:], os.Stdout))
+	}
+
 	log.Println("run buildtool model")
 
 	// --force: 머리줄 없는 기존 파일도 덮어쓴다. 나머지는 위치 인자다.
@@ -53,8 +58,10 @@ func main() {
 	var modelConfig config.ModelConfig
 	if dir := projectDir(args); dir != "" {
 		// buildtool-model <projectDir>: <projectDir>/model.json, 상대 출력 경로는 그 디렉터리 기준이다.
-		modelConfig = config.Init(dir)
-		modelConfig.ResolvePaths(dir)
+		// model.json 이 포인터(modelJsonPath)면 가리키는 model.json 을 읽고, 상대 경로는 그 디렉터리 기준이다 (init 의 하위 프로젝트).
+		var base string
+		modelConfig, base = config.FollowPointer(dir, config.Init(dir))
+		modelConfig.ResolvePaths(base)
 	} else {
 		// config/model.json 로드 ("pointer" config to find the real model.json location)
 		pointerConfig := config.Init(filepath.Join(configDir, "config"))

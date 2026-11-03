@@ -88,7 +88,12 @@ type ModelConfig struct {
 	TsSemicolons *bool `json:"tsSemicolons"`
 	// TypeScript 생성 파일을 둘 디렉터리 (react/vueModelFilePath 기준). 비어 있으면 "src" (예: "src/gen").
 	TsOutDir string `json:"tsOutDir"`
-	Gpa      []Gpa  `json:"table"`
+	// 언어별 tsOutDir / tsSemicolons (있으면 위 값보다 우선). React 와 Vue 를 한 model.json 으로 만들 때 쓴다.
+	ReactTsOutDir     string `json:"reactTsOutDir"`
+	VueTsOutDir       string `json:"vueTsOutDir"`
+	ReactTsSemicolons *bool  `json:"reactTsSemicolons"`
+	VueTsSemicolons   *bool  `json:"vueTsSemicolons"`
+	Gpa               []Gpa  `json:"table"`
 }
 
 type Pubspec struct {
@@ -355,13 +360,27 @@ func (c ModelConfig) GetSpringBoot() int {
 }
 
 // UseTsSemicolons 는 TypeScript 출력에 세미콜론을 붙일지다 (기본 true).
+// Language 가 react / vue 이고 reactTsSemicolons / vueTsSemicolons 가 있으면 그 값이다.
 func (c ModelConfig) UseTsSemicolons() bool {
-	return c.TsSemicolons == nil || *c.TsSemicolons
+	v := c.TsSemicolons
+	if c.Language == "react" && c.ReactTsSemicolons != nil {
+		v = c.ReactTsSemicolons
+	} else if c.Language == "vue" && c.VueTsSemicolons != nil {
+		v = c.VueTsSemicolons
+	}
+	return v == nil || *v
 }
 
 // GetTsOutDir 는 TypeScript 생성 디렉터리 (출력 경로 기준 상대 경로, 기본 "src") 다.
+// Language 가 react / vue 이고 reactTsOutDir / vueTsOutDir 가 있으면 그 값이다.
 func (c ModelConfig) GetTsOutDir() string {
-	if d := strings.Trim(strings.TrimSpace(c.TsOutDir), "/"); d != "" {
+	dir := c.TsOutDir
+	if c.Language == "react" && strings.TrimSpace(c.ReactTsOutDir) != "" {
+		dir = c.ReactTsOutDir
+	} else if c.Language == "vue" && strings.TrimSpace(c.VueTsOutDir) != "" {
+		dir = c.VueTsOutDir
+	}
+	if d := strings.Trim(strings.TrimSpace(dir), "/"); d != "" {
 		return d
 	}
 	return "src"
@@ -412,4 +431,29 @@ func (c ModelConfig) GetPort() string {
 		return p
 	}
 	return "3306"
+}
+
+// FollowPointer 는 프로젝트 디렉터리 모드에서 dir/model.json 이 포인터(modelJsonPath 가 있음)면 가리키는 model.json 을 읽는다.
+// modelJsonPath 의 상대 경로는 dir 기준이다. 포인터에 languages 가 있으면 그 언어만 생성한다 (예: 하위 프로젝트의 make gen).
+// 돌려주는 base 는 상대 출력 경로의 기준(실제 model.json 디렉터리)이다. 포인터가 아니면 (pointer, dir) 그대로다.
+func FollowPointer(dir string, pointer ModelConfig) (ModelConfig, string) {
+	if strings.TrimSpace(pointer.ModelJsonPath) == "" {
+		return pointer, dir
+	}
+	target := pointer.ModelJsonPath
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(dir, target)
+	}
+	real := Init(target)
+	if real.ModelJsonPath != "" {
+		log.Printf("WARNING: %s/model.json is also a pointer (modelJsonPath %q), not followed", target, real.ModelJsonPath)
+	}
+	if len(pointer.Languages) > 0 {
+		real.Languages = pointer.Languages
+		real.Language = ""
+	} else if pointer.Language != "" {
+		real.Languages = nil
+		real.Language = pointer.Language
+	}
+	return real, target
 }

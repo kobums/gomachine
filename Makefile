@@ -10,7 +10,9 @@ request: request.go
 	go build -o bin/request request.go
 
 # Build model generator using Go modules
-model: main.go util/utils.go go/main.go dart/main.go kotlin/main.go react/main.go vue/main.go rust/main.go
+# init 은 bootstrap/ 을 바이너리에 넣는다 (go:embed) — 자산이 바뀌어도 다시 빌드한다.
+BOOTSTRAP := bootstrap/.env.example bootstrap/docker-compose.yml bootstrap/model.json bootstrap/db/schema.sql
+model: main.go initcmd.go config/config.go util/utils.go go/main.go dart/main.go kotlin/main.go react/main.go vue/main.go rust/main.go $(BOOTSTRAP)
 	go build -o bin/model .
 
 doc: doc.go
@@ -24,7 +26,7 @@ run: main.go util/utils.go go/main.go dart/main.go kotlin/main.go react/main.go 
 	go run .
 
 # Build Linux binary for model generator
-model-linux: main.go util/utils.go go/main.go dart/main.go kotlin/main.go react/main.go vue/main.go rust/main.go
+model-linux: main.go initcmd.go config/config.go util/utils.go go/main.go dart/main.go kotlin/main.go react/main.go vue/main.go rust/main.go $(BOOTSTRAP)
 	env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags '-s' -o bin/model.linux .
 
 install: model
