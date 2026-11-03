@@ -81,7 +81,11 @@ func TestPrepareWritesSupportAndKeepsUserFiles(t *testing.T) {
 	writeFile(t, auth, "// my auth\n")
 	writeFile(t, mainRs, "// my main\n")
 	original := readFile(t, query)
-	writeFile(t, query, "// edited\n")
+	writeFile(t, query, GeneratedHeader+"\n// edited\n")
+	// 머리줄이 없는 같은 이름 파일은 사용자 파일로 보고 건너뛴다 (--force 면 덮어쓴다).
+	params := filepath.Join(root, "src/support/params.rs")
+	paramsOriginal := readFile(t, params)
+	writeFile(t, params, "// my params\n")
 	old := time.Now().Add(-time.Hour).Truncate(time.Second)
 	if err := os.Chtimes(response, old, old); err != nil {
 		t.Fatal(err)
@@ -97,6 +101,18 @@ func TestPrepareWritesSupportAndKeepsUserFiles(t *testing.T) {
 	}
 	if s := readFile(t, query); s != original {
 		t.Errorf("query.rs not regenerated")
+	}
+	if s := readFile(t, params); s != "// my params\n" {
+		t.Errorf("params.rs without header overwritten: %q", s)
+	}
+	util.Force = true
+	generate(root, "")
+	util.Force = false
+	if s := readFile(t, params); s != paramsOriginal {
+		t.Errorf("params.rs not overwritten with --force")
+	}
+	if s := readFile(t, auth); s != "// my auth\n" {
+		t.Errorf("auth.rs overwritten with --force: %q", s)
 	}
 	if st, err := os.Stat(response); err != nil || !st.ModTime().Equal(old) {
 		t.Errorf("response.rs rewritten although unchanged (mtime %v, want %v)", st.ModTime(), old)

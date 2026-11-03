@@ -7,6 +7,7 @@ import (
 	"gomachine/config"
 	"gomachine/util"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/CloudyKit/jet/v6"
@@ -211,16 +212,12 @@ func ProcessDart(packageName string, tableName string, prefix string, items []ut
 				dartModelPath = "../gym/app/lib/model/"
 			}
 
-			// Ensure directory exists
-			if _, err := os.Stat(dartModelPath); os.IsNotExist(err) {
-				if err := os.MkdirAll(dartModelPath, 0755); err != nil {
-					log.Printf("CRITICAL ERROR: Failed to create dart directory %s: %v", dartModelPath, err)
-				}
-			}
+			dartFile := filepath.Join(dartModelPath, strings.ToLower(util.GetTableName(tableName))+".dart")
 
-			dartFile := dartModelPath + strings.ToLower(util.GetTableName(tableName)) + ".dart"
-
-			if err := util.WriteFile(dartFile, b.String()); err != nil {
+			// 머리줄 없는 기존 파일(사용자 파일)은 건너뛴다 (util.WriteGenerated).
+			if util.SkippedUserFile(dartFile) {
+				util.WriteGenerated(dartFile, b.String())
+			} else if _, err := util.WriteGenerated(dartFile, b.String()); err != nil {
 				log.Printf("ERROR: Failed to write dart file %s: %v", dartFile, err)
 			} else {
 				log.Printf("Generated Dart: %s", dartFile)

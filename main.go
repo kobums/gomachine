@@ -39,30 +39,34 @@ func GetConnection(config config.ModelConfig) *sql.DB {
 func main() {
 	log.Println("run buildtool model")
 
+	// --force: 머리줄 없는 기존 파일도 덮어쓴다. 나머지는 위치 인자다.
+	args := parseArgs(os.Args[1:])
+
 	// 현재 작업 디렉토리 가져오기 (config 파일이 있는 위치)
 	configDir, err := os.Getwd()
 	if err != nil {
 		log.Fatalf("Failed to get current working directory: %v", err)
 	}
 
-	// config/model.json 로드 ("pointer" config to find the real model.json location)
-	configPath := filepath.Join(configDir, "config")
-	pointerConfig := config.Init(configPath)
-
 	var modelConfig config.ModelConfig
-	modelConfigDir := configDir
-
-	if pointerConfig.ModelJsonPath != "" {
-		modelConfigDir = pointerConfig.ModelJsonPath
-		modelConfig = config.Init(modelConfigDir)
+	if dir := projectDir(args); dir != "" {
+		// buildtool-model <projectDir>: <projectDir>/model.json, 상대 출력 경로는 그 디렉터리 기준이다.
+		modelConfig = config.Init(dir)
+		modelConfig.ResolvePaths(dir)
 	} else {
-		modelConfig = pointerConfig
+		// config/model.json 로드 ("pointer" config to find the real model.json location)
+		pointerConfig := config.Init(filepath.Join(configDir, "config"))
+		if pointerConfig.ModelJsonPath != "" {
+			modelConfig = config.Init(pointerConfig.ModelJsonPath)
+		} else {
+			modelConfig = pointerConfig
+		}
 	}
 
-	// 생성할 언어: model.json 의 languages / language, os.Args[2] 가 있으면 그것으로 오버라이드 ("go,react", "all" 가능)
+	// 생성할 언어: model.json 의 languages / language, 두 번째 인자가 있으면 그것으로 오버라이드 ("go,react", "all" 가능)
 	languages := modelConfig.EnabledLanguages()
-	if len(os.Args) > 2 && os.Args[2] != "" {
-		languages = config.ResolveLanguages(strings.Split(os.Args[2], ","))
+	if len(args) > 1 && args[1] != "" {
+		languages = config.ResolveLanguages(strings.Split(args[1], ","))
 	}
 
 	// go 외 언어는 출력 경로가 없으면 엉뚱한 기본 경로에 쓰지 않도록 건너뛴다.
@@ -80,10 +84,19 @@ func main() {
 	}
 	log.Printf("Generate languages: %v", enabled)
 
-	// packageName은 Database명 사용 (또는 os.Args[3]이 있으면 사용)
-	packageName := modelConfig.Database
-	if len(os.Args) > 3 && os.Args[3] != "" {
-		packageName = os.Args[3]
+	// packageName: 세 번째 인자 > {goModelFilePath}/go.mod 의 module > Database 이름 (경고)
+	packageName := ""
+	if len(args) > 2 && args[2] != "" {
+		packageName = args[2]
+	}
+	if packageName == "" {
+		packageName = config.GoModule(modelConfig.GoModelFilePath)
+	}
+	if packageName == "" {
+		packageName = modelConfig.Database
+		if hasLanguage(enabled, "go") {
+			log.Printf("WARNING: no go.mod module found in goModelFilePath %q and no package argument, using database name %q as Go package", modelConfig.GoModelFilePath, packageName)
+		}
 	}
 
 	gpas := modelConfig.Gpa
@@ -146,9 +159,43 @@ func main() {
 		readColumn(packageName, name, db, tableGpa[name], modelConfig.Buildtool, modelConfig.Auth, modelConfig, enabled)
 	}
 
+	if hasLanguage(enabled, "go") {
+		goCnf := modelConfig
+		goCnf.Language = "go"
+		gocodegen.Finish(goCnf)
+	}
+
 	if hasLanguage(enabled, "rust") {
 		rustcodegen.Finish(rustCnf)
 	}
+}
+
+// parseArgs 는 --force / -force 를 처리하고 나머지 위치 인자를 돌려준다.
+func parseArgs(argv []string) []string {
+	ret := make([]string, 0, len(argv))
+	for _, a := range argv {
+		if a == "--force" || a == "-force" {
+			util.Force = true
+			continue
+		}
+		ret = append(ret, a)
+	}
+	return ret
+}
+
+// projectDir 는 첫 인자가 model.json 이 있는 디렉터리면 그 경로를, 아니면 "" 를 돌려준다 (예전처럼 ./config/model.json).
+func projectDir(args []string) string {
+	if len(args) == 0 || args[0] == "" {
+		return ""
+	}
+	if _, err := os.Stat(filepath.Join(args[0], "model.json")); err != nil {
+		// "." 은 예전 사용법(첫 인자 무시)이라 경고하지 않는다.
+		if args[0] != "." {
+			log.Printf("WARNING: %s has no model.json, falling back to ./config/model.json", args[0])
+		}
+		return ""
+	}
+	return args[0]
 }
 
 func hasLanguage(languages []string, lang string) bool {

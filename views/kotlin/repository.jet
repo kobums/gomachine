@@ -21,12 +21,12 @@ interface {{.ModelName}}Repository : JpaRepository<{{.ModelName}}, {{.PK.QualTyp
 {{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
 {{range entityGraphPaths}}{{if .IsLast}}        "{{.Path}}"{{else}}        "{{.Path}}",{{end}}
 {{end}}    ])
-{{end}}    override fun findAll(spec: Specification<{{.ModelName}}>?, pageable: Pageable): Page<{{.ModelName}}>
+{{end}}    override fun findAll(spec: Specification<{{.ModelName}}>{{if not .Boot4}}?{{end}}, pageable: Pageable): Page<{{.ModelName}}>
 
 {{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
 {{range entityGraphPaths}}{{if .IsLast}}        "{{.Path}}"{{else}}        "{{.Path}}",{{end}}
 {{end}}    ])
-{{end}}    override fun findAll(spec: Specification<{{.ModelName}}>?): List<{{.ModelName}}>
+{{end}}    override fun findAll(spec: Specification<{{.ModelName}}>{{if not .Boot4}}?{{end}}): List<{{.ModelName}}>
 
 {{if len(entityGraphPaths) > 0}}    @EntityGraph(attributePaths = [
 {{range entityGraphPaths}}{{if .IsLast}}        "{{.Path}}"{{else}}        "{{.Path}}",{{end}}

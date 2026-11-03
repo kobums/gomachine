@@ -1,7 +1,10 @@
 package gocodegen
 
 import (
+	"gomachine/config"
 	"gomachine/util"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -79,5 +82,46 @@ func TestCreatedNow(t *testing.T) {
 	}
 	if got := createdNowCode("America/New_York"); !strings.Contains(got, `time.LoadLocation("America/New_York")`) {
 		t.Errorf("createdNowCode(iana) = %s", got)
+	}
+}
+
+func TestRoutesSource(t *testing.T) {
+	got := RoutesSource([]string{"User", "Board", "User"})
+	want := util.GeneratedHeader + "\n\npackage routers\n\nimport \"github.com/gofiber/fiber/v2\"\n\n" +
+		"// SetupGeneratedRoutes 는 gomachine 이 만든 테이블 라우트를 모두 등록한다 (router.go 에서 한 번 부른다).\n" +
+		"func SetupGeneratedRoutes(group fiber.Router) {\n\tSetupBoardRoutes(group)\n\tSetupUserRoutes(group)\n}\n"
+	if got != want {
+		t.Errorf("RoutesSource:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// Finish 는 이번 실행에서 만든 라우터만 등록하고, 머리줄 없는 사용자 라우터 파일은 건너뛴다.
+func TestFinishAndUserFiles(t *testing.T) {
+	dir := t.TempDir()
+	routers := filepath.Join(dir, "router", "routers")
+	os.MkdirAll(routers, 0755)
+	userFile := filepath.Join(routers, "user.go")
+	os.WriteFile(userFile, []byte("package routers\n// hand-written\n"), 0644)
+
+	if writeGo(userFile, util.GeneratedHeader+"\n\npackage routers\n") {
+		t.Error("writeGo overwrote a hand-written file")
+	}
+	if !writeGo(filepath.Join(routers, "board.go"), util.GeneratedHeader+"\n\npackage routers\n") {
+		t.Error("writeGo did not write a new file")
+	}
+	generatedRoutes = []string{"Board"}
+	Finish(config.ModelConfig{GoModelFilePath: dir})
+	b, err := os.ReadFile(filepath.Join(routers, RoutesFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "SetupBoardRoutes(group)") || strings.Contains(string(b), "SetupUserRoutes") {
+		t.Errorf("routes file:\n%s", b)
+	}
+	if len(generatedRoutes) != 0 {
+		t.Error("Finish did not reset generatedRoutes")
+	}
+	if b, _ := os.ReadFile(userFile); !strings.Contains(string(b), "hand-written") {
+		t.Error("user file changed")
 	}
 }

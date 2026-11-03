@@ -28,8 +28,11 @@ func ProcessVue(packageName string, tableName string, prefix string, items []uti
 	views := jet.NewSet(jet.NewOSFileSystemLoader(filepath.Join(os.Getenv("HOME"), "bin", "buildtool", "vue")), jet.InDevelopmentMode())
 	react.SetupJetGlobals(views)
 
-	react.Render(views, "contract.jet", filepath.Join(targetPath, "src", "models"), "contract.ts", data)
-	react.Render(views, "type.jet", filepath.Join(targetPath, "src", "types"), name+".ts", data)
-	react.Render(views, "model.jet", filepath.Join(targetPath, "src", "models"), name+".ts", data)
-	react.Render(views, "composable.jet", filepath.Join(targetPath, "src", "composables"), "use"+data.ModelName+".ts", data)
+	out := react.OutDir(targetPath, cnf)
+	semi := cnf.UseTsSemicolons()
+	react.Render(views, "contract.jet", filepath.Join(out, "models"), "contract.ts", data, semi)
+	react.Render(views, "type.jet", filepath.Join(out, "types"), name+".ts", data, semi)
+	react.Render(views, "model.jet", filepath.Join(out, "models"), name+".ts", data, semi)
+	react.Render(views, "composable.jet", filepath.Join(out, "composables"), "use"+data.ModelName+".ts", data, semi)
+	react.RenderAPI(views, out, semi)
 }

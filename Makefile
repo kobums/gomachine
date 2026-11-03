@@ -37,6 +37,8 @@ install: model
 	# cp bin/doc ~/bin/buildtool-doc
 	# cp bin/watch ~/bin/buildtool-watch
 	cp -rf views/* ~/bin/buildtool/
+	# 프로젝트 초기화(init)가 복사할 표준 DB / model.json 자산
+	cp -Rf bootstrap ~/bin/buildtool/bootstrap
 
 # Install with Linux binary
 install-linux: model-linux
@@ -44,6 +46,7 @@ install-linux: model-linux
 	mkdir -p ~/bin/buildtool
 	cp bin/model.linux ~/bin/buildtool-model.linux
 	cp -rf views/* ~/bin/buildtool/
+	cp -Rf bootstrap ~/bin/buildtool/bootstrap
 
 test:
 	#mysql -u root anb < build/test.sql

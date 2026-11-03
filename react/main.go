@@ -93,20 +93,22 @@ func ProcessReact(packageName string, tableName string, prefix string, items []u
 		return
 	}
 
-	// Make sure the target directory exists
-	if _, err := os.Stat(targetPath); os.IsNotExist(err) {
-		err := os.MkdirAll(targetPath, 0755)
-		if err != nil {
-			log.Printf("Failed to create target directory: %v", err)
-		}
-	}
-
 	templateData := BuildTemplateData(packageName, tableName, items, gpa)
+	name := strings.ToLower(templateData.TableName)
 
 	views := newViews(filepath.Join(os.Getenv("HOME"), "bin", "buildtool", "react"))
-	Render(views, "contract.jet", filepath.Join(targetPath, "src", "models"), "contract.ts", templateData)
-	Render(views, "model.jet", filepath.Join(targetPath, "src", "models"), strings.ToLower(templateData.TableName)+".ts", templateData)
-	Render(views, "type.jet", filepath.Join(targetPath, "src", "types"), strings.ToLower(templateData.TableName)+".ts", templateData)
+	out := OutDir(targetPath, cnf)
+	semi := cnf.UseTsSemicolons()
+	Render(views, "contract.jet", filepath.Join(out, "models"), "contract.ts", templateData, semi)
+	Render(views, "model.jet", filepath.Join(out, "models"), name+".ts", templateData, semi)
+	Render(views, "type.jet", filepath.Join(out, "types"), name+".ts", templateData, semi)
+	Render(views, "hook.jet", filepath.Join(out, "hooks"), "use"+templateData.ModelName+".ts", templateData, semi)
+	RenderAPI(views, out, semi)
+}
+
+// OutDir 는 TypeScript 생성 파일을 둘 디렉터리다 (출력 경로 / tsOutDir, 기본 src).
+func OutDir(targetPath string, cnf config.ModelConfig) string {
+	return filepath.Join(targetPath, filepath.FromSlash(cnf.GetTsOutDir()))
 }
 
 // BuildTemplateData 는 TypeScript 계열 생성기(react, vue)가 함께 쓰는 템플릿 데이터를 만든다.
@@ -182,10 +184,11 @@ func BuildTemplateData(packageName string, tableName string, items []util.Column
 			OriginalType:   originalTypeLower,
 			IsNullable:     col.Nullable && i != pkIndex,
 			IsPrimaryKey:   i == pkIndex,
-			IsOptional:     i == pkIndex || isPassword,
-			IsDateType:     util.IsRangeFilter(originalTypeLower),
-			IsSearchable:   col.Name != "Id" && !util.IsConfigPrimary(col, gpa) && !isPassword && !isBinaryType(originalTypeLower),
-			IsPassword:     isPassword,
+			// 기본 키는 응답에 항상 있으므로 엔티티에서 필수다 (생성 요청에서만 선택, type.jet).
+			IsOptional:   isPassword,
+			IsDateType:   util.IsRangeFilter(originalTypeLower),
+			IsSearchable: col.Name != "Id" && !util.IsConfigPrimary(col, gpa) && !isPassword && !isBinaryType(originalTypeLower),
+			IsPassword:   isPassword,
 		})
 	}
 	var pk ReactColumn
@@ -396,25 +399,74 @@ func newViews(dir string) *jet.Set {
 }
 
 // Render 는 템플릿 하나를 dir/filename 으로 쓴다 (react, vue 가 함께 쓴다).
-func Render(views *jet.Set, templateName string, dir string, filename string, data ReactTemplateData) {
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		log.Printf("Failed to create directory %s: %v", dir, err)
+// 생성 파일이라 머리줄(util.GeneratedHeader)이 없는 기존 파일은 덮어쓰지 않는다. semi 가 false 면 문장 끝 ; 를 뺀다.
+func Render(views *jet.Set, templateName string, dir string, filename string, data ReactTemplateData, semi bool) {
+	content, ok := execute(views, templateName, data, semi)
+	if !ok {
 		return
 	}
+	outputPath := filepath.Join(dir, filename)
+	if _, err := util.WriteGenerated(outputPath, content); err != nil {
+		log.Printf("ERROR: Failed to write %s: %v", outputPath, err)
+	} else if !util.SkippedUserFile(outputPath) {
+		log.Printf("Generated TypeScript: %s", outputPath)
+	}
+}
+
+// RenderAPI 는 생성 모델이 쓰는 {out}/services/api.ts 를 없을 때만 만든다 (사용자 파일, 이후 덮어쓰지 않는다).
+func RenderAPI(views *jet.Set, out string, semi bool) {
+	content, ok := execute(views, "api.jet", ReactTemplateData{}, semi)
+	if !ok {
+		return
+	}
+	outputPath := filepath.Join(out, "services", "api.ts")
+	written, err := util.WriteIfMissing(outputPath, content)
+	if err != nil {
+		log.Printf("ERROR: Failed to write %s: %v", outputPath, err)
+	} else if written {
+		log.Printf("Generated TypeScript: %s", outputPath)
+	}
+}
+
+// execute 는 템플릿을 실행한 내용을 돌려준다. 실패하면 false (반쯤 만든 파일을 쓰지 않는다).
+func execute(views *jet.Set, templateName string, data ReactTemplateData, semi bool) (string, bool) {
 	t, err := views.GetTemplate(templateName)
 	if err != nil {
 		log.Printf("Failed to load TypeScript template %s: %v", templateName, err)
-		return
+		return "", false
 	}
 	var b bytes.Buffer
 	if err := t.Execute(&b, nil, data); err != nil {
 		log.Printf("Failed to execute TypeScript template %s: %v", templateName, err)
-		return
+		return "", false
 	}
-	outputPath := filepath.Join(dir, filename)
-	if err := util.WriteFile(outputPath, b.String()); err != nil {
-		log.Printf("ERROR: Failed to write %s: %v", outputPath, err)
-	} else {
-		log.Printf("Generated TypeScript: %s", outputPath)
+	if !semi {
+		return StripSemicolons(b.String()), true
 	}
+	return b.String(), true
+}
+
+// StripSemicolons 는 줄 끝의 문장 끝 ; 를 뺀다 (prettier semi: false 와 같은 모양).
+// 주석 줄은 그대로 두고, 다음 줄이 ( [ ` 로 시작하면 ASI 가 이어 붙이므로 ; 를 남긴다.
+func StripSemicolons(src string) string {
+	lines := strings.Split(src, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasSuffix(trimmed, ";") || strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") || strings.HasPrefix(trimmed, "/*") {
+			continue
+		}
+		next := ""
+		for _, l := range lines[i+1:] {
+			if t := strings.TrimSpace(l); t != "" && !strings.HasPrefix(t, "//") && !strings.HasPrefix(t, "/*") && !strings.HasPrefix(t, "*") {
+				next = t
+				break
+			}
+		}
+		if next != "" && strings.ContainsAny(next[:1], "([`+-/") {
+			continue
+		}
+		end := strings.TrimRight(line, " \t\r")
+		lines[i] = strings.TrimRight(strings.TrimSuffix(end, ";"), " \t")
+	}
+	return strings.Join(lines, "\n")
 }

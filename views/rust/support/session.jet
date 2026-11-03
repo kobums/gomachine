@@ -12,6 +12,8 @@ use axum::http::request::Parts;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Session {
     pub id: i64,
+    /// 로그인 사용자 email (토큰 email claim). 없으면 빈 문자열.
+    pub email: String,
     /// 관리자 확인용 (model.json adminLevel). 없으면 관리자가 아니다.
     pub level: Option<i64>,
     /// model.json session 의 key 가 id / level 이 아닐 때 쓰는 값 (key 소문자).

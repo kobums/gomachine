@@ -2,7 +2,7 @@ package {{.BasePackage}}.entity
 
 import jakarta.persistence.*
 {{if .IsView}}import org.hibernate.annotations.Immutable
-{{end}}{{if .HasJsonDate}}import com.fasterxml.jackson.databind.annotation.JsonDeserialize
+{{end}}{{if .HasJsonDate}}import {{if .Boot4}}tools.jackson{{else}}com.fasterxml.jackson{{end}}.databind.annotation.JsonDeserialize
 {{end}}{{if .HasDateTime}}import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 {{end}}{{if .HasDate}}import java.time.LocalDate

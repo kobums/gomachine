@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -76,6 +77,12 @@ type ModelConfig struct {
 	// Go Insert 가 createddate 를 채울 때 쓰는 시간대. 비어 있으면 예전과 같은 UTC+9 (Asia/Seoul),
 	// "local" 은 서버 지역 시간, 그 밖은 IANA 이름 (예: "UTC", "America/New_York").
 	Timezone string `json:"timezone"`
+	// 생성할 Spring Boot 주 버전 (3 또는 4). 0(없음)이면 4. 3 이면 예전과 같은 코드를 만든다.
+	SpringBoot int `json:"springBoot"`
+	// TypeScript 문장 끝 세미콜론. 없으면(nil) true (예전 출력). no-semicolon prettier 프로젝트는 false.
+	TsSemicolons *bool `json:"tsSemicolons"`
+	// TypeScript 생성 파일을 둘 디렉터리 (react/vueModelFilePath 기준). 비어 있으면 "src" (예: "src/gen").
+	TsOutDir string `json:"tsOutDir"`
 	Gpa      []Gpa  `json:"table"`
 }
 
@@ -320,6 +327,70 @@ func (c ModelConfig) OutputPath(lang string) string {
 		return c.VueModelFilePath
 	case "rust":
 		return c.RustModelFilePath
+	}
+	return ""
+}
+
+// GetSpringBoot 는 생성할 Spring Boot 주 버전이다 (3 또는 4, 기본 4). 그 밖의 값은 경고하고 4 를 쓴다.
+func (c ModelConfig) GetSpringBoot() int {
+	switch c.SpringBoot {
+	case 0, 4:
+		return 4
+	case 3:
+		return 3
+	}
+	log.Printf("WARNING: springBoot %d is not supported (3 or 4), using 4", c.SpringBoot)
+	return 4
+}
+
+// UseTsSemicolons 는 TypeScript 출력에 세미콜론을 붙일지다 (기본 true).
+func (c ModelConfig) UseTsSemicolons() bool {
+	return c.TsSemicolons == nil || *c.TsSemicolons
+}
+
+// GetTsOutDir 는 TypeScript 생성 디렉터리 (출력 경로 기준 상대 경로, 기본 "src") 다.
+func (c ModelConfig) GetTsOutDir() string {
+	if d := strings.Trim(strings.TrimSpace(c.TsOutDir), "/"); d != "" {
+		return d
+	}
+	return "src"
+}
+
+// ResolvePaths 는 프로젝트 디렉터리 모드(buildtool-model <projectDir>)에서 상대 출력 경로를 dir(model.json 위치) 기준으로 바꾼다.
+// goModelFilePath 가 비어 있으면 dir 자체를 쓴다. 다른 언어의 빈 경로는 그대로 둔다 (생성하지 않음).
+func (c *ModelConfig) ResolvePaths(dir string) {
+	resolve := func(p string) string {
+		if p == "" || filepath.IsAbs(p) {
+			return p
+		}
+		return filepath.Join(dir, p)
+	}
+	if c.GoModelFilePath == "" {
+		c.GoModelFilePath = dir
+	} else {
+		c.GoModelFilePath = resolve(c.GoModelFilePath)
+	}
+	c.KotlinModelFilePath = resolve(c.KotlinModelFilePath)
+	c.DartModelFilePath = resolve(c.DartModelFilePath)
+	c.ReactModelFilePath = resolve(c.ReactModelFilePath)
+	c.VueModelFilePath = resolve(c.VueModelFilePath)
+	c.RustModelFilePath = resolve(c.RustModelFilePath)
+}
+
+// GoModule 은 dir/go.mod 의 module 경로다. 없거나 읽지 못하면 "".
+func GoModule(dir string) string {
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = strings.TrimSpace(line[:i])
+		}
+		if rest, ok := strings.CutPrefix(line, "module"); ok && (rest == "" || rest[0] == ' ' || rest[0] == '\t') {
+			return strings.Trim(strings.TrimSpace(rest), "\"`")
+		}
 	}
 	return ""
 }

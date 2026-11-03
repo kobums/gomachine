@@ -310,8 +310,18 @@ class {{.ModelName}}Controller(
     fun delete{{.ModelName}}(@PathVariable("id") _id: {{pk.QualType}}): ResponseEntity<Map<String, Boolean>> {
 {{if login}}        if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build()
 {{end}}{{if guard}}        if (_service.findById(_id)?.takeIf { canWrite(it) } == null) return ResponseEntity.notFound().build()
-{{end}}        val _success = _service.deleteById(_id)
+{{end}}        val _success = try {
+            _service.deleteById(_id)
+        } catch (e: DataIntegrityViolationException) {
+            return deleteConflict(e)
+        }
         return if (_success) ResponseEntity.ok(mapOf("success" to true)) else ResponseEntity.notFound().build()
+    }
+
+    // 다른 행이 참조하는 행(외래 키 등 제약 조건 위반)은 지우지 못한다: 409.
+    private fun deleteConflict(e: DataIntegrityViolationException): ResponseEntity<Map<String, Boolean>> {
+        LOG.warn("delete {{.ModelName}} failed: {}", e.mostSpecificCause.message)
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(mapOf("success" to false))
     }
 
     // 본문은 [{"{{pk.ParamName}}": 1}, ...] (Go 의 DELETE /{table}/batch 와 같은 모양). 없는 행은 건너뛴다.
@@ -326,7 +336,11 @@ class {{.ModelName}}Controller(
 {{if guard}}            if (!canWrite(_row)) return ResponseEntity.status(HttpStatus.FORBIDDEN).build()
 {{end}}            _rows.add(_row)
         }
-        val _success = _service.deleteBatch(_rows)
+        val _success = try {
+            _service.deleteBatch(_rows)
+        } catch (e: DataIntegrityViolationException) {
+            return deleteConflict(e)
+        }
         return ResponseEntity.ok(mapOf("success" to _success))
     }
 {{end}}{{end}}}
