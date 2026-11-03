@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -86,5 +88,82 @@ func TestOutputPathRust(t *testing.T) {
 	}
 	if got := NormalizeLanguage(" Rust "); got != "rust" {
 		t.Errorf("NormalizeLanguage(Rust) = %q", got)
+	}
+}
+
+func TestGoModule(t *testing.T) {
+	dir := t.TempDir()
+	if got := GoModule(dir); got != "" {
+		t.Errorf("no go.mod: got %q", got)
+	}
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("// comment\nmodule example.com/app // x\n\ngo 1.22\n"), 0644)
+	if got := GoModule(dir); got != "example.com/app" {
+		t.Errorf("got %q", got)
+	}
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module \"quoted/app\"\n"), 0644)
+	if got := GoModule(dir); got != "quoted/app" {
+		t.Errorf("quoted: got %q", got)
+	}
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("modules x\n"), 0644)
+	if got := GoModule(dir); got != "" {
+		t.Errorf("modules: got %q", got)
+	}
+}
+
+func TestResolvePaths(t *testing.T) {
+	c := ModelConfig{KotlinModelFilePath: "spring/src/main/kotlin/com/x", ReactModelFilePath: "/abs/web", VueModelFilePath: ""}
+	c.ResolvePaths("proj")
+	if c.GoModelFilePath != "proj" {
+		t.Errorf("empty go path: got %q", c.GoModelFilePath)
+	}
+	if c.KotlinModelFilePath != filepath.Join("proj", "spring/src/main/kotlin/com/x") {
+		t.Errorf("kotlin: got %q", c.KotlinModelFilePath)
+	}
+	if c.ReactModelFilePath != "/abs/web" || c.VueModelFilePath != "" {
+		t.Errorf("abs/empty changed: %q %q", c.ReactModelFilePath, c.VueModelFilePath)
+	}
+	c = ModelConfig{GoModelFilePath: "./backend/"}
+	c.ResolvePaths("proj")
+	if c.GoModelFilePath != filepath.Join("proj", "backend") {
+		t.Errorf("go: got %q", c.GoModelFilePath)
+	}
+}
+
+func TestNewOptionDefaults(t *testing.T) {
+	var c ModelConfig
+	if c.GetSpringBoot() != 4 || !c.UseTsSemicolons() || c.GetTsOutDir() != "src" {
+		t.Errorf("defaults: boot=%d semi=%v out=%q", c.GetSpringBoot(), c.UseTsSemicolons(), c.GetTsOutDir())
+	}
+	off := false
+	c = ModelConfig{SpringBoot: 3, TsSemicolons: &off, TsOutDir: "/src/gen/"}
+	if c.GetSpringBoot() != 3 || c.UseTsSemicolons() || c.GetTsOutDir() != "src/gen" {
+		t.Errorf("set: boot=%d semi=%v out=%q", c.GetSpringBoot(), c.UseTsSemicolons(), c.GetTsOutDir())
+	}
+	c, warnings, err := Parse([]byte(`{"springBoot": 3, "tsSemicolons": false, "tsOutDir": "src/gen"}`))
+	if err != nil || len(warnings) > 0 || c.GetSpringBoot() != 3 || c.UseTsSemicolons() || c.GetTsOutDir() != "src/gen" {
+		t.Errorf("parse: %v %v %+v", err, warnings, c)
+	}
+}
+
+// port 는 숫자 / 문자열 모두 되고, DB_PORT / DB_NAME 환경변수가 model.json 보다 우선한다.
+func TestPortAndDbNameEnv(t *testing.T) {
+	for _, src := range []string{`{"port": 3307}`, `{"port": "3307"}`} {
+		c, _, err := Parse([]byte(src))
+		if err != nil || c.GetPort() != "3307" {
+			t.Errorf("%s: port %q err %v", src, c.GetPort(), err)
+		}
+	}
+	if c, _, _ := Parse([]byte(`{}`)); c.GetPort() != "3306" {
+		t.Errorf("default port = %q", c.GetPort())
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "model.json"), []byte(`{"database": "a", "port": 1}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DB_PORT", "3310")
+	t.Setenv("DB_NAME", "b")
+	c, _, err := Load(dir)
+	if err != nil || c.GetPort() != "3310" || c.Database != "b" {
+		t.Errorf("env override: port %q database %q err %v", c.GetPort(), c.Database, err)
 	}
 }

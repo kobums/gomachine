@@ -106,7 +106,11 @@ pub enum Compare {
 impl Compare {
     /// 연산자 문자열을 해석한다. 대소문자와 공백 수는 가리지 않는다 ("NOT  IN" → NotIn). 모르는 연산자면 None.
     pub fn parse(op: &str) -> Option<Self> {
-        let op = op.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
+        let op = op
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase();
         Some(match op.as_str() {
             "=" => Compare::Eq,
             "!=" => Compare::Ne,
@@ -152,8 +156,16 @@ pub struct Where {
 }
 
 impl Where {
-    pub fn new(column: impl Into<Cow<'static, str>>, value: impl Into<Bind>, compare: impl Into<Cow<'static, str>>) -> Self {
-        Where { column: column.into(), value: value.into(), compare: compare.into() }
+    pub fn new(
+        column: impl Into<Cow<'static, str>>,
+        value: impl Into<Bind>,
+        compare: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        Where {
+            column: column.into(),
+            value: value.into(),
+            compare: compare.into(),
+        }
     }
 
     /// 같은 값 (=) 조건.
@@ -171,8 +183,43 @@ pub struct Custom {
 
 impl Custom {
     pub fn new(sql: impl Into<Cow<'static, str>>, params: Vec<Bind>) -> Self {
-        Custom { sql: sql.into(), params }
+        Custom {
+            sql: sql.into(),
+            params,
+        }
     }
+}
+
+/// 목록 필터 부분 일치의 escape 문자 (모든 백엔드가 같다: `like ? escape '!'`).
+/// 백슬래시가 아니라서 sql_mode(NO_BACKSLASH_ESCAPES)와 상관없다.
+pub const LIKE_ESCAPE: char = '!';
+
+/// 부분 일치 패턴: %, _, ! 를 ! 로 escape 하고 양쪽에 % 를 붙인다 ("50%" → "%50!%%").
+pub fn like_pattern(v: &str) -> String {
+    let mut out = String::with_capacity(v.len() + 2);
+    out.push('%');
+    for c in v.chars() {
+        if matches!(c, '%' | '_' | LIKE_ESCAPE) {
+            out.push(LIKE_ESCAPE);
+        }
+        out.push(c);
+    }
+    out.push('%');
+    out
+}
+
+/// 목록 필터의 부분 일치 조건 `{column} like ? escape '!'` (not 이면 not like). column 은 SQL 컬럼 이름
+/// (접두사 포함, 생성 코드의 상수)이고 형식이 어긋나면 조건 " and 1=0" 이다.
+pub fn like_filter(column: &'static str, value: &str, not: bool) -> Arg {
+    if !valid_column(column) {
+        return Custom::new("1=0", Vec::new()).into();
+    }
+    let op = if not { "not like" } else { "like" };
+    Custom::new(
+        format!("{column} {op} ? escape '{LIKE_ESCAPE}'"),
+        vec![like_pattern(value).into()],
+    )
+    .into()
 }
 
 /// 조회 인자 (Go 의 []interface{} args).
@@ -181,7 +228,10 @@ pub enum Arg {
     Where(Where),
     Custom(Custom),
     /// page 는 1 부터. page / pagesize 가 0 이면 전체 행.
-    Paging { page: i64, pagesize: i64 },
+    Paging {
+        page: i64,
+        pagesize: i64,
+    },
     /// 정렬 절. SQL 에 그대로 들어가므로 검증한 값(모델 parse_order / 코드 상수)만 넘긴다.
     Ordering(String),
 }
@@ -210,7 +260,8 @@ impl Page {
     /// LIMIT / OFFSET 값 (pagesize, (page-1)*pagesize). page 와 pagesize 가 모두 1 이상일 때만.
     /// offset 이 i64 를 넘으면 i64::MAX (빈 페이지). 핸들러는 page > MAX_PAGE 를 먼저 400 으로 막는다.
     pub fn limit_offset(&self) -> Option<(i64, i64)> {
-        (self.page > 0 && self.pagesize > 0).then(|| (self.pagesize, (self.page - 1).saturating_mul(self.pagesize)))
+        (self.page > 0 && self.pagesize > 0)
+            .then(|| (self.pagesize, (self.page - 1).saturating_mul(self.pagesize)))
     }
 }
 
@@ -218,7 +269,8 @@ impl Page {
 pub fn valid_column(name: &str) -> bool {
     fn ident(s: &str) -> bool {
         let mut chars = s.chars();
-        matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_') && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
     }
     match name.split_once('.') {
         Some((a, b)) => ident(a) && ident(b),
@@ -253,13 +305,22 @@ pub fn push_where(qb: &mut QueryBuilder<MySql>, prefix: &str, w: &Where) {
                 v => vec![v],
             };
             if items.is_empty() {
-                qb.push(if op == Compare::In { " and 1=0" } else { " and 1=1" });
+                qb.push(if op == Compare::In {
+                    " and 1=0"
+                } else {
+                    " and 1=1"
+                });
                 return;
             }
             if !items.iter().all(|v| v.is_scalar()) {
                 return fail_closed(qb, "nested list", w);
             }
-            qb.push(" and ").push(prefix).push(&w.column).push(" ").push(op.as_sql()).push(" (");
+            qb.push(" and ")
+                .push(prefix)
+                .push(&w.column)
+                .push(" ")
+                .push(op.as_sql())
+                .push(" (");
             for (i, v) in items.into_iter().enumerate() {
                 if i > 0 {
                     qb.push(", ");
@@ -277,7 +338,10 @@ pub fn push_where(qb: &mut QueryBuilder<MySql>, prefix: &str, w: &Where) {
             if !a.is_scalar() || !b.is_scalar() {
                 return fail_closed(qb, "between needs 2 values", w);
             }
-            qb.push(" and ").push(prefix).push(&w.column).push(" between ");
+            qb.push(" and ")
+                .push(prefix)
+                .push(&w.column)
+                .push(" between ");
             a.push_bind(qb);
             qb.push(" and ");
             b.push_bind(qb);
@@ -286,7 +350,12 @@ pub fn push_where(qb: &mut QueryBuilder<MySql>, prefix: &str, w: &Where) {
             if !w.value.is_scalar() {
                 return fail_closed(qb, "list value", w);
             }
-            qb.push(" and ").push(prefix).push(&w.column).push(" ").push(op.as_sql()).push(" ");
+            qb.push(" and ")
+                .push(prefix)
+                .push(&w.column)
+                .push(" ")
+                .push(op.as_sql())
+                .push(" ");
             w.value.push_bind(qb);
         }
     }
@@ -365,7 +434,10 @@ pub fn push_order_page(qb: &mut QueryBuilder<MySql>, page: &Page, default_column
     };
     qb.push(" order by ").push(order);
     if let Some((limit, offset)) = paged {
-        qb.push(" limit ").push_bind(limit).push(" offset ").push_bind(offset);
+        qb.push(" limit ")
+            .push_bind(limit)
+            .push(" offset ")
+            .push_bind(offset);
     }
 }
 
@@ -395,72 +467,191 @@ mod tests {
         f(&mut qb);
         let sql = qb.sql().as_str().to_string();
         let mut query = qb.build();
-        let n = query.take_arguments().unwrap().map(|a| a.len()).unwrap_or(0);
+        let n = query
+            .take_arguments()
+            .unwrap()
+            .map(|a| a.len())
+            .unwrap_or(0);
         (sql, n)
     }
 
     fn where_sql(column: &str, value: Bind, compare: &str) -> (String, usize) {
-        let (sql, n) = build(|qb| push_where(qb, "u_", &Where::new(column.to_string(), value, compare.to_string())));
-        (sql.trim_start_matches("select * from t where 1=1").to_string(), n)
+        let (sql, n) = build(|qb| {
+            push_where(
+                qb,
+                "u_",
+                &Where::new(column.to_string(), value, compare.to_string()),
+            )
+        });
+        (
+            sql.trim_start_matches("select * from t where 1=1")
+                .to_string(),
+            n,
+        )
+    }
+
+    #[test]
+    fn like_filters() {
+        assert_eq!(like_pattern("abc"), "%abc%");
+        assert_eq!(like_pattern("50%_!x"), "%50!%!_!!x%");
+        assert_eq!(like_pattern("a\\b"), "%a\\b%");
+        let sql = |a: Arg| {
+            build(|qb| {
+                apply_args(qb, "u_", &[a]);
+            })
+        };
+        assert_eq!(
+            sql(like_filter("u_name", "a%", false)),
+            (
+                "select * from t where 1=1 and u_name like ? escape '!'".into(),
+                1
+            )
+        );
+        assert_eq!(
+            sql(like_filter("t.u_name", "a", true)),
+            (
+                "select * from t where 1=1 and t.u_name not like ? escape '!'".into(),
+                1
+            )
+        );
+        assert_eq!(
+            sql(like_filter("u name", "a", false)).0,
+            "select * from t where 1=1 and 1=0"
+        );
+        match like_filter("u_name", "a_b", false) {
+            Arg::Custom(c) => assert_eq!(c.params, vec![Bind::Str("%a!_b%".into())]),
+            a => panic!("{a:?}"),
+        }
     }
 
     #[test]
     fn scalar_operators() {
         for op in ["=", "!=", "<>", "<", "<=", ">", ">=", "like", "not like"] {
-            assert_eq!(where_sql("name", "a%".into(), op), (format!(" and u_name {op} ?"), 1), "{op}");
+            assert_eq!(
+                where_sql("name", "a%".into(), op),
+                (format!(" and u_name {op} ?"), 1),
+                "{op}"
+            );
         }
-        assert_eq!(where_sql("name", "x".into(), " NOT   LIKE "), (" and u_name not like ?".into(), 1));
-        assert_eq!(where_sql("j.c", 1.into(), "="), (" and u_j.c = ?".into(), 1));
-        assert_eq!(where_sql("flag", Bind::Null, "="), (" and u_flag = ?".into(), 1));
+        assert_eq!(
+            where_sql("name", "x".into(), " NOT   LIKE "),
+            (" and u_name not like ?".into(), 1)
+        );
+        assert_eq!(
+            where_sql("j.c", 1.into(), "="),
+            (" and u_j.c = ?".into(), 1)
+        );
+        assert_eq!(
+            where_sql("flag", Bind::Null, "="),
+            (" and u_flag = ?".into(), 1)
+        );
     }
 
     #[test]
     fn in_operators() {
-        assert_eq!(where_sql("id", Bind::list([1i64, 2, 3]), "in"), (" and u_id in (?, ?, ?)".into(), 3));
-        assert_eq!(where_sql("id", Bind::list([1i64, 2]), "not in"), (" and u_id not in (?, ?)".into(), 2));
-        assert_eq!(where_sql("id", 7i64.into(), "in"), (" and u_id in (?)".into(), 1));
-        assert_eq!(where_sql("id", Bind::List(vec![]), "in"), (" and 1=0".into(), 0));
-        assert_eq!(where_sql("id", Bind::List(vec![]), "not in"), (" and 1=1".into(), 0));
-        assert_eq!(where_sql("id", Bind::List(vec![Bind::list([1])]), "in"), (" and 1=0".into(), 0));
+        assert_eq!(
+            where_sql("id", Bind::list([1i64, 2, 3]), "in"),
+            (" and u_id in (?, ?, ?)".into(), 3)
+        );
+        assert_eq!(
+            where_sql("id", Bind::list([1i64, 2]), "not in"),
+            (" and u_id not in (?, ?)".into(), 2)
+        );
+        assert_eq!(
+            where_sql("id", 7i64.into(), "in"),
+            (" and u_id in (?)".into(), 1)
+        );
+        assert_eq!(
+            where_sql("id", Bind::List(vec![]), "in"),
+            (" and 1=0".into(), 0)
+        );
+        assert_eq!(
+            where_sql("id", Bind::List(vec![]), "not in"),
+            (" and 1=1".into(), 0)
+        );
+        assert_eq!(
+            where_sql("id", Bind::List(vec![Bind::list([1])]), "in"),
+            (" and 1=0".into(), 0)
+        );
     }
 
     #[test]
     fn between() {
         let range = Bind::pair("2024-01-01", "2024-02-01");
-        assert_eq!(where_sql("date", range, "between"), (" and u_date between ? and ?".into(), 2));
-        assert_eq!(where_sql("date", Bind::list(["a", "b"]), "between"), (" and u_date between ? and ?".into(), 2));
-        assert_eq!(where_sql("date", Bind::list(["a"]), "between"), (" and 1=0".into(), 0));
-        assert_eq!(where_sql("date", "a".into(), "between"), (" and 1=0".into(), 0));
+        assert_eq!(
+            where_sql("date", range, "between"),
+            (" and u_date between ? and ?".into(), 2)
+        );
+        assert_eq!(
+            where_sql("date", Bind::list(["a", "b"]), "between"),
+            (" and u_date between ? and ?".into(), 2)
+        );
+        assert_eq!(
+            where_sql("date", Bind::list(["a"]), "between"),
+            (" and 1=0".into(), 0)
+        );
+        assert_eq!(
+            where_sql("date", "a".into(), "between"),
+            (" and 1=0".into(), 0)
+        );
     }
 
     #[test]
     fn fail_closed_rules() {
-        for column in ["", "1a", "a b", "a;drop", "a.b.c", "a.", ".a", "a.1b", "이름"] {
-            assert_eq!(where_sql(column, 1.into(), "="), (" and 1=0".into(), 0), "{column}");
+        for column in [
+            "", "1a", "a b", "a;drop", "a.b.c", "a.", ".a", "a.1b", "이름",
+        ] {
+            assert_eq!(
+                where_sql(column, 1.into(), "="),
+                (" and 1=0".into(), 0),
+                "{column}"
+            );
         }
         for op in ["", "==", "or", "= 1 or 1=1 --", "regexp", "is"] {
-            assert_eq!(where_sql("name", 1.into(), op), (" and 1=0".into(), 0), "{op}");
+            assert_eq!(
+                where_sql("name", 1.into(), op),
+                (" and 1=0".into(), 0),
+                "{op}"
+            );
         }
-        assert_eq!(where_sql("name", Bind::list([1, 2]), "="), (" and 1=0".into(), 0));
+        assert_eq!(
+            where_sql("name", Bind::list([1, 2]), "="),
+            (" and 1=0".into(), 0)
+        );
     }
 
     #[test]
     fn custom() {
-        let c = Custom::new("(u_owner <> ? or u_owner is null) and u_name <> '?' and u_x = ?", vec![3i64.into(), "a".into()]);
+        let c = Custom::new(
+            "(u_owner <> ? or u_owner is null) and u_name <> '?' and u_x = ?",
+            vec![3i64.into(), "a".into()],
+        );
         let (sql, n) = build(|qb| push_custom(qb, &c));
-        assert_eq!(sql, "select * from t where 1=1 and (u_owner <> ? or u_owner is null) and u_name <> '?' and u_x = ?");
+        assert_eq!(
+            sql,
+            "select * from t where 1=1 and (u_owner <> ? or u_owner is null) and u_name <> '?' and u_x = ?"
+        );
         assert_eq!(n, 2);
         let bad = Custom::new("u_a = ? and u_b = ?", vec![1.into()]);
-        assert_eq!(build(|qb| push_custom(qb, &bad)), ("select * from t where 1=1 and 1=0".into(), 0));
+        assert_eq!(
+            build(|qb| push_custom(qb, &bad)),
+            ("select * from t where 1=1 and 1=0".into(), 0)
+        );
         let escaped = Custom::new(r"u_a = 'it\'s ?' and u_b = ?", vec![1.into()]);
         assert_eq!(build(|qb| push_custom(qb, &escaped)).1, 1);
     }
 
     #[test]
     fn bound_sql() {
-        let mut qb = bound("update t set a = ?, b = ? where id = ?", &["x".into(), Bind::Null, 3i64.into()]);
+        let mut qb = bound(
+            "update t set a = ?, b = ? where id = ?",
+            &["x".into(), Bind::Null, 3i64.into()],
+        );
         assert_eq!(qb.sql().as_str(), "update t set a = ?, b = ? where id = ?");
-        assert_eq!(qb.build().take_arguments().unwrap().map(|a| a.len()), Some(3));
+        assert_eq!(
+            qb.build().take_arguments().unwrap().map(|a| a.len()),
+            Some(3)
+        );
         let qb = bound("delete from t", &[]);
         assert_eq!(qb.sql().as_str(), "delete from t");
     }
@@ -470,7 +661,10 @@ mod tests {
         let args = vec![
             Arg::Where(Where::eq("status", 1)),
             Arg::Custom(Custom::new("u_level >= ?", vec![2.into()])),
-            Arg::Paging { page: 3, pagesize: 20 },
+            Arg::Paging {
+                page: 3,
+                pagesize: 20,
+            },
             Arg::Ordering("u_name asc".into()),
         ];
         let (sql, n) = build(|qb| {
@@ -478,25 +672,75 @@ mod tests {
             assert_eq!(page.limit_offset(), Some((20, 40)));
             push_order_page(qb, &page, "u_id");
         });
-        assert_eq!(sql, "select * from t where 1=1 and u_status = ? and u_level >= ? order by u_name asc limit ? offset ?");
+        assert_eq!(
+            sql,
+            "select * from t where 1=1 and u_status = ? and u_level >= ? order by u_name asc limit ? offset ?"
+        );
         assert_eq!(n, 4);
 
-        let (sql, n) = build(|qb| push_order_page(qb, &Page { page: 1, pagesize: 10, order: None }, "u_id"));
-        assert_eq!((sql.as_str(), n), ("select * from t where 1=1 order by u_id desc limit ? offset ?", 2));
+        let (sql, n) = build(|qb| {
+            push_order_page(
+                qb,
+                &Page {
+                    page: 1,
+                    pagesize: 10,
+                    order: None,
+                },
+                "u_id",
+            )
+        });
+        assert_eq!(
+            (sql.as_str(), n),
+            (
+                "select * from t where 1=1 order by u_id desc limit ? offset ?",
+                2
+            )
+        );
         let (sql, n) = build(|qb| push_order_page(qb, &Page::default(), "u_id"));
-        assert_eq!((sql.as_str(), n), ("select * from t where 1=1 order by u_id", 0));
-        let (sql, _) = build(|qb| push_order_page(qb, &Page { page: 0, pagesize: 10, order: Some("u_name".into()) }, "u_id"));
+        assert_eq!(
+            (sql.as_str(), n),
+            ("select * from t where 1=1 order by u_id", 0)
+        );
+        let (sql, _) = build(|qb| {
+            push_order_page(
+                qb,
+                &Page {
+                    page: 0,
+                    pagesize: 10,
+                    order: Some("u_name".into()),
+                },
+                "u_id",
+            )
+        });
         assert_eq!(sql, "select * from t where 1=1 order by u_name");
     }
 
     #[test]
     fn paging_overflow_saturates() {
         // 아주 큰 page 도 panic 없이 빈 페이지 (offset i64::MAX)
-        let page = Page { page: i64::MAX, pagesize: 10000, order: None };
+        let page = Page {
+            page: i64::MAX,
+            pagesize: 10000,
+            order: None,
+        };
         assert_eq!(page.limit_offset(), Some((10000, i64::MAX)));
-        let page = Page { page: i64::MAX, pagesize: 1, order: None };
+        let page = Page {
+            page: i64::MAX,
+            pagesize: 1,
+            order: None,
+        };
         assert_eq!(page.limit_offset(), Some((1, i64::MAX - 1)));
-        let (_, n) = build(|qb| push_order_page(qb, &Page { page: i64::MAX, pagesize: 20, order: None }, "u_id"));
+        let (_, n) = build(|qb| {
+            push_order_page(
+                qb,
+                &Page {
+                    page: i64::MAX,
+                    pagesize: 20,
+                    order: None,
+                },
+                "u_id",
+            )
+        });
         assert_eq!(n, 2);
     }
 }

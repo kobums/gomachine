@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"database/sql"
 	"fmt"
+	"go/format"
 	"gomachine/config"
 	"gomachine/util"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -205,6 +208,18 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 	v.Set("createdDefault", createdDefault)
 	v.Set("protects", protects)
 	v.Set("adminCheck", adminCheck)
+
+	// 읽기 정책 (owner / login / public / self). 쓰기는 정책과 상관없이 로그인 + 소유권 검사다.
+	readPolicy := util.MustReadPolicy(modelName, gpa, auth)
+	readSelf := readPolicy == util.ReadSelf
+	// self 읽기의 관리자 예외 (adminLevel 이 숫자일 때). isAdmin 은 보호 컬럼 / self 읽기 중 하나라도 쓰면 만든다.
+	adminRead := readSelf && adminErr == nil
+	v.Set("readPolicy", readPolicy)
+	v.Set("readAuth", auth == "jwt" && readPolicy != util.ReadPublic)
+	v.Set("readOwner", readPolicy == util.ReadOwner)
+	v.Set("readSelf", readSelf)
+	v.Set("adminRead", adminRead)
+	v.Set("adminFn", adminCheck || adminRead)
 	v.Set("adminLevelNum", adminLevelNum)
 
 	consts := make([]GoEnum, 0)
@@ -328,6 +343,10 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 	for i := range sessions {
 		sessions[i].SQL = qual + prefix + "_" + sessions[i].Column
 	}
+	// readGuard 는 읽기 핸들러 앞부분의 권한 검사다. ret 은 실패할 때 돌려줄 값 ("" 이면 return 만).
+	views.AddGlobal("readGuard", func(ret string) string {
+		return readGuardCode(auth, readPolicy, sessions, hasId, adminRead, ret)
+	})
 	v.Set("selectQuery", "select "+strings.Join(selectCols, ", ")+" from "+tableName)
 	v.Set("joinFrom", joinFrom.String())
 	v.Set("rawSelect", "select "+strings.Join(mainCols, ", ")+" from "+tableName)
@@ -477,6 +496,28 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 		return expr
 	})
 
+	// 목록 필터 연산자 (모든 백엔드가 util.FilterCompare 로 같다). like 를 쓰면 rest 에 패턴 함수와 strings import 가 필요하다.
+	views.AddGlobal("filterOp", func(col util.Column) string { return util.FilterCompare(col, gpa) })
+	needsLike := false
+	for _, item := range items {
+		if isSearchColumn(item) && !util.IsRangeFilter(item.OriginalType) && item.Type == "string" {
+			if op := util.FilterCompare(item, gpa); op == "like" || op == "not like" {
+				needsLike = true
+			}
+		}
+	}
+	v.Set("needsLike", needsLike)
+	// 보호 컬럼의 Insert 값: DB 기본값(상수)이 있으면 그 값, 없으면 0 값.
+	views.AddGlobal("protectValue", func(name string) string {
+		for _, item := range items {
+			if item.Name == name {
+				if lit := goDefaultLiteral(item); lit != "" {
+					return lit
+				}
+			}
+		}
+		return "models." + inputModelName(modelName, items) + "{}." + name
+	})
 	v.Set("orderColumns", orderColumns)
 	v.Set("scanDecls", scan.decls.String())
 	v.Set("scanTargets", strings.Join(scan.targets, ", "))
@@ -511,13 +552,7 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 	}
 
 	if cnf.Language == "go" {
-		modelFile := cnf.GoModelFilePath + "models/" + fileName + ".go"
-
-		if err := util.WriteFile(modelFile, b.String()); err != nil {
-			log.Printf("ERROR: Failed to write model file %s: %v", modelFile, err)
-		} else {
-			log.Printf("Generated Go: %s", modelFile)
-		}
+		writeGo(filepath.Join(cnf.GoModelFilePath, "models", fileName+".go"), b.String())
 	}
 
 	// Generate REST controller
@@ -531,13 +566,7 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 		log.Printf("ERROR: Failed to load REST template: %v", err)
 	}
 
-	restFile := cnf.GoModelFilePath + "controllers/rest/" + fileName + ".go"
-
-	if err := util.WriteFile(restFile, b2.String()); err != nil {
-		log.Printf("ERROR: Failed to write rest controller file %s: %v", restFile, err)
-	} else {
-		log.Printf("Generated Go: %s", restFile)
-	}
+	writeGo(filepath.Join(cnf.GoModelFilePath, "controllers", "rest", fileName+".go"), b2.String())
 
 	// Generate const file
 	var b3 bytes.Buffer
@@ -550,18 +579,7 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 		log.Printf("ERROR: Failed to load const template: %v", err)
 	}
 
-	constDir := cnf.GoModelFilePath + "models/" + fileName
-	if err := os.MkdirAll(constDir, 0755); err != nil {
-		log.Printf("ERROR: Failed to create const directory %s: %v", constDir, err)
-	}
-
-	constFile := constDir + "/" + fileName + ".go"
-
-	if err := util.WriteFile(constFile, b3.String()); err != nil {
-		log.Printf("ERROR: Failed to write const file %s: %v", constFile, err)
-	} else {
-		log.Printf("Generated Go: %s", constFile)
-	}
+	writeGo(filepath.Join(cnf.GoModelFilePath, "models", fileName, fileName+".go"), b3.String())
 
 	// Generate domain router file
 	generateDomainRouter(views, packageName, tableName, items, funcs, hasId, isView, constPkg, constImport, cnf)
@@ -736,18 +754,66 @@ func generateDomainRouter(views *jet.Set, packageName string, tableName string, 
 		return
 	}
 
-	routerDir := cnf.GoModelFilePath + "router/routers"
-	if err := os.MkdirAll(routerDir, 0755); err != nil {
-		log.Printf("ERROR: Failed to create router directory %s: %v", routerDir, err)
-		return
+	routerFile := filepath.Join(cnf.GoModelFilePath, "router", "routers", domainName+".go")
+	// 사용자 파일이라 건너뛴 라우터는 Setup{Model}Routes 가 있는지 모르므로 등록 파일에 넣지 않는다.
+	if writeGo(routerFile, b.String()) {
+		generatedRoutes = append(generatedRoutes, modelName)
 	}
+}
 
-	routerFile := routerDir + "/" + domainName + ".go"
-	if err := util.WriteFile(routerFile, b.String()); err != nil {
-		log.Printf("ERROR: Failed to write router file %s: %v", routerFile, err)
-	} else {
-		log.Printf("Generated Go: %s", routerFile)
+// generatedRoutes 는 이번 실행에서 라우터 파일을 만든 모델 이름이다 (Finish 가 등록 파일을 만든다).
+var generatedRoutes []string
+
+// RoutesFile 은 Setup{Model}Routes 를 모두 부르는 등록 파일 이름이다 (router/routers 아래).
+// 테이블 파일 이름에는 _ 가 없으므로 겹치지 않는다.
+const RoutesFile = "generated_routes.go"
+
+// Finish 는 테이블을 모두 만든 뒤 router/routers/generated_routes.go 를 쓴다.
+// SetupGeneratedRoutes(group) 가 이번 실행에서 만든 Setup{Model}Routes 를 모델 이름 순서로 부른다.
+func Finish(cnf config.ModelConfig) {
+	names := append([]string(nil), generatedRoutes...)
+	generatedRoutes = nil
+	writeGo(filepath.Join(cnf.GoModelFilePath, "router", "routers", RoutesFile), RoutesSource(names))
+}
+
+// RoutesSource 는 등록 파일 내용이다 (names 는 정렬하고 중복을 뺀다).
+func RoutesSource(names []string) string {
+	names = append([]string(nil), names...)
+	sort.Strings(names)
+	var b strings.Builder
+	b.WriteString(util.GeneratedHeader + "\n\npackage routers\n\nimport \"github.com/gofiber/fiber/v2\"\n\n")
+	b.WriteString("// SetupGeneratedRoutes 는 gomachine 이 만든 테이블 라우트를 모두 등록한다 (router.go 에서 한 번 부른다).\n")
+	b.WriteString("func SetupGeneratedRoutes(group fiber.Router) {\n")
+	prev := ""
+	for _, n := range names {
+		if n == prev {
+			continue
+		}
+		prev = n
+		fmt.Fprintf(&b, "\tSetup%sRoutes(group)\n", n)
 	}
+	b.WriteString("}\n")
+	return b.String()
+}
+
+// writeGo 는 생성 Go 파일을 쓴다 (디렉터리도 만든다). 머리줄 없는 사용자 파일이면 건너뛰고 false 를 돌려준다.
+func writeGo(path string, content string) bool {
+	// gofmt: 실패하면(템플릿 버그 등) 형식 없이 쓰고 경고한다.
+	if src, err := format.Source([]byte(content)); err == nil {
+		content = string(src)
+	} else {
+		log.Printf("WARNING: gofmt %s failed, written unformatted: %v", path, err)
+	}
+	if util.SkippedUserFile(path) {
+		util.WriteGenerated(path, content) // 경고를 찍는다
+		return false
+	}
+	if _, err := util.WriteGenerated(path, content); err != nil {
+		log.Printf("ERROR: Failed to write %s: %v", path, err)
+		return false
+	}
+	log.Printf("Generated Go: %s", path)
+	return true
 }
 
 // isSearchColumn 은 목록 필터 / GET /{table}/search/{field} 로 찾을 수 있는 컬럼인지 확인한다.
@@ -1043,4 +1109,62 @@ func isDateLikeType(t string) bool {
 		return true
 	}
 	return false
+}
+
+// readGuardCode 는 읽기(Read / Index / Count / Search / 커스텀 Get·Find·Count) 앞의 권한 검사 코드다.
+// public 은 검사가 없고, login 은 로그인만, owner 는 세션 값도 확인한다. self(User) 는 id 컬럼이 없으면 관리자만 읽는다.
+func readGuardCode(auth string, policy string, sessions []GoSession, hasId bool, adminRead bool, ret string) string {
+	if auth != "jwt" || policy == util.ReadPublic {
+		return ""
+	}
+	fail := "c.Result[\"code\"] = \"auth error\"\nreturn"
+	if ret != "" {
+		fail += " " + ret
+	}
+	var b strings.Builder
+	b.WriteString("if c.Session == nil {\n" + fail + "\n}\n")
+	if policy == util.ReadOwner {
+		for _, s := range sessions {
+			fmt.Fprintf(&b, "if c.Session.%s == 0 {\n%s\n}\n", strings.Title(s.Key), fail)
+		}
+	}
+	if policy == util.ReadSelf && !hasId {
+		b.WriteString("// id 컬럼이 없어 본인 행을 고를 수 없으므로 관리자만 읽는다.\n")
+		if adminRead {
+			b.WriteString("if !c.isAdmin() {\n" + fail + "\n}\n")
+		} else {
+			b.WriteString("if c.Session != nil {\n" + fail + "\n}\n")
+		}
+	}
+	return b.String()
+}
+
+// goDefaultLiteral 은 컬럼 DB 기본값(util.DefaultLiteral)의 Go 상수 식이다. 쓸 수 없으면 "".
+// enum(상수 패키지의 int 타입)은 타입 없는 정수 상수로 넣는다.
+func goDefaultLiteral(col util.Column) string {
+	lit, ok := util.DefaultLiteral(col)
+	if !ok {
+		return ""
+	}
+	switch {
+	case col.Type == "bool":
+		f, err := strconv.ParseFloat(lit, 64)
+		if err != nil {
+			return ""
+		}
+		return strconv.FormatBool(f != 0)
+	case col.Type == "string":
+		return strconv.Quote(lit)
+	case col.Type == "float64":
+		if _, err := strconv.ParseFloat(lit, 64); err != nil {
+			return ""
+		}
+		return lit
+	case col.Type == "int" || col.Type == "int64" || (strings.Contains(col.Type, ".") && !strings.HasPrefix(col.Type, "[]")):
+		if _, err := strconv.ParseInt(lit, 10, 64); err != nil {
+			return ""
+		}
+		return lit
+	}
+	return ""
 }

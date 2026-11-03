@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -45,23 +46,28 @@ type Gpa struct {
 	Session []SessionPair `json:"session"`
 	Search  bool          `json:"search"`
 	Primary []string      `json:"primary"`
-	// REST Insert/Update 에서 클라이언트 값을 받지 않을 컬럼 (예: ["level"]). Insert 는 0 값, Update 는 기존 DB 값 유지.
+	// REST Insert/Update 에서 클라이언트 값을 받지 않을 컬럼 (예: ["level"]). Insert 는 DB 기본값(없으면 0 값), Update 는 기존 DB 값 유지.
 	Protect []string `json:"protect"`
+	// 읽기 정책 (auth=jwt): "owner"(본인 행만, session 필요) / "login"(로그인 사용자 모두) / "public"(비로그인 포함).
+	// 비어 있으면 session 이 있으면 owner, 없으면 login. 쓰기는 정책과 상관없이 로그인 + 소유권 검사. util.ReadPolicy 참고.
+	Read string `json:"read"`
 }
 
 type ModelConfig struct {
-	Buildtool           string `json:"buildtool"`
-	Store               string `json:"store"`
-	Server              string `json:"server"`
-	Database            string `json:"database"`
-	User                string `json:"user"`
-	Password            string `json:"password"`
-	Auth                string `json:"auth"`
-	AdminLevel          string `json:"adminLevel"`
-	Language            string `json:"language"`
-	GoModelFilePath     string `json:"goModelFilePath"`
-	DartModelFilePath   string `json:"dartModelFilePath"`
-	KotlinModelFilePath string `json:"kotlinModelFilePath"`
+	Buildtool string `json:"buildtool"`
+	Store     string `json:"store"`
+	Server    string `json:"server"`
+	// DB 포트 (없으면 3306). 환경변수 DB_PORT 가 우선한다.
+	Port                json.Number `json:"port"`
+	Database            string      `json:"database"`
+	User                string      `json:"user"`
+	Password            string      `json:"password"`
+	Auth                string      `json:"auth"`
+	AdminLevel          string      `json:"adminLevel"`
+	Language            string      `json:"language"`
+	GoModelFilePath     string      `json:"goModelFilePath"`
+	DartModelFilePath   string      `json:"dartModelFilePath"`
+	KotlinModelFilePath string      `json:"kotlinModelFilePath"`
 	// 생성되는 Kotlin 코드의 기본 패키지. 비어 있으면 예전 값 com.gowoobro.gymspring 을 쓴다.
 	// kotlinModelFilePath 는 이 패키지의 디렉터리(예: src/main/kotlin/com/example/app)를 가리켜야 한다.
 	KotlinPackage      string `json:"kotlinPackage"`
@@ -76,7 +82,18 @@ type ModelConfig struct {
 	// Go Insert 가 createddate 를 채울 때 쓰는 시간대. 비어 있으면 예전과 같은 UTC+9 (Asia/Seoul),
 	// "local" 은 서버 지역 시간, 그 밖은 IANA 이름 (예: "UTC", "America/New_York").
 	Timezone string `json:"timezone"`
-	Gpa      []Gpa  `json:"table"`
+	// 생성할 Spring Boot 주 버전 (3 또는 4). 0(없음)이면 4. 3 이면 예전과 같은 코드를 만든다.
+	SpringBoot int `json:"springBoot"`
+	// TypeScript 문장 끝 세미콜론. 없으면(nil) true (예전 출력). no-semicolon prettier 프로젝트는 false.
+	TsSemicolons *bool `json:"tsSemicolons"`
+	// TypeScript 생성 파일을 둘 디렉터리 (react/vueModelFilePath 기준). 비어 있으면 "src" (예: "src/gen").
+	TsOutDir string `json:"tsOutDir"`
+	// 언어별 tsOutDir / tsSemicolons (있으면 위 값보다 우선). React 와 Vue 를 한 model.json 으로 만들 때 쓴다.
+	ReactTsOutDir     string `json:"reactTsOutDir"`
+	VueTsOutDir       string `json:"vueTsOutDir"`
+	ReactTsSemicolons *bool  `json:"reactTsSemicolons"`
+	VueTsSemicolons   *bool  `json:"vueTsSemicolons"`
+	Gpa               []Gpa  `json:"table"`
 }
 
 type Pubspec struct {
@@ -123,6 +140,12 @@ func Load(dir string) (ModelConfig, []string, error) {
 	}
 	if v := os.Getenv("DB_PASSWORD"); v != "" {
 		modelConfig.Password = v
+	}
+	if v := os.Getenv("DB_PORT"); v != "" {
+		modelConfig.Port = json.Number(v)
+	}
+	if v := os.Getenv("DB_NAME"); v != "" {
+		modelConfig.Database = v
 	}
 
 	return modelConfig, warnings, nil
@@ -322,4 +345,115 @@ func (c ModelConfig) OutputPath(lang string) string {
 		return c.RustModelFilePath
 	}
 	return ""
+}
+
+// GetSpringBoot 는 생성할 Spring Boot 주 버전이다 (3 또는 4, 기본 4). 그 밖의 값은 경고하고 4 를 쓴다.
+func (c ModelConfig) GetSpringBoot() int {
+	switch c.SpringBoot {
+	case 0, 4:
+		return 4
+	case 3:
+		return 3
+	}
+	log.Printf("WARNING: springBoot %d is not supported (3 or 4), using 4", c.SpringBoot)
+	return 4
+}
+
+// UseTsSemicolons 는 TypeScript 출력에 세미콜론을 붙일지다 (기본 true).
+// Language 가 react / vue 이고 reactTsSemicolons / vueTsSemicolons 가 있으면 그 값이다.
+func (c ModelConfig) UseTsSemicolons() bool {
+	v := c.TsSemicolons
+	if c.Language == "react" && c.ReactTsSemicolons != nil {
+		v = c.ReactTsSemicolons
+	} else if c.Language == "vue" && c.VueTsSemicolons != nil {
+		v = c.VueTsSemicolons
+	}
+	return v == nil || *v
+}
+
+// GetTsOutDir 는 TypeScript 생성 디렉터리 (출력 경로 기준 상대 경로, 기본 "src") 다.
+// Language 가 react / vue 이고 reactTsOutDir / vueTsOutDir 가 있으면 그 값이다.
+func (c ModelConfig) GetTsOutDir() string {
+	dir := c.TsOutDir
+	if c.Language == "react" && strings.TrimSpace(c.ReactTsOutDir) != "" {
+		dir = c.ReactTsOutDir
+	} else if c.Language == "vue" && strings.TrimSpace(c.VueTsOutDir) != "" {
+		dir = c.VueTsOutDir
+	}
+	if d := strings.Trim(strings.TrimSpace(dir), "/"); d != "" {
+		return d
+	}
+	return "src"
+}
+
+// ResolvePaths 는 프로젝트 디렉터리 모드(buildtool-model <projectDir>)에서 상대 출력 경로를 dir(model.json 위치) 기준으로 바꾼다.
+// goModelFilePath 가 비어 있으면 dir 자체를 쓴다. 다른 언어의 빈 경로는 그대로 둔다 (생성하지 않음).
+func (c *ModelConfig) ResolvePaths(dir string) {
+	resolve := func(p string) string {
+		if p == "" || filepath.IsAbs(p) {
+			return p
+		}
+		return filepath.Join(dir, p)
+	}
+	if c.GoModelFilePath == "" {
+		c.GoModelFilePath = dir
+	} else {
+		c.GoModelFilePath = resolve(c.GoModelFilePath)
+	}
+	c.KotlinModelFilePath = resolve(c.KotlinModelFilePath)
+	c.DartModelFilePath = resolve(c.DartModelFilePath)
+	c.ReactModelFilePath = resolve(c.ReactModelFilePath)
+	c.VueModelFilePath = resolve(c.VueModelFilePath)
+	c.RustModelFilePath = resolve(c.RustModelFilePath)
+}
+
+// GoModule 은 dir/go.mod 의 module 경로다. 없거나 읽지 못하면 "".
+func GoModule(dir string) string {
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = strings.TrimSpace(line[:i])
+		}
+		if rest, ok := strings.CutPrefix(line, "module"); ok && (rest == "" || rest[0] == ' ' || rest[0] == '\t') {
+			return strings.Trim(strings.TrimSpace(rest), "\"`")
+		}
+	}
+	return ""
+}
+
+// GetPort 는 생성기가 접속할 DB 포트다 (model.json port / DB_PORT, 없으면 3306).
+func (c ModelConfig) GetPort() string {
+	if p := strings.TrimSpace(c.Port.String()); p != "" {
+		return p
+	}
+	return "3306"
+}
+
+// FollowPointer 는 프로젝트 디렉터리 모드에서 dir/model.json 이 포인터(modelJsonPath 가 있음)면 가리키는 model.json 을 읽는다.
+// modelJsonPath 의 상대 경로는 dir 기준이다. 포인터에 languages 가 있으면 그 언어만 생성한다 (예: 하위 프로젝트의 make gen).
+// 돌려주는 base 는 상대 출력 경로의 기준(실제 model.json 디렉터리)이다. 포인터가 아니면 (pointer, dir) 그대로다.
+func FollowPointer(dir string, pointer ModelConfig) (ModelConfig, string) {
+	if strings.TrimSpace(pointer.ModelJsonPath) == "" {
+		return pointer, dir
+	}
+	target := pointer.ModelJsonPath
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(dir, target)
+	}
+	real := Init(target)
+	if real.ModelJsonPath != "" {
+		log.Printf("WARNING: %s/model.json is also a pointer (modelJsonPath %q), not followed", target, real.ModelJsonPath)
+	}
+	if len(pointer.Languages) > 0 {
+		real.Languages = pointer.Languages
+		real.Language = ""
+	} else if pointer.Language != "" {
+		real.Languages = nil
+		real.Language = pointer.Language
+	}
+	return real, target
 }

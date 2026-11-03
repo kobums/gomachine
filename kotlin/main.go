@@ -7,6 +7,9 @@ import (
 	"gomachine/util"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -48,6 +51,10 @@ type KotlinColumn struct {
 	EndVar       string
 	QualType     string // 패키지까지 쓴 타입 (기본 키 타입: repository / service / controller 는 java.time 을 import 하지 않는다)
 	QualDefault  string // 패키지까지 쓴 기본값 (service 의 보호 컬럼 값: enum 을 import 하지 않는다)
+	// ProtectDefault 는 보호 컬럼을 생성할 때 넣는 DB 기본값 리터럴이다 (util.DefaultLiteral). 없으면 QualDefault / null.
+	ProtectDefault string
+	// FilterOp 는 목록 / 개수 필터 연산자다 (util.FilterCompare: 문자열은 like, 그 밖은 =, compare 설정으로 바꾼다).
+	FilterOp string
 }
 
 // KotlinSort 는 정렬 파라미터 이름(소문자)과 엔티티 프로퍼티의 매핑이다.
@@ -133,6 +140,17 @@ type KotlinTemplateData struct {
 	CamelNames       bool            // 대문자가 있는 테이블/컬럼 이름 (Spring Boot 기본 이름 전략이 바꾼다)
 	DateTimeOut      string
 	MaxPageSize      int
+	// ReadPolicy 는 읽기 정책이다 (util.ReadPolicy: owner / login / public / self).
+	ReadPolicy string
+	ReadOwner  bool   // 읽기도 ownerSpec / isOwned (owner 이고 session 이 있다)
+	ReadGuard  string // 읽기를 401 로 거절하는 조건 (비로그인). public 이면 ""
+	ReadSelf   bool   // User 읽기는 본인 행만 (관리자 제외)
+	SelfRead   bool   // 본인 행을 기본 키(id 정수)로 거를 수 있다. false 면 관리자만 읽는다
+	AdminLevel string // 관리자 level (숫자 adminLevel 일 때만, 아니면 "")
+	HasLike    bool   // like / not like 필터가 있다 (likePattern)
+	// Boot4 는 Spring Boot 4 용 코드다 (model.json springBoot, 기본 4): Jackson 3(tools.jackson), Spring Data 4 Specification 시그니처,
+	// PasswordEncoder.encode 의 String? 반환. false 면 Boot 3 용 예전 코드.
+	Boot4 bool
 }
 
 // buildEntityGraphPaths 는 @EntityGraph 경로다. 응답은 조인을 한 단계만 매핑하므로 직접 조인만 가져온다
@@ -420,6 +438,9 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 			}
 		}
 		kotlinCol.InCreate = !(isPrimaryKey && isGenerated) && !kotlinCol.IsProtected && kotlinCol.CreatedNow == ""
+		if kotlinCol.IsSearchable {
+			kotlinCol.FilterOp = util.FilterCompare(col, gpa)
+		}
 		kotlinCol.QualType = qualifiedType(kotlinType)
 		kotlinCol.QualDefault = defValue
 		if isEnumType {
@@ -427,6 +448,9 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 			if defValue != "null" && defValue != "" {
 				kotlinCol.QualDefault = basePackage + ".enums." + enumPackage + "." + defValue
 			}
+		}
+		if kotlinCol.IsProtected {
+			kotlinCol.ProtectDefault = protectDefault(col, kotlinCol, gpa)
 		}
 		kotlinColumns = append(kotlinColumns, kotlinCol)
 	}
@@ -570,7 +594,27 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 			selfOnly = false
 		}
 	}
-	generateSupport(targetPath, basePackage, cnf.Timezone)
+	// 읽기 정책: owner 는 ownerSpec / isOwned, login 은 로그인만, public 은 확인 없음, self 는 User 본인 행 (관리자 제외).
+	readPolicy := util.MustReadPolicy(baseModelName, gpa, auth)
+	readGuard := ""
+	switch {
+	case readPolicy == util.ReadOwner && len(sessions) > 0:
+		readGuard = "!isLoggedIn()"
+	case readPolicy != util.ReadPublic && requireLogin:
+		readGuard = "_sessionProvider.currentUserId() == null"
+	}
+	adminLevel := ""
+	if n, err := strconv.Atoi(strings.TrimSpace(cnf.AdminLevel)); err == nil {
+		adminLevel = strconv.Itoa(n)
+	}
+	hasLike := false
+	for _, col := range kotlinColumns {
+		if col.FilterOp == "like" || col.FilterOp == "not like" {
+			hasLike = true
+		}
+	}
+	boot4 := cnf.GetSpringBoot() == 4
+	generateSupport(targetPath, basePackage, cnf.Timezone, boot4)
 
 	templateData := KotlinTemplateData{
 		BasePackage:      basePackage,
@@ -604,7 +648,22 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 		CamelNames:       camelNames,
 		DateTimeOut:      kotlinDateTimeOut,
 		MaxPageSize:      kotlinMaxPageSize,
+		Boot4:            boot4,
+		ReadPolicy:       readPolicy,
+		ReadOwner:        readPolicy == util.ReadOwner && len(sessions) > 0,
+		ReadGuard:        readGuard,
+		ReadSelf:         readPolicy == util.ReadSelf && requireLogin,
+		SelfRead:         pk.Name == "Id" && (pk.KotlinType == "Long" || pk.KotlinType == "Int"),
+		AdminLevel:       adminLevel,
+		HasLike:          hasLike,
 	}
+
+	// 생성할 빈 / 엔티티와 같은 이름의 사용자 클래스가 있으면 Spring 이 시작할 때 이름이 겹친다.
+	warnHandWritten(targetPath, modelName, filepath.Join(targetPath, "entity", modelName+".kt"), map[string]string{
+		modelName + "Repository": filepath.Join(targetPath, "repository", modelName+"Repository.kt"),
+		modelName + "Service":    filepath.Join(targetPath, "service", modelName+"Service.kt"),
+		modelName + "Controller": filepath.Join(targetPath, "controller", modelName+"Controller.kt"),
+	})
 
 	views := newViews()
 	render(views, "entity.jet", filepath.Join(targetPath, "entity"), modelName+".kt", templateData)
@@ -741,23 +800,45 @@ interface SessionProvider {
 	log.Printf("Generated Kotlin: %s", outputPath)
 }
 
+// legacySupportMarker 는 머리줄이 생기기 전에 만든 DateParams.kt 에 있는 문장이다 (그 파일은 생성 파일로 보고 덮어쓴다).
+const legacySupportMarker = "buildtool 이 만드는 파일이다 (다시 생성하면 덮어쓴다)"
+
 // generateSupport 는 생성 코드가 함께 쓰는 support/DateParams.kt 를 만든다 (생성 파일이라 매번 다시 쓴다).
-func generateSupport(targetPath string, basePackage string, timezone string) {
-	dir := filepath.Join(targetPath, "support")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		log.Printf("Failed to create support directory: %v", err)
+// boot4 면 Jackson 3 (tools.jackson, ValueDeserializer), 아니면 Jackson 2 를 쓴다.
+func generateSupport(targetPath string, basePackage string, timezone string, boot4 bool) {
+	content := util.GeneratedHeader + "\n" + supportContent(basePackage, timezone, boot4)
+	outputPath := filepath.Join(targetPath, "support", "DateParams.kt")
+	if old, err := os.ReadFile(outputPath); err == nil && !util.IsGeneratedContent(string(old)) && strings.Contains(string(old), legacySupportMarker) {
+		// 예전 생성 파일: 머리줄만 없을 뿐이므로 바로 덮어쓴다.
+		if err := util.WriteFile(outputPath, content); err != nil {
+			log.Printf("Failed to write %s: %v", outputPath, err)
+			return
+		}
+		log.Printf("Generated Kotlin: %s", outputPath)
 		return
 	}
-	content := strings.ReplaceAll(strings.ReplaceAll(supportSource, "{{package}}", basePackage), "{{zone}}", kotlinZone(timezone))
-	outputPath := filepath.Join(dir, "DateParams.kt")
-	if old, err := os.ReadFile(outputPath); err == nil && string(old) == content {
-		return
-	}
-	if err := util.WriteFile(outputPath, content); err != nil {
+	written, err := util.WriteGenerated(outputPath, content)
+	if err != nil {
 		log.Printf("Failed to write %s: %v", outputPath, err)
 		return
 	}
-	log.Printf("Generated Kotlin: %s", outputPath)
+	if written {
+		log.Printf("Generated Kotlin: %s", outputPath)
+	}
+}
+
+// supportContent 는 DateParams.kt 내용이다 (머리줄 제외).
+func supportContent(basePackage string, timezone string, boot4 bool) string {
+	src := supportSource
+	if boot4 {
+		src = strings.NewReplacer(
+			"import com.fasterxml.jackson.core.JsonParser", "import tools.jackson.core.JsonParser",
+			"import com.fasterxml.jackson.databind.DeserializationContext", "import tools.jackson.databind.DeserializationContext",
+			"import com.fasterxml.jackson.databind.JsonDeserializer", "import tools.jackson.databind.ValueDeserializer",
+			": JsonDeserializer<", ": ValueDeserializer<",
+		).Replace(src)
+	}
+	return strings.ReplaceAll(strings.ReplaceAll(src, "{{package}}", basePackage), "{{zone}}", kotlinZone(timezone))
 }
 
 const supportSource = `package {{package}}.support
@@ -881,12 +962,119 @@ func render(views *jet.Set, templateName string, dir string, fileName string, da
 	}
 
 	outputPath := filepath.Join(dir, fileName)
-	if err := util.WriteFile(outputPath, b.String()); err != nil {
+	written, err := util.WriteGenerated(outputPath, util.GeneratedHeader+"\n"+b.String())
+	if err != nil {
 		log.Printf("Failed to write %s: %v", outputPath, err)
 		return
 	}
+	if written {
+		log.Printf("Generated Kotlin: %s", outputPath)
+	}
+}
 
-	log.Printf("Generated Kotlin: %s", outputPath)
+// declRe 는 Kotlin / Java 의 클래스 선언 (class / interface / object / record / enum class) 이름이다.
+var declRe = regexp.MustCompile(`(?m)^[ \t]*(?:@\w+(?:\([^)\n]*\))?\s+)*(?:(?:public|private|protected|internal|abstract|open|final|data|sealed|static|enum|annotation)\s+)*(?:class|interface|object|record)\s+([A-Za-z_]\w*)`)
+
+// entityRe 는 @Entity 클래스다. 1: @Entity(name = "X") 의 이름, 2: 클래스 이름 (이름을 주지 않으면 JPA 엔티티 이름).
+var entityRe = regexp.MustCompile(`@Entity\b(?:\s*\(\s*(?:name\s*=\s*)?"(\w+)"\s*\))?[^{]*?\b(?:class|record)\s+([A-Za-z_]\w*)`)
+
+// HandWritten 은 사용자 파일(생성 머리줄이 없는 .kt / .java)의 클래스 이름 / JPA 엔티티 이름 → 파일 경로 목록이다.
+type HandWritten struct {
+	Classes  map[string][]string
+	Entities map[string][]string
+}
+
+// handWrittenCache 는 소스 루트마다 읽은 결과다 (실행마다 한 번만 읽는다).
+var handWrittenCache = map[string]HandWritten{}
+
+// handWrittenWarned 는 이미 경고한 이름이다.
+var handWrittenWarned = map[string]bool{}
+
+// sourceRoot 는 같은 이름 클래스를 찾을 디렉터리다. targetPath 가 .../src/main/... 아래면 src/main 전체(java + kotlin),
+// 아니면 targetPath 다.
+func sourceRoot(targetPath string) string {
+	abs, err := filepath.Abs(targetPath)
+	if err != nil {
+		abs = targetPath
+	}
+	sep := string(filepath.Separator)
+	marker := sep + "src" + sep + "main" + sep
+	if i := strings.LastIndex(abs+sep, marker); i >= 0 {
+		return abs[:i+len(marker)-1]
+	}
+	return abs
+}
+
+// FindHandWritten 은 root 아래 사용자 .kt / .java 파일의 클래스 / 엔티티 이름을 모은다 (build, out, 숨김 디렉터리 제외).
+func FindHandWritten(root string) HandWritten {
+	hw := HandWritten{Classes: map[string][]string{}, Entities: map[string][]string{}}
+	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if name := d.Name(); path != root && (name == "build" || name == "out" || name == "node_modules" || strings.HasPrefix(name, ".")) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".kt") && !strings.HasSuffix(path, ".java") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil || util.IsGeneratedContent(string(b)) {
+			return nil
+		}
+		for _, m := range declRe.FindAllStringSubmatch(string(b), -1) {
+			hw.Classes[m[1]] = append(hw.Classes[m[1]], path)
+		}
+		for _, m := range entityRe.FindAllStringSubmatch(string(b), -1) {
+			name := m[1]
+			if name == "" {
+				name = m[2]
+			}
+			hw.Entities[name] = append(hw.Entities[name], path)
+		}
+		return nil
+	})
+	return hw
+}
+
+// warnHandWritten 은 생성할 엔티티(JPA 엔티티 이름) / 빈(repository, service, controller 의 단순 이름 = 빈 이름)과
+// 이름이 같은 사용자 클래스가 있으면 경고한다. 그대로 두면 Spring 이 시작할 때 이름이 겹친다.
+// outputs 는 이름 → 생성 파일 경로다 (그 파일 자체는 WriteGenerated 가 따로 경고한다).
+func warnHandWritten(targetPath string, entity string, entityPath string, beans map[string]string) {
+	root := sourceRoot(targetPath)
+	hw, ok := handWrittenCache[root]
+	if !ok {
+		hw = FindHandWritten(root)
+		handWrittenCache[root] = hw
+	}
+	check := func(name string, out string, paths []string, what string) {
+		if handWrittenWarned[name] {
+			return
+		}
+		for _, p := range paths {
+			if a, err := filepath.Abs(out); err == nil && a == p {
+				continue
+			}
+			if p == out {
+				continue
+			}
+			handWrittenWarned[name] = true
+			log.Printf("WARNING: kotlin: hand-written %s %s in %s has the same name as a generated one; Spring bean / JPA entity names will clash. Rename or remove it", what, name, p)
+			return
+		}
+	}
+	check(entity, entityPath, hw.Entities[entity], "entity")
+	names := make([]string, 0, len(beans))
+	for name := range beans {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		check(name, beans[name], hw.Classes[name], "class")
+	}
 }
 
 // enumZeroIdent 는 코드 0 인 enum 상수 이름이다. data[0] 이 비어 있으면 NONE, 아니면 첫 항목.
@@ -899,6 +1087,57 @@ func enumZeroIdent(data []string) string {
 	}
 	if items := util.KotlinEnumItems(data); len(items) > 0 && items[0].Index == 0 {
 		return items[0].Ident
+	}
+	return ""
+}
+
+// protectDefault 는 보호 컬럼을 생성할 때 넣을 DB 기본값의 Kotlin 리터럴이다 (u_level DEFAULT 1 → 1).
+// 상수 기본값이 없거나 날짜 / 바이트 컬럼이면 "" (예전과 같이 타입 기본값 또는 null).
+func protectDefault(col util.Column, kc KotlinColumn, gpa *config.Gpa) string {
+	lit, ok := util.DefaultLiteral(col)
+	if !ok {
+		return ""
+	}
+	if kc.IsEnum {
+		m := util.FindEnumMap(gpa, col.Key)
+		f, err := strconv.ParseFloat(lit, 64)
+		if m == nil || err != nil {
+			return ""
+		}
+		for _, it := range util.KotlinEnumItems(m.Data) {
+			if float64(it.Code) == f {
+				return kc.QualType + "." + it.Ident
+			}
+		}
+		if len(m.Data) > 0 && m.Data[0] == "" && f == 0 {
+			return kc.QualType + ".NONE"
+		}
+		return ""
+	}
+	switch kc.KotlinType {
+	case "String":
+		return util.KotlinString(lit)
+	case "Int", "Long", "Double", "Boolean", "BigDecimal":
+		f, err := strconv.ParseFloat(lit, 64)
+		if err != nil {
+			return ""
+		}
+		switch kc.KotlinType {
+		case "Int":
+			return strconv.FormatInt(int64(f), 10)
+		case "Long":
+			return strconv.FormatInt(int64(f), 10) + "L"
+		case "Double":
+			v := strconv.FormatFloat(f, 'f', -1, 64)
+			if !strings.Contains(v, ".") {
+				v += ".0"
+			}
+			return v
+		case "Boolean":
+			return strconv.FormatBool(f != 0)
+		case "BigDecimal":
+			return "java.math.BigDecimal(" + util.KotlinString(lit) + ")"
+		}
 	}
 	return ""
 }

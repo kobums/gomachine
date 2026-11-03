@@ -14,7 +14,7 @@ import org.springframework.data.jpa.domain.Specification
 {{end}}import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 {{if .HasCreatedNow && not .IsView}}import {{.BasePackage}}.support.DateParams
-{{end}}{{- pk := .PK}}{{repo := lower(.ModelName) + "Repository"}}{{modelName := .ModelName}}
+{{end}}{{- pk := .PK}}{{repo := lower(.ModelName) + "Repository"}}{{modelName := .ModelName}}{{boot4 := .Boot4}}
 @Service
 @Transactional
 class {{.ModelName}}Service(
@@ -55,7 +55,7 @@ class {{.ModelName}}Service(
 {{end}}
     private fun toEntity(request: {{.ModelName}}CreateRequest): {{.ModelName}} {
         return {{.ModelName}}(
-{{range .Columns}}{{if not .IsGenerated}}            {{.EntityField|raw}} = {{if .CreatedNow != ""}}{{.CreatedNow|raw}}{{else if .IsProtected}}{{if .HasDefault}}{{.QualDefault|raw}}{{else}}null{{end}}{{else if .IsPassword}}{{if .IsNullable}}request.{{.Field|raw}}?.takeIf { it.isNotBlank() }?.let { passwordEncoder.encode(it) }{{else}}if (request.{{.Field|raw}}.isBlank()) "" else passwordEncoder.encode(request.{{.Field|raw}}){{end}}{{else}}request.{{.Field|raw}}{{end}},
+{{range .Columns}}{{if not .IsGenerated}}            {{.EntityField|raw}} = {{if .CreatedNow != ""}}{{.CreatedNow|raw}}{{else if .IsProtected}}{{if .ProtectDefault != ""}}{{.ProtectDefault|raw}}{{else if .HasDefault}}{{.QualDefault|raw}}{{else}}null{{end}}{{else if .IsPassword}}{{if .IsNullable}}request.{{.Field|raw}}?.takeIf { it.isNotBlank() }?.let { passwordEncoder.encode(it){{if boot4}}!!{{end}} }{{else}}if (request.{{.Field|raw}}.isBlank()) "" else passwordEncoder.encode(request.{{.Field|raw}}){{if boot4}}!!{{end}}{{end}}{{else}}request.{{.Field|raw}}{{end}},
 {{end}}{{end}}        )
     }
 
@@ -101,7 +101,7 @@ class {{.ModelName}}Service(
         val existing = {{repo}}.findById(request.{{pk.Field|raw}}).orElse(null) ?: return null
 
         val updated = existing.copy(
-{{range .Columns}}{{if not .IsPrimaryKey && not .IsProtected && not .IsCreated}}            {{.EntityField|raw}} = {{if .IsPassword}}request.{{.Field|raw}}?.takeIf { it.isNotBlank() }?.let { passwordEncoder.encode(it) }{{else}}request.{{.Field|raw}}{{end}} ?: existing.{{.EntityField|raw}},
+{{range .Columns}}{{if not .IsPrimaryKey && not .IsProtected && not .IsCreated}}            {{.EntityField|raw}} = {{if .IsPassword}}request.{{.Field|raw}}?.takeIf { it.isNotBlank() }?.let { passwordEncoder.encode(it){{if boot4}}!!{{end}} }{{else}}request.{{.Field|raw}}{{end}} ?: existing.{{.EntityField|raw}},
 {{end}}{{end}}        )
         return {{if len(.Joins) > 0}}reload({{repo}}.save(updated)){{else}}{{repo}}.save(updated){{end}}
     }

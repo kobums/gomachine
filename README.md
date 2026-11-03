@@ -6,11 +6,109 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
 
 ## 실행
 
-1. config.json 파일을 작성한다.
+1. `make install` (`~/bin/buildtool-model`, 템플릿 `~/bin/buildtool/{go,kotlin,...}`, 표준 자산 `~/bin/buildtool/bootstrap/`)
+2. 프로젝트 디렉터리에 `model.json` 을 둔다 (표준 자산의 `bootstrap/model.json` 참고).
+3. 실행한다.
 
-2. make install
+```bash
+buildtool-model <projectDir> [languages] [package] [--force]
+```
 
-3. 경로를 잘 맞춰야 한다.
+- `projectDir`: `model.json` 이 있는 디렉터리. 상대 `*ModelFilePath` 는 이 디렉터리 기준이고, `goModelFilePath` 가 비어 있으면 이 디렉터리다.
+  `projectDir/model.json` 이 없으면(또는 `.`/생략) 예전처럼 현재 디렉터리의 `config/model.json` 을 읽는다 (아래 [model.json 읽기](#modeljson-읽기)).
+- `languages`: model.json 의 언어 선택을 덮어쓴다 (`go,react`, `all`).
+- `package`: 생성 Go 코드의 import 경로 앞부분. 없으면 `{goModelFilePath}/go.mod` 의 `module`, 그것도 없으면 경고를 찍고 `database` 이름을 쓴다.
+- `--force`: 생성 머리줄이 없는 기존 파일도 덮어쓴다 ([생성 파일 머리줄](#생성-파일-머리줄-덮어쓰기-보호)).
+
+## 새 프로젝트 만들기 (`init`)
+
+```bash
+buildtool-model init <name> [--go] [--spring] [--rust] [--react] [--vue] [flags]
+# 예: buildtool-model init safelog --go --react   → safelog/safelog_go, safelog/safelog_web
+```
+
+basicproject 템플릿 + 표준 DB 로 바로 실행할 수 있는 작업 공간을 만든다. 그다음은 `cd <name> && docker compose up -d db` 후 백엔드 / 프런트를 실행하면 된다.
+
+| 플래그 | 뜻 |
+|---|---|
+| `--go --spring --rust` | 백엔드 (하나 이상). 아무 언어도 고르지 않으면 `--go --react` (출력에 알린다) |
+| `--react --vue` | 프런트엔드 |
+| `--dir <parent>` | 작업 공간을 만들 상위 디렉터리 (기본: 현재 디렉터리, 있어야 한다) |
+| `--template-source github\|<dir>` | `github` (기본): `git clone --depth 1 https://github.com/kobums/<repo>.git`. 디렉터리면 그 아래 `basicproject_*` 를 복사한다 (`.git`, `node_modules`, `dist`, `build`, `target`, `bin`, `.gradle`, `.kotlin`, `.env.local`, `.env.yml` 제외) |
+| `--branch <name>` | 템플릿 브랜치 (기본 `main`) |
+| `--db-port <port>` | DB 포트 (기본 3306). 모든 `.env` 와 `model.json` 에 같이 쓴다 |
+| `--package <pkg>` | Spring 기본 패키지를 바꾼다 (기본 `com.basicproject.api` 그대로). `src/*/kotlin` 디렉터리 이동, 텍스트 치환, `build.gradle` 의 `group` |
+| `--no-git` | 하위 프로젝트에 `git init` / 첫 커밋을 하지 않는다 |
+| `--db-up` | `docker compose up -d --wait db` (docker 가 있을 때) |
+| `--gen` | DB 에 붙을 수 있으면 작업 공간 `model.json` 으로 모든 언어를 다시 생성한다 (없으면 건너뛴다. 템플릿에 user / board 생성 코드가 이미 있다) |
+| `--force` | 비어 있지 않은 `<name>` 디렉터리도 쓴다. 루트 `.env` 가 있으면 그 비밀번호 / `JWT_SECRET` 을 그대로 쓴다. 이미 있는 하위 프로젝트 디렉터리는 덮어쓰지 않는다 (에러) |
+
+- 이름은 `[a-z][a-z0-9_]*` (32자 이하, `_` 로 끝나지 않음). DB 이름 / 사용자 이름으로도 쓴다.
+- 비어 있지 않은 디렉터리는 `--force` 없이 거부한다. 중간에 실패하면 이번에 만든 디렉터리만 지운다. 작업 공간 밖은 건드리지 않는다.
+
+### 작업 공간
+
+```
+<name>/
+  db/schema.sql  docker-compose.yml  .env  .gitignore  Makefile  README.md   ← 표준 자산 (bootstrap/)
+  model.json                ← 테이블 설정의 기준 (고른 언어 모두 켜짐, 경로는 이 파일 기준)
+  <name>_go/                ← basicproject_go        (포트 8007)
+  <name>_spring/            ← basicproject_springboot (포트 8081)
+  <name>_rust/              ← basicproject_rust      (포트 8008)
+  <name>_web/               ← basicproject_web (React)
+  <name>_vue/               ← basicproject_vue
+```
+
+- DB 는 루트 `docker-compose.yml` 로 띄운다 (`make db-up` = `up -d --wait db`, `make db-reset`, `make gen` = `buildtool-model .`).
+  하위 프로젝트의 `docker-compose.yml` 은 따로 쓸 때용이라 그대로 둔다 (같은 3306 포트라 루트 DB 와 함께 띄우지 않는다).
+- 이름 바꾸기 (하위 프로젝트마다 자기 템플릿 이름만): Go `go.mod` module → `<name>_go` (import, Makefile `APP`, docker 이미지 이름 등 모든 텍스트),
+  Spring `settings.gradle` `rootProject.name` (+ `spring.application.name`) → `<name>_spring`, Rust `Cargo.toml` / `Cargo.lock` 패키지 이름 → `<name>_rust`,
+  `package.json` / `package-lock.json` / `index.html` 이름 → `<name>_web` / `<name>_vue`, README 제목. 다른 템플릿을 가리키는 설명(`basicproject_go 와 같다`)은 그대로다.
+  프런트는 `index.html` / `src/` 의 단독 단어 `basicproject` (화면 이름, 토큰 저장 key `basicproject.token`)도 `<name>` 으로 바꾼다.
+  텍스트 치환은 바이너리 / 4MB 넘는 파일 / 심볼릭 링크를 건너뛴다. Go 는 바꾼 뒤 `gofmt -w .` (module 이름에 따라 import 순서가 바뀐다).
+- `.env`: 루트와 모든 백엔드가 같은 값이다 — `MARIADB_DATABASE` / `MARIADB_USER` / `DB_NAME` / `DB_USER` = `<name>`, 무작위
+  `MARIADB_PASSWORD` (= `DB_PASSWORD`) / `MARIADB_ROOT_PASSWORD` (16 바이트 hex), `JWT_SECRET` (48 바이트 base64, 백엔드끼리 토큰 호환), `DB_PORT`.
+  백엔드 `.env` 는 템플릿 `.env.example` 에서 위 key 만 바꾼다 (`PORT` 등 나머지는 그대로). 프런트 `.env` 는 `.env.example` (없으면 템플릿 `.env`)에서
+  `VITE_PROXY_TARGET` 을 첫 백엔드(go > spring > rust)로 바꾼다. 백엔드 `.env` 는 0600 이고, git 첫 커밋 전에 `.gitignore` 에 없으면 넣는다.
+- `model.json` (루트): 표준 `bootstrap/model.json` 의 `auth` / `adminLevel` / `table` + 고른 언어, `*ModelFilePath` (`./<name>_go`,
+  `./<name>_spring/src/main/kotlin/com/basicproject/api` ...: 템플릿 model.json 의 경로를 옮긴 것), `kotlinPackage`, `springBoot`,
+  `reactTsOutDir` / `vueTsOutDir` / `reactTsSemicolons` / `vueTsSemicolons` (템플릿 값). DB 접속 비밀번호는 넣지 않는다 (`.env`).
+- 하위 프로젝트 `model.json` (Vue 처럼 `gomachine/model.json` 에 있으면 그 자리)은 **포인터**다:
+  `{"modelJsonPath": "..", "languages": {"go": true}}`. 하위 프로젝트에서 `make gen` / `./gradlew gen` (`buildtool-model .`)을 하면
+  루트 model.json 을 읽고 그 언어만 만든다 ([model.json 읽기](#modeljson-읽기)). 테이블 설정은 루트 하나만 고친다.
+- `git init -b main` + 첫 커밋 `init from basicproject_* via gomachine` (사용자 git 이름 / 이메일). git 이름이 없으면 경고만 하고 커밋은 직접 한다. 루트는 git 저장소로 만들지 않는다.
+- 표준 자산은 `~/bin/buildtool/bootstrap` (make install) 이 있으면 그것을, 없으면 바이너리에 넣은(go:embed) `bootstrap/` 을 쓴다 (소스에서 실행해도 된다).
+
+## 표준 프로젝트 자산 (`bootstrap/`)
+
+새 프로젝트를 "basicproject 템플릿 + DB + gomachine" 으로 바로 시작하기 위한 파일이다 (`make install` 이 `~/bin/buildtool/bootstrap/` 에 복사한다).
+
+- `db/schema.sql`: MariaDB (utf8mb4) 표준 스키마. `user_tb` (`u_id` bigint auto_increment, `u_email` unique, `u_passwd`, `u_name`,
+  `u_level` int 기본 1, `u_createddate` 기본 현재 시각), `board_tb` (`b_id`, `b_title`, `b_content` text, `b_img` null 허용,
+  `b_user` 작성자 = `user_tb.u_id` 외래 키, `b_createddate`). 이름 규칙(`{name}_tb`, `{접두사}_{컬럼}`, `createddate`)을 따른다.
+- `docker-compose.yml`: `db` 서비스 (`mariadb:11.4` LTS, 포트 3306, 이름 있는 볼륨 `db-data`, healthcheck `healthcheck.sh --connect --innodb_initialized`).
+  `db/schema.sql` 을 `/docker-entrypoint-initdb.d` 에 마운트해서 볼륨이 비어 있을 때 한 번 실행한다 (`docker compose down -v` 로 초기화).
+- `.env.example`: `MARIADB_DATABASE/USER/PASSWORD/ROOT_PASSWORD`, `DB_PORT`, gomachine 용 `DB_HOST/DB_NAME/DB_USER/DB_PASSWORD`, 백엔드 공통 `JWT_SECRET`.
+  `.env` 로 복사해 쓴다.
+- `model.json`: 표준 설정 예. `auth: "jwt"`, `adminLevel: "3"`, `languages` 맵, `{goModelFilePath}` 같은 자리표시 경로(초기화 명령이 바꾼다),
+  `user` 는 `protect: ["level"]` (User 의 level 은 원래 항상 보호, 가입 때 DB 기본값 1), `board` 는 `session: [{"key": "id", "column": "user"}]`
+  (작성자 = 로그인 사용자. key `id` 는 Go `c.Session.Id`, Spring `currentValue("id")`, Rust `session.id`),
+  `join: [{"name": "user", "column": "user"}]` (작성자 정보), `read: "login"` (로그인 사용자는 모든 글을 읽고, 수정 / 삭제는 작성자만).
+
+## DB 접속 (생성기)
+
+- `server`(`DB_HOST`), `port`(`DB_PORT`, 없으면 3306), `database`(`DB_NAME`), `user`(`DB_USER`), `password`(`DB_PASSWORD`).
+  환경변수가 있으면 model.json 값보다 우선한다. `port` 는 숫자(`3307`)나 문자열(`"3307"`) 모두 된다.
+- **바뀐 점**: 예전에는 포트가 3306 고정이었고 `DB_PORT` / `DB_NAME` 을 읽지 않았다.
+
+## 생성 파일 머리줄 (덮어쓰기 보호)
+
+- Go / Kotlin / TypeScript / Dart 생성 파일의 첫 줄은 `// Code generated by gomachine. DO NOT EDIT.`, Rust 는 `// @generated by gomachine - do not edit` 이다.
+- 생성할 경로에 파일이 이미 있는데 첫 줄이 생성 머리줄이 아니면 사용자 파일로 보고 **덮어쓰지 않고** 경고를 찍는다
+  (템플릿의 `models/db.go`, `router/routers/auth.go`, 손으로 만든 모델 등 보호). 예전 TypeScript 머리줄(`// Auto-generated ...`)은 생성 파일로 본다.
+- 예전 gomachine 이 만든 머리줄 없는 파일을 새로 만들려면 지우거나 `--force` 로 한 번 실행한다.
+- 판단은 `util.IsGeneratedFile` / `util.WriteGenerated` 하나로 한다. 내용이 같으면 다시 쓰지 않는다 (수정 시각 유지).
+  사용자 소유 파일(Rust `main.rs`/`support/auth.rs`, Kotlin `SessionProvider.kt`, TypeScript `services/api.ts`)은 없을 때만 만든다.
 
 ## 생성 언어 선택
 
@@ -28,11 +126,15 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
 - 지원 언어: `go`, `spring`(=`kotlin`), `flutter`(=`dart`), `react`, `vue`, `rust`
 - go 외 언어는 `*ModelFilePath` 가 비어 있으면 경고만 찍고 건너뛴다.
 - `languages` 가 없으면 예전 `language` 문자열을 쓰고, 그것도 없으면 go 만 생성한다.
-- 실행 인자로 덮어쓸 수 있다: `buildtool-model . go,react` 또는 `buildtool-model . all`
+- 실행 인자로 덮어쓸 수 있다: `buildtool-model <projectDir> go,react` 또는 `buildtool-model <projectDir> all`
 
 ## model.json 읽기
 
-- 실행한 디렉터리의 `config/model.json` 을 읽는다 (`modelJsonPath` 가 있으면 그 디렉터리의 `model.json`). 첫 번째 실행 인자(경로)는 쓰지 않는다.
+- 첫 실행 인자 디렉터리에 `model.json` 이 있으면 그것을 읽고, 상대 출력 경로를 그 디렉터리 기준으로 바꾼다.
+- 그 `model.json` 에 `modelJsonPath` 가 있으면 **포인터**다: 그 디렉터리(포인터 기준 상대 경로)의 `model.json` 을 읽고, 상대 출력 경로는 그 디렉터리 기준이다.
+  포인터에 `languages` (또는 `language`)가 있으면 그 언어만 생성한다 (실행 인자 언어가 더 우선). 한 단계만 따라간다 (`init` 의 하위 프로젝트).
+- 아니면 예전처럼 실행한 디렉터리의 `config/model.json` 을 읽는다 (`modelJsonPath` 가 있으면 그 디렉터리의 `model.json`).
+  이때 상대 출력 경로는 예전과 같이 실행한 디렉터리 기준이다.
 - JSON 문법 오류나 타입 오류(`"session": {...}` 처럼 배열 자리에 객체 등)가 있으면 에러를 찍고 **아무것도 생성하지 않고** 종료한다 (exit 1).
   예전에는 반쯤 읽은 설정으로 계속해서 `session` / `protect` 가 조용히 빠질 수 있었다.
 - 모르는 key(`"sesion"` 같은 오타 포함)는 위치와 함께 경고만 찍는다 (`unknown key table[0].sesion (ignored)`). 생성은 계속한다.
@@ -104,7 +206,7 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
 - Go 는 NULL 허용 컬럼을 `sql.Null*` 로 Scan 한다. 예전에는 NULL 이 있는 행이 Scan 에러로 빠지고, `ReadRows` 가
   첫 에러에서 멈춰 뒤의 행도 조용히 사라졌다. 이제 읽지 못한 행만 로그를 남기고 건너뛴다.
 - Go 매니저에 `LastError` 가 생겼다. `Get/Find/Count` 가 nil/빈 결과를 돌려줄 때 DB 에러인지 확인할 수 있다
-  (REST `Read` 는 에러면 `code: "error"`).
+  (REST `Read` / `Index` / `Count` / `Search` 는 에러면 `code: "error"`. 예전 `Index` / `Count` 는 에러를 무시하고 빈 결과를 돌려줬다).
 - Go REST 부분 수정(`PUT /{t}`, `PUT/PATCH /{t}/:id`)은 NULL 을 보존한다: 본문에 없는 null 허용 필드는 DB 의 NULL 을 그대로 두고
   (예전에는 `0`/`""`/enum 코드 0 으로 바뀌었다), 본문에 `null` 로 보낸 null 허용 필드는 NULL 로 지운다. 값을 보내면 그 값을 쓴다.
   NOT NULL 컬럼에 `null` 을 보내면 기존 값을 유지한다. 보호 컬럼 / `createddate` / 비밀번호는 기존 값(NULL 포함)을 유지한다.
@@ -183,7 +285,7 @@ go, spring(kotlin), flutter(dart), react, vue(Vue 3 + TypeScript) 코드를 생�
 - 목록은 `page`/`pagesize` 를 보내면 몇 번째 페이지든 `total` 을 같이 돌려준다 (예전에는 1 페이지만).
   `page` 가 없거나 0 이면 예전과 같이 전체 행이다. `page`/`pagesize` 가 숫자가 아니거나 음수면 400 (예전에는 0 으로 보고 전체 행),
   `pagesize` 는 10000 을 넘지 않는다 (Spring 과 같다). `page` 가 1000000000 을 넘으면 400 이다 (offset 계산이 넘치지 않게, Rust 도 같다).
-- 목록/개수 필터의 숫자/enum/bool 값을 해석하지 못하면 400 이다 (`?status=abc`, 예전에는 조건을 빼서 전체 행을 돌려줬다).
+- 목록/개수 필터 연산자는 [값](#값)의 문자열 필터 / `compare` 규칙이다. 숫자/enum/bool 값을 해석하지 못하면 400 이다 (`?status=abc`, 예전에는 조건을 빼서 전체 행을 돌려줬다).
   bool(`tinyint`) 필터는 `1/0/true/false` 를 받고 보냈을 때만 거른다 (예전에는 `false` 로 거를 수 없었다).
   숫자 필터의 0 은 예전과 같이 조건 없음이다 (코드 0 이 실제 값인 enum 제외). 필터 해석은 `rest.Parse{X}Filters(get)` 순수 함수다.
 - 조인(`table[].join`)은 `left join ... on` 이다 (예전에는 쉼표 조인 + where 조건이라 조인 키가 NULL 이거나 조인 행이 없는 행이
@@ -241,18 +343,112 @@ Go 와 같이 `id` 컬럼도 `primary` 도 없으면 id 경로(`GET/PUT/PATCH/DE
   JPA 는 같은 `@Id` 값의 행을 하나로 합치므로 view 에는 유일한 컬럼을 `primary` 로 적어야 한다 (없으면 경고). `primary` 가 없을 때
   대신 쓰는 첫 컬럼은 목록 필터 / 검색으로 거를 수 있다.
 
+### Spring Boot 버전 (`springBoot`)
+
+model.json `springBoot`: `3` 또는 `4` (없으면 4).
+
+- 4: Jackson 3 (`tools.jackson.*`, `ValueDeserializer`), Spring Data 4 의 `Specification` 시그니처(`findAll(spec: Specification<X>, …)`, null 불가),
+  `PasswordEncoder.encode` 가 `String?` 를 돌려주므로 `!!` 로 받는다.
+- 3: 예전 Boot 3 코드 (Jackson 2 `com.fasterxml.jackson.*`, `Specification<X>?`). 예전 출력과 다른 것은 머리줄과 아래 409 뿐이다.
+- enum 의 `@JsonCreator` / `@JsonValue` 는 두 버전 모두 `com.fasterxml.jackson.annotation` 이다 (Jackson 3 도 같은 패키지).
+- Boot 4 대상 프로젝트: Boot 4.1.x, Kotlin 2.x (`spring`, `jpa` 플러그인), `tools.jackson.module:jackson-module-kotlin`, `-Xjsr305=strict`,
+  `PasswordEncoder` 빈(bcrypt), `config.SessionProvider` 를 구현한 `@Component`.
+
+### 삭제 제약 조건 위반 (409)
+
+`DELETE /{id}`, `DELETE /batch` 에서 다른 행이 참조하는 등 `DataIntegrityViolationException` 이 나면 409 `{"success": false}` 를 돌려준다 (Boot 3 / 4 모두).
+
+### 같은 이름의 사용자 클래스 경고
+
+`kotlinModelFilePath` 가 `src/main/...` 아래면 `src/main` 전체(아니면 `kotlinModelFilePath`)의 생성 머리줄 없는 .kt/.java 에서
+생성할 엔티티(JPA 엔티티 이름)와 같은 이름, `{Model}Repository` / `{Model}Service` / `{Model}Controller` 와 같은 단순 이름(= Spring 빈 이름)의
+클래스를 찾으면 경고한다. `@Entity(name = "AuthUser") class User` 처럼 엔티티 이름을 바꾼 클래스는 겹치지 않는다.
+
 ## Vue (Vue 3 + TypeScript)
 
-`vueModelFilePath` 아래에 테이블마다 세 파일을 만든다.
+`vueModelFilePath` 아래 `{tsOutDir}`(기본 `src`)에 테이블마다 세 파일을 만든다.
 
 - `src/types/{table}.ts` — 모델 인터페이스, 검색 파라미터, 응답 타입
 - `src/models/{table}.ts` — API 호출 클래스 (`{Model}Model.find/get/insert/update/remove`, enum 상수, `searchByXxx`)
 - `src/composables/use{Model}.ts` — `items`, `item`, `total`, `loading`, `error` ref 와 `fetchPage/fetchAll/fetchOne/create/update/remove`
   (view 는 `create/update/remove`, id 컬럼이 없는 테이블은 `fetchOne/update/remove` 가 없다)
 
-대상 프로젝트에는 axios 같은 시그니처의 `src/services/api.ts` (`get`, `post`, `put`, `patch`, `del`) 가 있어야 한다.
+생성 모델은 axios 같은 시그니처의 `src/services/api.ts` (`get`, `post`, `put`, `patch`, `del`) 를 쓴다. 없으면 한 번 만든다 (아래).
 API 경로와 응답 처리는 [HTTP 계약](#http-계약-go--spring--react--vue--dart)을 따르므로 Go 와 Spring 어느 백엔드에도 쓸 수 있다.
 공통 정규화 코드 `src/models/contract.ts` 를 같이 생성한다 (테이블마다 덮어쓴다).
+
+## TypeScript 공통 (react / vue)
+
+- React 는 `{tsOutDir}/models/{table}.ts`, `models/contract.ts`, `types/{table}.ts`, `hooks/use{Model}.ts` 를 만든다.
+  React hook 은 Vue composable 과 같은 동작이다 (`items`, `item`, `total`, `loading`, `error`, `fetchPage`, `fetchAll`, `fetchOne`, `create`, `update`, `remove`).
+  React 19 의 `useState` / `useCallback` 만 쓴다.
+- 엔티티 타입의 기본 키는 필수 (`id: number`), `Create{Model}Request` 에서만 선택이다.
+- `reactTsOutDir` / `vueTsOutDir`, `reactTsSemicolons` / `vueTsSemicolons`: 언어별 값 (있으면 `tsOutDir` / `tsSemicolons` 보다 우선). 한 model.json 으로
+  React(`src/gen`)와 Vue(`src`)를 함께 만들 때 쓴다 (`init` 작업 공간).
+- `tsSemicolons` (기본 true): false 면 문장 끝 `;` 를 뺀다 (prettier `semi: false` 프로젝트용). 다음 줄이 `(` `[` `` ` `` `+` `-` `/` 로 시작하면 ASI 때문에 `;` 를 남긴다.
+- `tsOutDir` (기본 `"src"`): 생성 파일을 `{react|vue}ModelFilePath/{tsOutDir}/` 아래에 둔다 (예: `"src/gen"`). models / types / composables / hooks / services 가
+  모두 그 아래에 생기고 상대 import 는 그대로다. 손으로 만든 `src/hooks/useUser.ts` 같은 파일과 겹치면 머리줄이 없어 건너뛰므로 `src/gen` 을 권한다.
+- 생성 TS 는 공백을 정리한다 (줄 끝 공백, 겹친 빈 줄, `{` 뒤 / `}` 앞 빈 줄 제거, 끝 줄바꿈 하나). 그래도 printWidth 80 에 맞춰
+  줄을 나누지는 않아서 prettier `--check` 는 실패한다. 생성 디렉터리(`src/gen/models|types|hooks`, Vue 는 `src/models|types|composables`)를
+  `.prettierignore` 에 넣는다 (`services/api.ts` 는 사용자 파일이라 포맷 대상).
+- React hook / Vue composable 은 늦게 도착한 이전 요청의 응답을 버린다 (`fetchPage` / `fetchAll` / `fetchOne` 은 마지막 요청 결과만 반영,
+  요청 번호 검사). `create` / `update` / `remove` 는 `error` 를 채운 뒤 에러를 **다시 던진다** (**바뀐 점**: 예전에는 `undefined` 를 돌려줬다.
+  호출하는 쪽에서 try/catch 한다).
+- `Create{Model}Request` 에는 서버가 정하는 필드가 없다: 세션 컬럼(`auth: "jwt"` 이고 User 가 아닐 때), 보호 컬럼(User 의 `level` 포함),
+  `createddate`. 기본 키는 예전처럼 선택이다.
+- `Generated TypeScript: ...` 로그는 실제로 쓴 파일만 찍는다 (내용이 같은 `contract.ts` 등은 찍지 않는다).
+
+### services/api.ts (사용자 파일)
+
+- `{tsOutDir}/services/api.ts` 는 없을 때만 한 번 만든다 (이후 덮어쓰지 않으므로 고쳐 써도 된다. 같은 export 를 가진 파일을 템플릿이 직접 둬도 된다).
+- 생성 모델이 기대하는 형태: `get(url, cfg?)`, `post/put/patch(url, body?, cfg?)`, `del(url, cfg?)` → `Promise<{ data, status }>`,
+  `cfg = { params?: object, data?: unknown, headers?: Record<string, string> }` (del 은 `cfg.data` 를 본문으로 보낸다. 빈 params 값은 뺀다).
+- 기본 주소는 `import.meta.env.VITE_API_BASE_URL` (없으면 `/api`, `setBaseUrl(url)` 로 변경). 토큰은 `Authorization: Bearer <token>` 으로 보내고
+  기본은 `localStorage.getItem('token')`, `setTokenProvider(fn: () => string | null)` 로 바꾼다. 401 이면 `setUnauthorizedHandler(fn)` 로 등록한 함수를 부른다.
+  2xx 가 아니면 `HttpError(status, message, fieldErrors, body)` 를 던진다. Go 의 HTTP 200 + `code` 에러는 `models/contract.ts` 가 `ApiError` 로 던진다.
+
+## Go 출력 파일과 라우터 등록
+
+- 생성 Go 파일은 `go/format.Source`(gofmt)로 정리해서 쓴다. 실패하면(템플릿 버그) 경고를 찍고 형식 없이 쓴다.
+- 문자열 목록 필터는 `models.Custom{Query: "b_title like ? escape '!'", Params: ...}` 로 보낸다 (템플릿 `WhereClause` 의 like 는
+  값 양쪽에 `%` 만 붙이고 escape 를 하지 않아서). 값은 파일마다 있는 `like{Model}Pattern` 이 만든다.
+
+- `goModelFilePath` 아래 `models/{name}.go`, `models/{name}/{name}.go`, `controllers/rest/{name}.go`, `router/routers/{name}.go`
+  (디렉터리가 없으면 만든다).
+- 테이블을 모두 만든 뒤 `router/routers/generated_routes.go` 를 쓴다. 이번 실행에서 만든 `Setup{Model}Routes` 를 모델 이름 순서로 부르는
+  `func SetupGeneratedRoutes(group fiber.Router)` 하나다. 템플릿의 `router.go` 는 인증 / 업로드 라우트 뒤에 한 번만 부른다:
+
+```go
+apiGroup := r.Group("/api")
+routers.SetupAuthRoutes(apiGroup)
+routers.SetupUploadRoutes(apiGroup)
+routers.SetupGeneratedRoutes(apiGroup)
+```
+
+  머리줄 없는 사용자 라우터 파일이라 건너뛴 테이블은 등록 파일에 넣지 않는다.
+
+## Go Session 계약 (`controllers.Controller`)
+
+생성 컨트롤러는 `controllers.Controller` 를 임베드하고 아래를 쓴다. 템플릿의 `controllers/controllers.go` 가 제공해야 한다.
+
+```go
+type Session struct {
+	Id    int64  // JWT id (없으면 sub 를 숫자로)
+	Email string
+	Level int    // JWT level (없으면 0). adminLevel 이상이면 관리자
+}
+
+type Controller struct {
+	Session *Session // 로그인하지 않았거나 토큰이 무효면 nil
+	// ... Context, Result, NewConnection(), Get(), Set(), Init(), Close() 등 기존 필드 / 메서드
+}
+```
+
+- `Init(*fiber.Ctx)` 가 `Authorization: Bearer <token>` 을 검증해 `Session` 을 채운다 (실패하면 nil 로 두고 생성 코드가 `auth error` 를 돌려준다).
+- 생성 코드는 `c.Session == nil`, `c.Session.Id` (User 본인 확인, 소유권), `c.Session.{Key|title}` (model.json `session` 의 key,
+  `"id"` → `c.Session.Id`) 를 읽는다. 세션 key 를 더 쓰면(`"email"` 등) 같은 이름의 필드가 있어야 컴파일된다.
+- 관리자 판정(`adminLevel`)은 reflect 로 `Session.Level` 정수 필드를 읽는다.
+- 토큰 형식은 [통일 JWT](#통일-jwt-go--spring--rust) 를 따른다.
 
 ## 생성된 Go 모델이 기대하는 models/db.go
 
@@ -267,20 +463,43 @@ API 경로와 응답 처리는 [HTTP 계약](#http-계약-go--spring--react--vue
 - `Custom.Params []interface{}` — `Custom.Query` 안의 `?` 에 바인딩할 값. 원시 SQL 에 외부 입력을
   `fmt.Sprintf` 로 이어붙이지 말고 이 필드를 쓴다.
 
-## 인증 / 권한 (model.json `auth`, `table[].session`, `table[].protect`)
+## 인증 / 권한 (model.json `auth`, `table[].session`, `table[].protect`, `table[].read`)
+
+### 읽기 정책 (`table[].read`, Go / Spring / Rust 공통)
+
+읽기 = 목록, 개수, `/search/{field}`, 단건(`/{id}`), 커스텀 `GetBy` / `FindBy` / `CountBy`. 쓰기(생성 / 수정 / 삭제 / batch, 커스텀
+`UpdateXByY` / `DeleteBy`)는 정책과 상관없이 예전과 같다 (로그인 필요, `session` 이 있으면 소유권 검사, 생성 때 세션 컬럼은 세션 값).
+
+| `read` | 읽기 | 기본값이 되는 경우 |
+|---|---|---|
+| `"owner"` | 로그인 + 세션 컬럼이 현재 사용자인 행만 (예전 `session` 테이블 동작) | `session` 이 있을 때 |
+| `"login"` | 로그인 사용자는 모든 행 (세션 조건 없음) | `session` 이 없을 때 (예전 jwt 동작) |
+| `"public"` | 비로그인도 모든 행 | - |
+
+- `auth` 가 `"jwt"` 가 아니면 모든 읽기가 공개다 (예전과 같다, `read` 는 경고만).
+- 모르는 값(`"everyone"`)이나 `session` 없는 `"owner"` 는 에러를 찍고 아무것도 생성하지 않는다 (`util.ReadPolicy`).
+- 예: 게시판은 `session` (작성자) + `read: "login"` 이면 로그인 사용자 누구나 읽고, 수정 / 삭제는 작성자만 한다.
+- **User 테이블** (`auth: "jwt"`): 읽기는 항상 본인 행(`id` = 세션 id)만이고, 관리자(`adminLevel` 숫자, 세션 level ≥ adminLevel)는
+  모든 행을 읽는다. 목록 / 개수 / 검색 / 커스텀 조회에 `id = 세션 id` 조건을 붙이고, 남의 단건은 Go / Rust `auth error`, Spring 404 다.
+  id 컬럼이 없는 User 는 관리자만 읽을 수 있다. User 의 `read` 설정은 경고를 찍고 무시한다.
+  **바뀐 점**: 예전에는 로그인한 누구나 모든 회원(이메일 등)을 읽을 수 있었다 (User 에 `session` 이 있으면 관리자도 본인 행만).
+  Spring 은 관리자 판정에 `SessionProvider.currentValue("level")` 을 쓴다 (없으면 null = 관리자 아님).
 
 ### Go
 
-- `"auth": "jwt"` 이면 생성되는 모든 핸들러(Read, Index, Count, Insert, Insertbatch, Update, Delete, Deletebatch,
-  커스텀 메서드)가 `c.Session == nil` 일 때 `auth error`/`error` 를 돌려준다. `session` 설정이 없어도 마찬가지다.
+- `"auth": "jwt"` 이면 쓰기 핸들러(Insert, Insertbatch, Update, Delete, Deletebatch, 커스텀 Update/Delete)는 `c.Session == nil` 일 때
+  `error`/`auth error` 를 돌려준다. 읽기 핸들러(Read, Index, Count, Search, 커스텀 Get/Find/Count)는 [읽기 정책](#읽기-정책-tableread-go--spring--rust-공통)을
+  따른다: `owner` 는 예전과 같고, `login` 은 로그인만 검사하고 (세션 조건 / 매개변수 덮어쓰기 / Read 소유권 검사 없음), `public` 은 세션을 보지 않는다.
+  User 는 `id = c.Session.Id` 조건 (관리자 제외, `isAdmin` 은 보호 컬럼이 없어도 adminLevel 이 숫자면 만든다).
   - 예외: User 테이블의 `Insert` 는 회원가입용이라 세션 없이 호출할 수 있다 (Insertbatch 는 세션 필요).
   - User 테이블의 Update/Delete/Deletebatch/UpdateXByY/DeleteBy 는 본인(`c.Session.Id`) 행만 바꿀 수 있다.
-- `session` 이 있으면 목록/개수/커스텀 Get·Find·Count 조회에 세션 컬럼 조건을 항상 붙이고, Read/Update/Delete 와
+- `session` 이 있고 읽기 정책이 `owner` 면 목록/개수/커스텀 Get·Find·Count 조회에 세션 컬럼 조건을 항상 붙이고, Read/Update/Delete 와
   커스텀 UpdateXByY/DeleteBy 는 다른 사용자 소유 행이 걸리면 `auth error` 로 거부한다. 없는 행을 Read 하면 `error`.
   소유자 컬럼이 NULL 인 행도 남의 행으로 본다 (`(owner <> ? or owner is null)`, 예전에는 NULL 소유자 행을 누구나 바꿀 수 있었다).
   세션 값은 컬럼의 Go 타입으로 바꿔 비교/대입한다 (`int` 컬럼이면 `int(c.Session.Id)`).
 - REST Insert/Insertbatch 는 클라이언트가 보낸 `id` 를 무시한다 (모델의 `Insert` 는 그대로 id 지정 가능).
-- `"protect": ["level", ...]` — REST Insert 는 0 값, Update 는 기존 DB 값으로 덮어써서 클라이언트가 못 바꾸게 한다.
+- `"protect": ["level", ...]` — REST Insert 는 컬럼의 DB 기본값(`u_level int DEFAULT 1` → 1, 없으면 0 값), Update 는 기존 DB 값으로 덮어써서
+  클라이언트가 못 바꾸게 한다 ([보호 컬럼의 생성 값](#보호-컬럼의-생성-값)).
   보호 컬럼을 바꾸는 커스텀 `UpdateXByY` 는 거부한다. User 테이블의 `level` 은 항상 보호한다
   (예전에는 `protect` 를 설정하면 `level` 이 빠졌다).
   id 와 session 컬럼은 따로 처리하므로 protect 에 넣어도 무시된다.
@@ -301,20 +520,25 @@ API 경로와 응답 처리는 [HTTP 계약](#http-계약-go--spring--react--vue
   생성/수정 시 인코딩하고, PUT 에서 비워 보내면 기존 해시 유지, PATCH 는 값이 있을 때만 인코딩한다.
   응답(`{Model}Response`, 조인 객체 포함), 목록 필터, `/search/{field}`, 정렬에서 비밀번호 컬럼(`passwd`, `password` 모두)은 빠진다.
 - `POST /batch` 와 `DELETE /batch` 는 한 번에 1000 행(`MAX_BATCH`)까지 받는다. 넘으면 400 (Go / Rust 와 같다).
+- 생성 때 보호 컬럼은 DB 기본값(없으면 타입 기본값, null 허용이면 null)이다 ([보호 컬럼의 생성 값](#보호-컬럼의-생성-값)).
 - Create/Update/Patch 요청 DTO 에는 `protect` 컬럼(기본: User 의 level, `protect` 를 설정해도 빠지지 않는다)과 `createddate` 가 없다.
   기본 키는 경로 변수로만 정한다. Spring 쪽에는 관리자 예외가 없다.
-- `"auth": "jwt"` 면 **모든** 컨트롤러가 `{kotlinPackage}.config.SessionProvider` 를 주입받고, 모든 엔드포인트가
+- `"auth": "jwt"` 면 **모든** 컨트롤러가 `{kotlinPackage}.config.SessionProvider` 를 주입받고, 쓰기 엔드포인트는
   `currentUserId()` 가 null 이면 401 이다 (Go 와 같다. 예전에는 `session` 이 없는 테이블이 모두 공개였다).
+  읽기(목록, `/count`, `/{id}`, `/search/*`)는 [읽기 정책](#읽기-정책-tableread-go--spring--rust-공통)을 따른다: `owner` 는 예전과 같고
+  (`ownerSpec` / `isOwned`), `login` 은 `currentUserId()` 만 확인하고 세션 값 / 소유권 조건이 없고, `public` 은 401 검사가 없다.
+  User 는 `selfSpec()` (id = `currentUserId()`), 남의 `GET /{id}` 는 404, 관리자(`currentValue("level") >= adminLevel`)는 모든 행이다.
   - 예외: User 의 단건 생성(`POST /api/user`, 회원가입)은 로그인 없이 호출할 수 있다 (`POST /batch` 는 로그인 필요, Go 와 같다).
   - User 테이블에 id `session` 이 없으면 수정/삭제는 본인(`currentUserId()`) 행만 된다 (Go 와 같다, 남의 행은 404 / 일괄 삭제 403).
-- `session` 이 있는 테이블은 목록/검색/개수를 본인 소유 행으로 거르고(DB where), 단건 조회/수정/삭제는 남의 행이면 404,
+- `session` 이 있고 읽기 정책이 `owner` 인 테이블은 목록/검색/개수를 본인 소유 행으로 거르고(DB where), 단건 조회/수정/삭제는 남의 행이면 404,
   일괄 삭제는 남의 행이 하나라도 있으면 403 (없는 행은 건너뛴다) 이다. 생성/수정 요청의 세션 컬럼은 세션 값으로 고정한다.
   - `config/SessionProvider.kt` 인터페이스는 파일이 없을 때만 생성한다(덮어쓰지 않음). 대상 프로젝트에서 `@Component` 로
     `currentUserId(): Long?` 를 구현해야 하고, `session` 의 key 가 `id` 가 아니면 `currentValue(key)` 도 구현한다.
 
 ### Spring 목록 / 수정 / 삭제
 
-- 리포지토리는 `JpaSpecificationExecutor` 를 상속한다. `GET /api/{table}` 은 필터(같음, 날짜 `start`/`end` 범위, enum 코드)와
+- 리포지토리는 `JpaSpecificationExecutor` 를 상속한다. `GET /api/{table}` 은 필터(`util.FilterCompare` 연산자: 문자열 `like` 는
+  `_cb.like(..., likePattern(v), '!')`, 날짜 `start`/`end` 범위, enum 코드)와
   소유권을 Specification 으로, 페이지와 정렬을 `PageRequest` 로 DB 에서 처리한다 (예전에는 전체 행을 읽어 메모리에서 걸렀다).
   - `page` / `pagesize` 는 Go 와 같다: 둘 다 1 이상이면 그 페이지 (page 는 1 부터, pagesize 는 10000 까지), 없거나 0 이면 전체 행이다
     (예전 Spring 은 10 행이었다). 전체 행도 10000 행까지만 돌려주고, 더 있으면 `X-Truncated: true` 헤더를 붙이고 경고 로그를 남긴다.
@@ -336,6 +560,51 @@ API 경로와 응답 처리는 [HTTP 계약](#http-계약-go--spring--react--vue
   생성/수정 후에는 조인까지 다시 읽어 응답한다 (조인이 있는 서비스는 `EntityManager` 를 주입받는다).
 - 대상 프로젝트 요구사항: Spring Boot 기본 의존성(jackson-databind, jackson-module-kotlin, jackson-datatype-jsr310, slf4j)과
   Spring Data JPA 3.x (Hibernate 6: view 의 `@Immutable`). 대문자 컬럼 이름이 있으면 위의 `physical-strategy` 설정.
+
+### 보호 컬럼의 생성 값
+
+REST 생성(Insert / Insertbatch, Spring POST)에서 보호 컬럼(`protect`, User 의 `level`)은 클라이언트 값 대신 아래 값이 된다 (관리자 예외는 예전과 같다: Go / Rust 의 관리자는 보낸 값).
+
+- 컬럼에 상수 기본값이 있으면 그 값 (`util.DefaultLiteral`: `1`, `'new'`, `2.50`, `b'1'`. MariaDB 의 `'...'` 따옴표와 `NULL` 도 해석한다).
+- 기본값이 없거나 식(`current_timestamp()`, `uuid()`)이면 예전과 같이 0 값 (Rust / Spring 의 null 허용 컬럼은 NULL, Go 는 날짜 밖의 컬럼에 NULL 을 쓸 수 없어 0 값).
+- Spring 의 날짜 컬럼 기본값은 쓰지 않는다 (예전 값).
+- **바뀐 점**: 예전에는 항상 0 값이라 `u_level int NOT NULL DEFAULT 1` 인 회원이 level 0 으로 가입했다.
+
+## 통일 JWT (Go / Spring / Rust)
+
+세 백엔드 템플릿이 같은 토큰을 주고받는다 (한 백엔드에서 받은 토큰을 다른 백엔드에서도 쓸 수 있다).
+
+- 알고리즘 HS256 고정, 비밀 키는 환경변수 `JWT_SECRET` (32 바이트 이상, 짧으면 템플릿 / 기본 Rust `auth.rs` 가 거부한다. `bootstrap/.env.example`).
+  유효 시간은 `JWT_EXPIRATION_MS` (밀리초, 기본 86400000).
+- 헤더 `Authorization: Bearer <token>`.
+- claim:
+
+```json
+{ "sub": "42", "id": 42, "email": "a@b.c", "level": 1, "iat": 1767225600, "exp": 1767312000 }
+```
+
+  - `sub`: id 문자열, `id`: 정수 (읽을 때 `id` 가 없으면 `sub` 를 숫자로), `email`: 문자열, `level`: 정수 (없어도 됨, 없으면 0 / None),
+    `iat` / `exp`: 초 단위 정수 (`exp` 는 있으면 검증).
+- 세션 매핑: Go `controllers.Session{Id, Email, Level}`, Spring `SessionProvider.currentUserId()` = `id`, Rust `Session{id, email, level}`.
+- gomachine 이 직접 만드는 것은 Rust 기본 `support/auth.rs` 뿐이다. Go `global/jwt` 와 Spring 의 발급 / 검증 코드는 템플릿이 이 형식으로 맞춘다.
+
+## 인증 API 계약 (템플릿)
+
+gomachine 은 아래 경로를 만들지 않는다. basicproject 템플릿(Go / Spring / Rust 백엔드, React / Vue 프런트)이 같은 모양으로 구현한다
+(prefix `/api`). 프런트는 백엔드를 바꿔도 같은 코드로 로그인한다.
+
+| 요청 | 본문 | 성공 | 실패 |
+|---|---|---|---|
+| `POST /api/auth/signup` | `{"email", "password", "name"}` | 201 `{token, tokenType: "Bearer", expiresInMs, user}` | 400 (검증), 409 (이미 있는 email) |
+| `POST /api/auth/login` | `{"email", "password"}` | 200 `{token, tokenType: "Bearer", expiresInMs, user}` | 401 |
+| `GET /api/auth/me` | - (`Authorization: Bearer <token>`) | 200 `user` | 401 |
+| `POST /api/upload/index` | multipart, 파일 field `upload` | 200 `{filename, url}` | 400 / 401 |
+
+- `user` = `{id, email, name, level, createddate}`: 생성된 User 응답과 같은 JSON (비밀번호 없음, `createddate` 는 `yyyy-MM-dd HH:mm:ss`).
+- `token` 은 [통일 JWT](#통일-jwt-go--spring--rust), `expiresInMs` 는 유효 시간 밀리초 (`JWT_EXPIRATION_MS`, 기본 86400000 = 24시간).
+- 에러 본문: `{status, message, fieldErrors?}` (`fieldErrors` 는 `{필드: 메시지}`, 검증 실패일 때). 상태 코드는 HTTP 상태다
+  (생성된 Go / Rust 테이블 API 의 HTTP 200 + `code` 와 다르다).
+- 회원가입은 생성된 `POST /api/user` 대신 이 경로를 쓴다 (비밀번호 해시, level 은 DB 기본값, 토큰 발급까지 한 번에).
 
 ## HTTP 계약 (Go / Spring / React / Vue / Dart)
 
@@ -418,7 +687,26 @@ React/Vue(그리고 Dart)가 두 백엔드 중 어느 것에도 붙을 수 있�
 - 날짜는 `yyyy-MM-dd HH:mm:ss` (date 는 `yyyy-MM-dd`). Spring 은 요청에서 날짜만, ISO(밀리초, `Z` / 오프셋 포함)도 받는다 (위 [날짜 값](#날짜-값)).
 - `tinyint` / `bit` 는 두 백엔드 모두 bool(`true/false`)이라 TypeScript 는 `boolean` 이다 (예전에는 `boolean | number`, `boolean | string`).
   목록 필터는 두 백엔드 모두 `true/false/1/0` 을 받는다. `json` 은 둘 다 문자열.
-- 문자열 필터: Go 는 `name`/`title`/`content` 는 `=`(또는 `compare` 설정), 나머지는 `like`(와일드카드는 보낸 값 그대로), Spring 은 모두 `=`.
+- 문자열 필터는 모든 백엔드(Go, Spring, Rust)에서 **부분 일치**다: `?title=ab` → `title like '%ab%' escape '!'`.
+  서버가 값의 `%`, `_`, `!` 를 `!` 로 escape 하고 양쪽에 `%` 를 붙인다 (`50%` 는 글자 그대로 `50%` 를 포함하는 행. `util.LikePattern`).
+  escape 문자를 `\` 가 아닌 `!` 로 써서 MySQL `NO_BACKSLASH_ESCAPES` 와 상관없이 같다. 대소문자 구분은 컬럼 collation 을 따른다.
+- 연산자는 컬럼마다 `table[].compare` 로 바꾼다 (`util.FilterCompare`, 세 백엔드가 같은 값):
+
+  ```json
+  "compare": [{ "name": "code", "type": "=" }, { "name": "cnt", "type": ">=" }, { "name": "memo", "type": "not like" }]
+  ```
+
+  | 컬럼 | 기본 | 쓸 수 있는 값 |
+  |---|---|---|
+  | 문자열 (`char`, `varchar`, `*text`, `enum`, `set`, `json`, `time`, 모르는 타입) | `like` | `like`, `not like`, `=`, `<>`(`!=`), `<`, `<=`, `>`, `>=` |
+  | 숫자 | `=` | `=`, `<>`, `<`, `<=`, `>`, `>=` |
+  | enum(`map`), bool | `=` | `=`, `<>` |
+  | 날짜 (`date`, `datetime`, `timestamp`) | `start{key}` / `end{key}` 범위 | - |
+
+  쓸 수 없는 값(숫자의 `like`, `in` 등)은 경고하고 기본값을 쓴다. `/search/{field}` 는 예전과 같이 항상 `=` 다.
+- **바뀐 점**: 예전 Go / Rust 는 `name`/`title`/`content` 만 `=`(또는 compare), 나머지 문자열은 보낸 값 그대로 `like`
+  (와일드카드를 클라이언트가 넣어야 했다), Spring 은 모든 컬럼 `=` 이고 compare 를 무시했다. 정확히 같은 값만 찾으려면 `"type": "="` 을 설정한다.
+  TypeScript 타입 / 필터 이름은 그대로다.
 
 ## Rust (axum + sqlx)
 
@@ -455,7 +743,7 @@ Go 백엔드와 같은 REST API (경로, 파라미터, 응답 key, 권한 규칙
 | `src/models/{module}.rs` | 생성 | 테이블 모델 struct, enum newtype, SQL (Go `models/{x}.go`) |
 | `src/handlers/{module}.rs` | 생성 | 핸들러와 `routes()` (Go `controllers/rest/{x}.go` + `router/routers/{x}.go`) |
 | `src/models/mod.rs`, `src/handlers/mod.rs`, `src/routes.rs` | 생성 | 테이블 모듈 목록과 `routes::routes()` (모든 테이블 경로를 merge) |
-| `src/support/auth.rs` | **사용자** | JWT → `Session`. Go 백엔드의 토큰 형식에 맞게 고치는 곳 |
+| `src/support/auth.rs` | **사용자** | JWT → `Session` ([통일 JWT](#통일-jwt-go--spring--rust)). 다른 토큰 형식이면 고치는 곳 |
 | `src/main.rs` | **사용자** | `src/main.rs` 와 `src/lib.rs` 가 모두 없을 때만 만든다 |
 
 - 생성 파일은 실행마다 다시 만들되 내용이 같으면 쓰지 않는다 (수정 시각 유지, cargo 재빌드 없음). 고치면 다음 실행에 되돌아간다.
@@ -467,9 +755,13 @@ Go 백엔드와 같은 REST API (경로, 파라미터, 응답 key, 권한 규칙
 - 지원 모듈은 실행마다 한 번(`rustcodegen.Prepare`, 테이블 생성 전), 모듈 목록 / 경로는 모든 테이블 뒤에(`rustcodegen.Finish`) 쓴다.
 - crate 루트(`src/main.rs` 또는 `src/lib.rs`)에 `mod support; mod models; mod handlers; mod routes;` 가 있어야 한다. 직접 만든 루트에
   빠져 있으면 경고를 찍는다. 생성한 `main.rs` 는 `DATABASE_URL`(필수)로 `support::state::connect` 풀을 만들고, `RUST_LOG`(기본 `info`)로 tracing 을 켜고,
-  `routes::routes()` 를 `/api` 아래에 붙이고, `PORT`(기본 8080)에서 연다. CORS 는 `CORS_ORIGINS`(쉼표 구분)가 있으면 그 origin 만,
+  `routes::routes()` 를 `/api` 아래에 붙이고, `PORT`(기본 8008, 예전 8080)에서 연다. `JWT_SECRET` 이 없거나 32 바이트보다 짧으면 시작하지 않는다. CORS 는 `CORS_ORIGINS`(쉼표 구분)가 있으면 그 origin 만,
   없으면 모든 origin 을 허용한다 (credentials 없음).
 - 지원 파일에는 `#[cfg(test)]` 단위 테스트가 들어 있다 (`cargo test`).
+- rustfmt: `rustfmt` 가 PATH 에 있으면 쓰는 모든 `.rs` 를 `rustfmt --edition 2024` 로 정리한다 (파일과 crate 루트 사이의
+  `rustfmt.toml` / `.rustfmt.toml` 을 쓴다). 없거나 실패하면 경고 한 번 찍고 형식 없이 쓴다. `GOMACHINE_RUSTFMT=0` 으로 끈다.
+  두 번 생성해도 바뀌지 않는다. 지원 모듈 / `auth.rs` / `main.rs` 는 rustfmt 기본 형식으로 만들어 rustfmt 유무와 상관없이 같고,
+  테이블 모델 / 핸들러 / `routes.rs` 는 이름 길이에 따라 줄바꿈이 달라서 rustfmt 가 없으면 `cargo fmt --check` 가 실패할 수 있다.
 - **DB 풀은 `support::state::connect(url, n)` / `connect_lazy(url, n)` (또는 `connect_options(url)`)로 만든다.** sqlx 는 기본으로 연결마다
   `SET time_zone='+00:00'` 을 보내서 `TIMESTAMP` 컬럼을 UTC 로 읽는다 (서버 시간대가 KST 면 9 시간 차이). 이 함수들은
   `MySqlConnectOptions::timezone(None)` 으로 서버 시간대를 그대로 써서 Go 백엔드와 같은 값을 읽는다 (URL 에 `timezone=` 을 적으면 그 값).
@@ -509,7 +801,7 @@ Go 생성기(`go/main.go`, `views/go/{model,rest}.jet`, 라우터)가 기준이�
   axum 0.8 경로 문법(`/{id}`)이고 정적 경로(`/count`, `/batch`, `/search/x`)가 경로 변수보다 먼저 맞는다. 응답 / 파라미터 해석은 Go 라우터와 같다
   (page / pagesize 가 숫자가 아니거나 음수, page 가 `params::MAX_PAGE` (1000000000) 초과, 필터 / 경로 / 본문 값을 해석하지 못하면 400).
   `POST /{t}/batch` / `DELETE /{t}/batch` 는 `params::MAX_BATCH` (1000) 행까지 받고 넘으면 400 (Go / Spring 과 같다).
-- 응답 / 권한: Go `rest.jet` 과 같다 (세션 없음 → Read / Index / Count / Search / 커스텀은 `auth error`, Insert / Insertbatch / Update /
+- 응답 / 권한: Go `rest.jet` 과 같다 (읽기 정책: `public` 읽기 핸들러는 세션 인자가 없다. 세션 없음 → `owner` / `login` / User 의 Read / Index / Count / Search / 커스텀 조회는 `auth error`, Insert / Insertbatch / Update /
   Delete / Deletebatch 는 `error`; 세션 조건, 소유권 검사(`GetRaw`, NULL 소유자 거부, 커스텀 Update / Delete 의
   `(owner <> ? or owner is null)` 개수 검사), User 본인 규칙, 보호 컬럼 / 관리자(`adminLevel`), 비밀번호 해시 / 유지, Deletebatch 의
   전체 검사 후 삭제). 세션 값은 `Session::value(key)` (id / level 밖의 key 는 `auth.rs` 가 `values` 에 넣는다, 아래 [인증](#지원-모듈-api-cratesupport)).
@@ -523,8 +815,8 @@ Go 와 일부러 다른 점:
 
 - 빈 목록은 `items: []` 다 (Go 는 `null`).
 - null 허용 컬럼은 `Option` 이라 응답에서 `null` 이다 (Go 는 0 값). TypeScript / Dart 타입은 이미 `null` 을 받는다.
-  NULL 인 enum 의 `extra` 표시 이름은 `""` 다. 보호 컬럼이 null 허용이면 Insert 는 NULL 을 넣는다 (Go 는 0 값).
-- DB 에러는 모든 핸들러에서 `code: "error"` 다 (Go Index / Count / Search / 커스텀 조회는 에러를 무시하고 빈 결과를 `ok` 로 돌려줬다).
+  NULL 인 enum 의 `extra` 표시 이름은 `""` 다. 보호 컬럼이 null 허용이고 상수 기본값이 없으면 Insert 는 NULL 을 넣는다 (Go 는 0 값).
+- DB 에러는 모든 핸들러에서 `code: "error"` 다 (Go 도 Read / Index / Count / Search 는 `error` 지만, 커스텀 조회는 에러를 무시하고 빈 결과를 `ok` 로 돌려준다).
   Go 처럼 읽지 못한 행만 건너뛰지 않고 요청 전체가 `error` 다. 에러 내용(`error` key)은 응답에 넣지 않고 로그로만 남긴다.
 - Update 는 `createddate` 가 비어 있으면(자리표시 값으로 읽힌 경우) 다른 NOT NULL 날짜처럼 기본값을 넣는다 (Go 는 `""` 를 저장해 strict 모드에서 실패).
 - 정수 파라미터: 경로 값은 컬럼 타입(`i32` 등) 범위를 넘으면 400, 세션 값이 세션 컬럼 타입(`i32` 등)에 맞지 않으면 그 핸들러의 세션 에러다
@@ -574,7 +866,9 @@ chrono-tz = "0.10"
   - `push_where(qb, prefix, &where)` 는 Go `WhereClause` 와 같다: `" and {prefix}{column} {op} ?"`. column 은
     `^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$`, op 는 `= != <> < <= > >= like, not like, in, not in, between`
     (대소문자 / 공백 수 무시)만 되고 어긋나면 `" and 1=0"`. in / not in 은 원소마다 바인딩하고 빈 목록이면 in 은 `" and 1=0"`,
-    not in 은 `" and 1=1"` (단일 값은 원소 하나). between 은 값 두 개가 아니면 `" and 1=0"`. like 는 보낸 값 그대로다.
+    not in 은 `" and 1=1"` (단일 값은 원소 하나). between 은 값 두 개가 아니면 `" and 1=0"`. like 는 보낸 값 그대로다 (커스텀 `FindByXlike`).
+  - 목록 필터의 부분 일치: `like_pattern(v)` (`!` `%` `_` 를 `!` 로 escape, 양쪽 `%`), `like_filter(column, v, not)` 이
+    `{column} like ? escape '!'` Custom 조건을 만든다 (`LIKE_ESCAPE`).
   - `push_custom(qb, &custom)`: `" and " + sql`, 따옴표 밖의 `?` 마다 params 를 바인딩한다. 개수가 다르면 `" and 1=0"`.
   - `apply_args(qb, prefix, &[Arg]) -> Page` 는 Where / Custom 을 붙이고 Paging / Ordering 을 모은다.
     `push_order_page(qb, &page, default_column)` 은 Go Find 와 같다: 페이지면 `order by {order 또는 default desc} limit ? offset ?`
@@ -583,13 +877,16 @@ chrono-tz = "0.10"
   - sqlx 0.9 의 `query()` 는 `&'static str` 이나 `AssertSqlSafe(String)` 만 받는다. 생성 코드는 `QueryBuilder<MySql>` 를 쓴다.
 - 응답 (`response`): `Reply` (= `Result<Response, Error>`, 핸들러 반환 타입), `ApiResult::ok() / error() / auth_error() / with_code(code)`, `.set(key, value)`, `.code(code)`, `.insert(..)`,
   `IntoResponse` 는 항상 HTTP 200 JSON 객체. `bad_request()` 는 HTTP 400 `{"code":"bad request"}` (라우터 파라미터 해석 실패).
-- 세션 (`session`): `Session { id: i64, level: Option<i64>, values: HashMap<String, i64> }`, `session.value(key)` 는 model.json
+- 세션 (`session`): `Session { id: i64, email: String, level: Option<i64>, values: HashMap<String, i64> }`, `session.value(key)` 는 model.json
   `session` key 의 값 (없으면 0 → Go 와 같이 `auth error`). 핸들러는 `Option<Session>` 으로 받는다 (토큰이 없거나 잘못되면 `None`,
   Go 의 nil Session). `is_admin(Option<&Session>, admin_level: Option<i64>)` 은 level ≥ adminLevel.
-- 인증 (`auth.rs`, 사용자 파일): 기본은 `Authorization: Bearer <token>`, HS256, 비밀 키 `JWT_SECRET` 환경변수(없으면 모두 비로그인 +
-  경고), claim `{"id", "level"?, "exp"?}`. Go 백엔드의 JWT 형식은 대상 프로젝트마다 다르므로 이 파일의 `Claims` /
-  `session_from_parts` 를 맞춘다. 추출기는 `support::auth::session_from_parts(&Parts) -> Option<Session>` (async) 만 부른다.
-  기본 `auth.rs` 는 `id` 와 `level` 만 채우고 `Session.values` 는 비워 둔다. 그래서 model.json `session` 에 `id` / `level` 이 아닌 key
+- 인증 (`auth.rs`, 사용자 파일): 기본은 `Authorization: Bearer <token>`, [통일 JWT](#통일-jwt-go--spring--rust) (HS256 만, 비밀 키 `JWT_SECRET`
+  환경변수, 없으면 모두 비로그인 + 경고). id 는 `id`, 없으면 `sub` 를 숫자로 읽고, 0 이하면 비로그인이다. `exp` 는 있으면 검증한다.
+  토큰 발급은 `support::auth::make_token(id, email, level)` (유효 시간 `token_ttl_secs()` = `JWT_EXPIRATION_MS` 밀리초, 기본 86400000 = 1일,
+  잘못된 값은 경고 후 기본값. 비밀 키가 없으면 `None`) 또는 `token_with_key(...)`. `JWT_SECRET` 은 32 바이트 이상이어야 한다
+  (`MIN_SECRET_LEN`, `check_secret`): 짧으면 에러를 한 번 찍고 비밀 키가 없는 것으로 본다 (모든 요청 비로그인). 이미 있는 auth.rs 는 바뀌지 않는다.
+  다른 형식이 필요하면 이 파일의 `Claims` / `session_from_parts` 를 맞춘다. 추출기는 `support::auth::session_from_parts(&Parts) -> Option<Session>` (async) 만 부른다.
+  기본 `auth.rs` 는 `id`, `email`, `level` 만 채우고 `Session.values` 는 비워 둔다. 그래서 model.json `session` 에 `id` / `level` 이 아닌 key
   (`{"key": "company", "column": "company"}` 등)가 있으면 `value("company")` 가 0 이라 그 테이블은 모두 `auth error` 다.
   그런 key 는 `Claims` 에 필드를 더하고 `values` 에 소문자 key 로 넣는다:
   ```rust
