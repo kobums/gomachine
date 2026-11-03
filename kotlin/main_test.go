@@ -178,3 +178,99 @@ func TestSourceRoot(t *testing.T) {
 		t.Errorf("sourceRoot without src/main = %s", got)
 	}
 }
+
+// genTable 은 테이블 하나를 springBoot 4 로 out 에 만든다 (raws 의 "?" 는 null 허용, "=값" 은 기본값).
+func genTable(t *testing.T, out string, table string, raws []util.RawColumn, gpa *config.Gpa, auth string, admin string) {
+	t.Helper()
+	cnf := config.ModelConfig{Language: "kotlin", KotlinModelFilePath: out, Auth: auth, AdminLevel: admin, KotlinPackage: "com.example.app"}
+	items := make([]util.Column, 0)
+	for _, r := range raws {
+		items = append(items, util.NewColumnFromRaw(table, r, gpa, cnf))
+	}
+	ProcessKotlin("app", table, util.GetPrefix(raws[0].Name), items, nil, gpa, "1", auth, cnf)
+}
+
+// 읽기 정책 (B1): owner / login / public / User 본인 (관리자 제외).
+func TestReadPolicy(t *testing.T) {
+	setupHome(t)
+	out := t.TempDir()
+	cols := []util.RawColumn{{Name: "p_id", DataType: "bigint"}, {Name: "p_user", DataType: "bigint"}, {Name: "p_title", DataType: "varchar"}}
+	sess := []config.SessionPair{{Key: "id", Column: "user"}}
+	genTable(t, out, "own_tb", cols, &config.Gpa{Name: "own", Session: sess}, "jwt", "")
+	genTable(t, out, "log_tb", cols, &config.Gpa{Name: "log", Session: sess, Read: "login"}, "jwt", "")
+	genTable(t, out, "pub_tb", cols, &config.Gpa{Name: "pub", Session: sess, Read: "public"}, "jwt", "")
+	genTable(t, out, "user_tb", []util.RawColumn{{Name: "u_id", DataType: "bigint"}, {Name: "u_email", DataType: "varchar"}, {Name: "u_level", DataType: "int"}}, &config.Gpa{Name: "user", Read: "public"}, "jwt", "3")
+
+	own := read(t, filepath.Join(out, "controller", "OwnController.kt"))
+	login := read(t, filepath.Join(out, "controller", "LogController.kt"))
+	pub := read(t, filepath.Join(out, "controller", "PubController.kt"))
+	user := read(t, filepath.Join(out, "controller", "UserController.kt"))
+	list := func(src string) string {
+		i := strings.Index(src, "@GetMapping\n")
+		return src[i : i+strings.Index(src[i:], "val _order")]
+	}
+	checks := []struct {
+		name, src, text string
+		want            bool
+	}{
+		{"owner list guard", list(own), "if (!isLoggedIn()) return", true},
+		{"owner spec", own, "_filter.and(ownerSpec())", true},
+		{"owner read", own, "?.takeIf { isOwned(it) }", true},
+		{"login list guard", list(login), "if (_sessionProvider.currentUserId() == null) return", true},
+		{"login no owner spec", login, "ownerSpec", false},
+		{"login read", login, "?.takeIf { isOwned(it) }", false},
+		{"login write ownership", login, "canWrite(it)", true},
+		{"public list guard", list(pub), "UNAUTHORIZED", false},
+		{"public no owner spec", pub, "ownerSpec", false},
+		{"public post login", pub, "if (!isLoggedIn()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build<Any>()", true},
+		{"user admin level", user, "const val ADMIN_LEVEL = 3L", true},
+		{"user admin", user, `_sessionProvider.currentValue("level")`, true},
+		{"user self spec", user, `if (isAdmin()) _cb.conjunction() else if (_uid == null) _cb.disjunction() else _cb.equal(_root.get<Any>("id"), _uid)`, true},
+		{"user list self", user, "_filter.and(selfSpec())", true},
+		{"user read self", user, "?.takeIf { canReadRow(it) }", true},
+		{"user list guard", list(user), "if (_sessionProvider.currentUserId() == null) return", true},
+	}
+	for _, c := range checks {
+		if got := strings.Contains(c.src, c.text); got != c.want {
+			t.Errorf("%s: contains %q = %v, want %v", c.name, c.text, got, c.want)
+		}
+	}
+}
+
+// 목록 필터 연산자 (util.FilterCompare) 와 보호 컬럼의 DB 기본값 (B1).
+func TestFilterOpsAndProtectDefaults(t *testing.T) {
+	setupHome(t)
+	out := t.TempDir()
+	gpa := &config.Gpa{Name: "item", Map: []config.GpaMap{{Name: "kind", Data: []string{"", "x:X", "y:Y"}}},
+		Compare: []config.GpaCompare{{Name: "code", Type: "="}, {Name: "cnt", Type: ">="}, {Name: "memo", Type: "not like"}, {Name: "kind", Type: "<>"}},
+		Protect: []string{"lvl", "tag", "rate", "on", "kind", "big", "amt", "opt", "day"}}
+	raws := []util.RawColumn{
+		{Name: "i_id", DataType: "bigint"}, {Name: "i_name", DataType: "varchar"}, {Name: "i_code", DataType: "char"}, {Name: "i_memo", DataType: "text"},
+		{Name: "i_cnt", DataType: "int"}, {Name: "i_lvl", DataType: "int", HasDefault: true, Default: "1"},
+		{Name: "i_tag", DataType: "varchar", HasDefault: true, Default: "'new'"}, {Name: "i_rate", DataType: "double", HasDefault: true, Default: "1.5"},
+		{Name: "i_on", DataType: "tinyint", HasDefault: true, Default: "1"}, {Name: "i_kind", DataType: "int", HasDefault: true, Default: "2"},
+		{Name: "i_big", DataType: "bigint", HasDefault: true, Default: "7"}, {Name: "i_amt", DataType: "decimal", HasDefault: true, Default: "2.50"},
+		{Name: "i_opt", DataType: "int", Nullable: true, HasDefault: true, Default: "NULL"}, {Name: "i_day", DataType: "date", HasDefault: true, Default: "'2000-01-01'"},
+	}
+	genTable(t, out, "item_tb", raws, gpa, "", "")
+	ctl := read(t, filepath.Join(out, "controller", "ItemController.kt"))
+	svc := read(t, filepath.Join(out, "service", "ItemService.kt"))
+	for _, text := range []string{
+		`private fun likePattern(_v: String): String = "%" + _v.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"`,
+		`_cb.like(_root.get<String>("name"), likePattern(name), '!')`,
+		`_cb.equal(_root.get<Any>("code"), code)`,
+		`_cb.notLike(_root.get<String>("memo"), likePattern(memo), '!')`,
+		`_cb.greaterThanOrEqualTo(_root.get<Int>("cnt"), cnt)`,
+		`_cb.notEqual(_root.get<Kind>("kind"), _value)`,
+	} {
+		if !strings.Contains(ctl, text) {
+			t.Errorf("controller has no %q", text)
+		}
+	}
+	for _, text := range []string{"lvl = 1,", `tag = "new",`, "rate = 1.5,", "on = true,", "kind = com.example.app.enums.item.Kind.Y,", "big = 7L,",
+		`amt = java.math.BigDecimal("2.50"),`, "opt = null,", "day = java.time.LocalDate.now(),"} {
+		if !strings.Contains(svc, text) {
+			t.Errorf("service toEntity has no %q", text)
+		}
+	}
+}

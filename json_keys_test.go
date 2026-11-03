@@ -10,6 +10,7 @@ import (
 	"gomachine/util"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -391,5 +392,82 @@ func TestKotlinReservedNames(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(out, "controller", "PageEntityController.kt")); !strings.Contains(string(b), `@RequestMapping("/api/page")`) {
 		t.Error("PageEntity URL should stay /api/page")
+	}
+}
+
+// 목록 필터 연산자는 세 백엔드(Go, Spring, Rust)가 util.FilterCompare 와 같은 값을 쓴다 (문자열 기본 like, compare 덮어쓰기).
+func TestFilterOperatorsAgree(t *testing.T) {
+	out := setupOut(t)
+	gpa := &config.Gpa{Name: "item", Map: []config.GpaMap{{Name: "status", Data: []string{"", "a:A"}}},
+		Compare: []config.GpaCompare{{Name: "code", Type: "="}, {Name: "cnt", Type: ">="}, {Name: "memo", Type: "not like"}, {Name: "status", Type: "<>"}, {Name: "title", Type: "<"}}}
+	raws := []util.RawColumn{
+		{Name: "i_id", DataType: "bigint"}, {Name: "i_name", DataType: "varchar"}, {Name: "i_title", DataType: "varchar"},
+		{Name: "i_content", DataType: "text"}, {Name: "i_code", DataType: "char"}, {Name: "i_memo", DataType: "text", Nullable: true},
+		{Name: "i_cnt", DataType: "int"}, {Name: "i_status", DataType: "int"}, {Name: "i_flag", DataType: "tinyint"},
+		{Name: "i_rate", DataType: "double"}, {Name: "i_createddate", DataType: "datetime"},
+	}
+	columns := func(lang string) []util.Column {
+		ret := make([]util.Column, 0)
+		for _, r := range raws {
+			ret = append(ret, util.NewColumnFromRaw("item_tb", r, gpa, config.ModelConfig{Language: lang}))
+		}
+		return ret
+	}
+	gocodegen.ProcessGo("testproj", "item_tb", "i", columns("go"), nil, gpa, "1", "", config.ModelConfig{Language: "go", GoModelFilePath: out + "/"})
+	kotlincodegen.ProcessKotlin("testproj", "item_tb", "i", columns("kotlin"), nil, gpa, "1", "", config.ModelConfig{Language: "kotlin", KotlinModelFilePath: filepath.Join(out, "kt")})
+	rustcodegen.ProcessRust("testproj", "item_tb", "i", columns("rust"), nil, gpa, "1", "", config.ModelConfig{Language: "rust", RustModelFilePath: filepath.Join(out, "rust")})
+
+	want := map[string]string{}
+	for _, c := range columns("go") {
+		if c.Name != "Id" {
+			if op := util.FilterCompare(c, gpa); op != "" {
+				want[c.Key] = op
+			}
+		}
+	}
+	if want["name"] != "like" || want["title"] != "<" || want["code"] != "=" || want["memo"] != "not like" || want["status"] != "<>" {
+		t.Fatalf("util.FilterCompare = %v", want)
+	}
+	space := regexp.MustCompile(`\s+`)
+	block := func(src, re string) string {
+		b := regexp.MustCompile(re).FindString(src)
+		if b == "" {
+			t.Fatalf("filter block %s not found:\n%s", re, src)
+		}
+		return space.ReplaceAllString(b, " ")
+	}
+	got := map[string]map[string]string{"go": {}, "rust": {}, "spring": {}}
+
+	goSrc := block(readOut(t, out, "controllers", "rest", "item.go"), `(?s)func ParseItemFilters\(.*?\n}`)
+	for _, m := range regexp.MustCompile(`Custom\{Query: "i_(\w+) (like|not like) \? escape '!'"`).FindAllStringSubmatch(goSrc, -1) {
+		got["go"][m[1]] = m[2]
+	}
+	for _, m := range regexp.MustCompile(`Where\{Column: "(\w+)", Value: \w+, Compare: "([^"]+)"\}`).FindAllStringSubmatch(goSrc, -1) {
+		if m[1] != "createddate" {
+			got["go"][m[1]] = m[2]
+		}
+	}
+
+	rsSrc := block(readOut(t, out, "rust", "src", "handlers", "item.rs"), `(?s)pub fn parse_filters\(.*?\n}`)
+	for _, m := range regexp.MustCompile(`like_filter\( ?"i_(\w+)", v, (true|false) ?\)`).FindAllStringSubmatch(rsSrc, -1) {
+		got["rust"][m[1]] = map[string]string{"false": "like", "true": "not like"}[m[2]]
+	}
+	for _, m := range regexp.MustCompile(`Where::new\( ?"(\w+)", v, "([^"]+)" ?\)`).FindAllStringSubmatch(rsSrc, -1) {
+		got["rust"][m[1]] = m[2]
+	}
+
+	ktOps := map[string]string{"like": "like", "notLike": "not like", "equal": "=", "notEqual": "<>", "lessThan": "<",
+		"lessThanOrEqualTo": "<=", "greaterThan": ">", "greaterThanOrEqualTo": ">="}
+	ktSrc := block(readOut(t, out, "kt", "controller", "ItemController.kt"), `(?s)private fun buildSpec\(.*?return `)
+	for _, m := range regexp.MustCompile(`_cb\.(\w+)\(_root\.get<[^>]+>\("(\w+)"\)`).FindAllStringSubmatch(ktSrc, -1) {
+		if m[2] != "createddate" {
+			got["spring"][m[2]] = ktOps[m[1]]
+		}
+	}
+
+	for lang, ops := range got {
+		if !reflect.DeepEqual(ops, want) {
+			t.Errorf("%s filter operators = %v, want %v", lang, ops, want)
+		}
 	}
 }

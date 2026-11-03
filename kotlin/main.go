@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -50,6 +51,10 @@ type KotlinColumn struct {
 	EndVar       string
 	QualType     string // 패키지까지 쓴 타입 (기본 키 타입: repository / service / controller 는 java.time 을 import 하지 않는다)
 	QualDefault  string // 패키지까지 쓴 기본값 (service 의 보호 컬럼 값: enum 을 import 하지 않는다)
+	// ProtectDefault 는 보호 컬럼을 생성할 때 넣는 DB 기본값 리터럴이다 (util.DefaultLiteral). 없으면 QualDefault / null.
+	ProtectDefault string
+	// FilterOp 는 목록 / 개수 필터 연산자다 (util.FilterCompare: 문자열은 like, 그 밖은 =, compare 설정으로 바꾼다).
+	FilterOp string
 }
 
 // KotlinSort 는 정렬 파라미터 이름(소문자)과 엔티티 프로퍼티의 매핑이다.
@@ -135,6 +140,14 @@ type KotlinTemplateData struct {
 	CamelNames       bool            // 대문자가 있는 테이블/컬럼 이름 (Spring Boot 기본 이름 전략이 바꾼다)
 	DateTimeOut      string
 	MaxPageSize      int
+	// ReadPolicy 는 읽기 정책이다 (util.ReadPolicy: owner / login / public / self).
+	ReadPolicy string
+	ReadOwner  bool   // 읽기도 ownerSpec / isOwned (owner 이고 session 이 있다)
+	ReadGuard  string // 읽기를 401 로 거절하는 조건 (비로그인). public 이면 ""
+	ReadSelf   bool   // User 읽기는 본인 행만 (관리자 제외)
+	SelfRead   bool   // 본인 행을 기본 키(id 정수)로 거를 수 있다. false 면 관리자만 읽는다
+	AdminLevel string // 관리자 level (숫자 adminLevel 일 때만, 아니면 "")
+	HasLike    bool   // like / not like 필터가 있다 (likePattern)
 	// Boot4 는 Spring Boot 4 용 코드다 (model.json springBoot, 기본 4): Jackson 3(tools.jackson), Spring Data 4 Specification 시그니처,
 	// PasswordEncoder.encode 의 String? 반환. false 면 Boot 3 용 예전 코드.
 	Boot4 bool
@@ -425,6 +438,9 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 			}
 		}
 		kotlinCol.InCreate = !(isPrimaryKey && isGenerated) && !kotlinCol.IsProtected && kotlinCol.CreatedNow == ""
+		if kotlinCol.IsSearchable {
+			kotlinCol.FilterOp = util.FilterCompare(col, gpa)
+		}
 		kotlinCol.QualType = qualifiedType(kotlinType)
 		kotlinCol.QualDefault = defValue
 		if isEnumType {
@@ -432,6 +448,9 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 			if defValue != "null" && defValue != "" {
 				kotlinCol.QualDefault = basePackage + ".enums." + enumPackage + "." + defValue
 			}
+		}
+		if kotlinCol.IsProtected {
+			kotlinCol.ProtectDefault = protectDefault(col, kotlinCol, gpa)
 		}
 		kotlinColumns = append(kotlinColumns, kotlinCol)
 	}
@@ -575,6 +594,25 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 			selfOnly = false
 		}
 	}
+	// 읽기 정책: owner 는 ownerSpec / isOwned, login 은 로그인만, public 은 확인 없음, self 는 User 본인 행 (관리자 제외).
+	readPolicy := util.MustReadPolicy(baseModelName, gpa, auth)
+	readGuard := ""
+	switch {
+	case readPolicy == util.ReadOwner && len(sessions) > 0:
+		readGuard = "!isLoggedIn()"
+	case readPolicy != util.ReadPublic && requireLogin:
+		readGuard = "_sessionProvider.currentUserId() == null"
+	}
+	adminLevel := ""
+	if n, err := strconv.Atoi(strings.TrimSpace(cnf.AdminLevel)); err == nil {
+		adminLevel = strconv.Itoa(n)
+	}
+	hasLike := false
+	for _, col := range kotlinColumns {
+		if col.FilterOp == "like" || col.FilterOp == "not like" {
+			hasLike = true
+		}
+	}
 	boot4 := cnf.GetSpringBoot() == 4
 	generateSupport(targetPath, basePackage, cnf.Timezone, boot4)
 
@@ -611,6 +649,13 @@ func ProcessKotlin(packageName string, tableName string, prefix string, columns 
 		DateTimeOut:      kotlinDateTimeOut,
 		MaxPageSize:      kotlinMaxPageSize,
 		Boot4:            boot4,
+		ReadPolicy:       readPolicy,
+		ReadOwner:        readPolicy == util.ReadOwner && len(sessions) > 0,
+		ReadGuard:        readGuard,
+		ReadSelf:         readPolicy == util.ReadSelf && requireLogin,
+		SelfRead:         pk.Name == "Id" && (pk.KotlinType == "Long" || pk.KotlinType == "Int"),
+		AdminLevel:       adminLevel,
+		HasLike:          hasLike,
 	}
 
 	// 생성할 빈 / 엔티티와 같은 이름의 사용자 클래스가 있으면 Spring 이 시작할 때 이름이 겹친다.
@@ -1042,6 +1087,57 @@ func enumZeroIdent(data []string) string {
 	}
 	if items := util.KotlinEnumItems(data); len(items) > 0 && items[0].Index == 0 {
 		return items[0].Ident
+	}
+	return ""
+}
+
+// protectDefault 는 보호 컬럼을 생성할 때 넣을 DB 기본값의 Kotlin 리터럴이다 (u_level DEFAULT 1 → 1).
+// 상수 기본값이 없거나 날짜 / 바이트 컬럼이면 "" (예전과 같이 타입 기본값 또는 null).
+func protectDefault(col util.Column, kc KotlinColumn, gpa *config.Gpa) string {
+	lit, ok := util.DefaultLiteral(col)
+	if !ok {
+		return ""
+	}
+	if kc.IsEnum {
+		m := util.FindEnumMap(gpa, col.Key)
+		f, err := strconv.ParseFloat(lit, 64)
+		if m == nil || err != nil {
+			return ""
+		}
+		for _, it := range util.KotlinEnumItems(m.Data) {
+			if float64(it.Code) == f {
+				return kc.QualType + "." + it.Ident
+			}
+		}
+		if len(m.Data) > 0 && m.Data[0] == "" && f == 0 {
+			return kc.QualType + ".NONE"
+		}
+		return ""
+	}
+	switch kc.KotlinType {
+	case "String":
+		return util.KotlinString(lit)
+	case "Int", "Long", "Double", "Boolean", "BigDecimal":
+		f, err := strconv.ParseFloat(lit, 64)
+		if err != nil {
+			return ""
+		}
+		switch kc.KotlinType {
+		case "Int":
+			return strconv.FormatInt(int64(f), 10)
+		case "Long":
+			return strconv.FormatInt(int64(f), 10) + "L"
+		case "Double":
+			v := strconv.FormatFloat(f, 'f', -1, 64)
+			if !strings.Contains(v, ".") {
+				v += ".0"
+			}
+			return v
+		case "Boolean":
+			return strconv.FormatBool(f != 0)
+		case "BigDecimal":
+			return "java.math.BigDecimal(" + util.KotlinString(lit) + ")"
+		}
 	}
 	return ""
 }

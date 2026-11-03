@@ -11,6 +11,7 @@ import (
 	rustcodegen "gomachine/rust"
 	"gomachine/util"
 	vuecodegen "gomachine/vue"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,7 +22,8 @@ import (
 )
 
 func GetConnection(config config.ModelConfig) *sql.DB {
-	connectionString := fmt.Sprintf("%v:%v@tcp(%v:3306)/%v", config.User, config.Password, config.Server, config.Database)
+	// 포트는 model.json port / DB_PORT (없으면 3306), DB 이름은 DB_NAME 이 model.json database 보다 우선한다 (config.Load).
+	connectionString := fmt.Sprintf("%v:%v@tcp(%v)/%v", config.User, config.Password, net.JoinHostPort(config.Server, config.GetPort()), config.Database)
 
 	r1, err := sql.Open("mysql", connectionString)
 	if err != nil {
@@ -107,8 +109,7 @@ func main() {
 	}
 	defer db.Close()
 
-	query := fmt.Sprintf("select table_name from information_schema.tables where table_schema = '%v' order by table_name", modelConfig.Database)
-	rows, err := db.Query(query)
+	rows, err := db.Query("select table_name from information_schema.tables where table_schema = ? order by table_name", modelConfig.Database)
 
 	// DB 에 붙지 못하면 아무것도 만들지 않았으므로 실패 코드로 끝낸다.
 	if err != nil {
@@ -138,6 +139,20 @@ func main() {
 			c := *g
 			tableGpa[name] = &c
 		}
+	}
+
+	// 읽기 정책(table[].read)이 잘못되면 아무것도 만들기 전에 멈춘다.
+	policyErrs := make([]string, 0)
+	for _, name := range names {
+		if _, err := util.ReadPolicy(util.ModelName(name), tableGpa[name], modelConfig.Auth); err != nil {
+			policyErrs = append(policyErrs, err.Error())
+		}
+	}
+	if len(policyErrs) > 0 {
+		for _, e := range policyErrs {
+			log.Println("ERROR:", e)
+		}
+		os.Exit(1)
 	}
 
 	// auth=jwt 에서 session 컬럼을 쓸 수 없으면 소유권 검사 없는 API 가 만들어지므로 아무것도 만들기 전에 멈춘다.

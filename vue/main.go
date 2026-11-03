@@ -22,7 +22,7 @@ func ProcessVue(packageName string, tableName string, prefix string, items []uti
 		return
 	}
 
-	data := react.BuildTemplateData(packageName, tableName, items, gpa)
+	data := react.BuildTemplateDataAuth(packageName, tableName, items, gpa, auth)
 	name := strings.ToLower(data.TableName)
 
 	views := jet.NewSet(jet.NewOSFileSystemLoader(filepath.Join(os.Getenv("HOME"), "bin", "buildtool", "vue")), jet.InDevelopmentMode())

@@ -13,11 +13,11 @@ use sqlx::MySqlPool;
 use crate::models::{{t.Module}}::{{"{"}}{{imports}}};
 use crate::support::params::{self, BodyArg, IdArg, PathArg, QueryArg, QueryParams};
 use crate::support::password;
-use crate::support::query::{Arg, Bind, Custom, Where};
+use crate::support::query::{Arg, Bind, Custom, Where, like_filter};
 use crate::support::response::{ApiResult, CODE_BAD_REQUEST, Reply, bad_request};
 use crate::support::session::{Session, is_admin};
-{{if t.AdminCheck}}
-/// 보호 컬럼을 바꿀 수 있는 관리자 level (model.json adminLevel)
+{{if t.AdminCheck || t.AdminRead}}
+/// 관리자 level (model.json adminLevel): 보호 컬럼 변경, User 전체 읽기
 const ADMIN_LEVEL: i64 = {{t.AdminLevel}};
 {{end}}
 /// {{t.TableName}} 경로. routes.rs 가 합친다.

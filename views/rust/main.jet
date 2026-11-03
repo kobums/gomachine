@@ -1,5 +1,6 @@
 // buildtool 이 한 번만 만드는 사용자 파일이다 (있으면 덮어쓰지 않는다).
-// 환경변수: DATABASE_URL (mysql://user:pass@host:3306/db, 필수), PORT (기본 8080), JWT_SECRET (support/auth.rs),
+// 환경변수: DATABASE_URL (mysql://user:pass@host:3306/db, 필수), PORT (기본 8008),
+// JWT_SECRET (32 바이트 이상, 필수, support/auth.rs), JWT_EXPIRATION_MS (기본 86400000 = 24시간),
 // CORS_ORIGINS (쉼표로 구분한 허용 origin, 없으면 모든 origin 허용, credentials 없음), RUST_LOG (기본 info, SQL 로그는 sql=debug).
 
 mod handlers;
@@ -17,10 +18,14 @@ use support::AppState;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .init();
 
     let url = std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL is not set")?;
+    // 짧거나 없는 JWT_SECRET 은 시작할 때 실패한다 (Go / Spring 템플릿과 같다).
+    support::auth::check_secret(std::env::var("JWT_SECRET").ok().as_deref())?;
     // support::state::connect 는 세션 time_zone 을 바꾸지 않는다 (TIMESTAMP 를 Go 와 같은 서버 시간대로 읽는다).
     let pool = support::state::connect(&url, 20).await?;
 
@@ -29,7 +34,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .layer(cors())
         .with_state(AppState::new(pool));
 
-    let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8080);
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8008);
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
     tracing::info!("listening on {}", listener.local_addr()?);
     axum::serve(listener, app).await?;
@@ -41,10 +49,25 @@ fn cors() -> CorsLayer {
     let origins: Vec<HeaderValue> = std::env::var("CORS_ORIGINS")
         .unwrap_or_default()
         .split(',')
-        .filter_map(|o| HeaderValue::from_str(o.trim()).ok().filter(|v| !v.is_empty()))
+        .filter_map(|o| {
+            HeaderValue::from_str(o.trim())
+                .ok()
+                .filter(|v| !v.is_empty())
+        })
         .collect();
     let layer = CorsLayer::new()
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE, Method::OPTIONS])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
         .allow_headers(Any);
-    if origins.is_empty() { layer.allow_origin(Any) } else { layer.allow_origin(AllowOrigin::list(origins)) }
+    if origins.is_empty() {
+        layer.allow_origin(Any)
+    } else {
+        layer.allow_origin(AllowOrigin::list(origins))
+    }
 }

@@ -56,7 +56,11 @@ impl QueryParams {
     }
 
     pub fn get(&self, key: &str) -> &str {
-        self.0.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str()).unwrap_or("")
+        self.0
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("")
     }
 }
 
@@ -198,7 +202,11 @@ mod tests {
 
     #[test]
     fn query_and_numbers() {
-        let q = QueryParams::new(vec![("a".into(), "1".into()), ("a".into(), "2".into()), ("b".into(), "".into())]);
+        let q = QueryParams::new(vec![
+            ("a".into(), "1".into()),
+            ("a".into(), "2".into()),
+            ("b".into(), "".into()),
+        ]);
         assert_eq!((q.get("a"), q.get("b"), q.get("c")), ("1", "", ""));
         assert_eq!(parse_int("+12"), Some(12));
         assert_eq!(parse_int("-3"), Some(-3));
@@ -207,7 +215,16 @@ mod tests {
         }
         assert_eq!(parse_float("1.5"), Some(1.5));
         assert_eq!(parse_float("x"), None);
-        for (s, want) in [("1", Some(true)), ("T", Some(true)), ("True", Some(true)), ("f", Some(false)), ("FALSE", Some(false)), ("tRuE", None), ("yes", None), ("", None)] {
+        for (s, want) in [
+            ("1", Some(true)),
+            ("T", Some(true)),
+            ("True", Some(true)),
+            ("f", Some(false)),
+            ("FALSE", Some(false)),
+            ("tRuE", None),
+            ("yes", None),
+            ("", None),
+        ] {
             assert_eq!(parse_bool(s), want, "{s}");
         }
         assert_eq!(parse_page(""), Some(0));
@@ -222,7 +239,10 @@ mod tests {
     fn path_values() {
         assert_eq!(parse_list::<i64>("1, 2,3"), Some(vec![1, 2, 3]));
         assert_eq!(parse_list::<i64>("1,x"), None);
-        assert_eq!(parse_list::<String>("a,b"), Some(vec!["a".to_string(), "b".to_string()]));
+        assert_eq!(
+            parse_list::<String>("a,b"),
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
         assert_eq!(bool::parse_path("t"), Some(true));
         assert_eq!(i32::parse_path("99999999999"), None);
         assert_eq!(Vec::<u8>::parse_path("ab"), Some(b"ab".to_vec()));
@@ -241,7 +261,10 @@ mod tests {
         assert!(body_object(b"[1]").is_none());
         assert!(body_object(b"null").is_none());
         assert!(body_object(b"").is_none());
-        assert_eq!(body_value::<Vec<u8>>(&json!({"d": "ab"}).as_object().unwrap().clone(), "d"), Some(b"ab".to_vec()));
+        assert_eq!(
+            body_value::<Vec<u8>>(&json!({"d": "ab"}).as_object().unwrap().clone(), "d"),
+            Some(b"ab".to_vec())
+        );
     }
 
     #[test]
@@ -264,7 +287,10 @@ mod tests {
         assert_eq!(u32::from_body(&v("4294967295")), Some(u32::MAX));
         assert_eq!(u32::from_body(&v("4294967296")), None);
         // 정수 JSON 값은 정확히 (f64 를 거치지 않는다)
-        assert_eq!(i64::from_body(&v("9007199254740993")), Some(9007199254740993));
+        assert_eq!(
+            i64::from_body(&v("9007199254740993")),
+            Some(9007199254740993)
+        );
         assert_eq!(i64::from_body(&v("9223372036854775807")), Some(i64::MAX));
         assert_eq!(i64::from_body(&v("9223372036854775808")), None);
         assert_eq!(u64::from_body(&v("18446744073709551615")), Some(u64::MAX));

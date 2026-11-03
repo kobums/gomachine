@@ -39,7 +39,10 @@ mod tests {
         let got = NaiveDateTime::parse_from_str(&s, DATETIME_FORMAT).unwrap();
         assert_eq!(s.len(), 19, "{s}");
         let want = {{testNow|raw}};
-        assert!((got - want).num_seconds().abs() <= 2, "now() = {s}, want {want}");
+        assert!(
+            (got - want).num_seconds().abs() <= 2,
+            "now() = {s}, want {want}"
+        );
         assert_eq!(now_format(DATE_FORMAT).len(), 10);
         assert_eq!(local_now(TIME_FORMAT).len(), 8);
         assert_eq!(seoul().local_minus_utc(), 9 * 3600);

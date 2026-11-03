@@ -22,7 +22,10 @@ pub struct Session {
 
 impl Session {
     pub fn new(id: i64) -> Self {
-        Session { id, ..Default::default() }
+        Session {
+            id,
+            ..Default::default()
+        }
     }
 
     /// model.json session key 의 값 (대소문자 무시). id, level, 그 밖은 values. 없으면 0 (Go 와 같이 0 이면 auth error).
@@ -38,7 +41,10 @@ impl Session {
 impl<S: Send + Sync> OptionalFromRequestParts<S> for Session {
     type Rejection = Infallible;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Option<Self>, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> Result<Option<Self>, Self::Rejection> {
         Ok(super::auth::session_from_parts(parts).await)
     }
 }
@@ -59,7 +65,16 @@ mod tests {
     fn values_and_admin() {
         let mut s = Session::new(7);
         s.values.insert("company".into(), 3);
-        assert_eq!((s.value("id"), s.value("Id"), s.value("company"), s.value("level"), s.value("x")), (7, 7, 3, 0, 0));
+        assert_eq!(
+            (
+                s.value("id"),
+                s.value("Id"),
+                s.value("company"),
+                s.value("level"),
+                s.value("x")
+            ),
+            (7, 7, 3, 0, 0)
+        );
         assert!(!is_admin(Some(&s), Some(9)));
         s.level = Some(9);
         assert!(is_admin(Some(&s), Some(9)));

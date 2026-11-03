@@ -55,7 +55,7 @@ class {{.ModelName}}Service(
 {{end}}
     private fun toEntity(request: {{.ModelName}}CreateRequest): {{.ModelName}} {
         return {{.ModelName}}(
-{{range .Columns}}{{if not .IsGenerated}}            {{.EntityField|raw}} = {{if .CreatedNow != ""}}{{.CreatedNow|raw}}{{else if .IsProtected}}{{if .HasDefault}}{{.QualDefault|raw}}{{else}}null{{end}}{{else if .IsPassword}}{{if .IsNullable}}request.{{.Field|raw}}?.takeIf { it.isNotBlank() }?.let { passwordEncoder.encode(it){{if boot4}}!!{{end}} }{{else}}if (request.{{.Field|raw}}.isBlank()) "" else passwordEncoder.encode(request.{{.Field|raw}}){{if boot4}}!!{{end}}{{end}}{{else}}request.{{.Field|raw}}{{end}},
+{{range .Columns}}{{if not .IsGenerated}}            {{.EntityField|raw}} = {{if .CreatedNow != ""}}{{.CreatedNow|raw}}{{else if .IsProtected}}{{if .ProtectDefault != ""}}{{.ProtectDefault|raw}}{{else if .HasDefault}}{{.QualDefault|raw}}{{else}}null{{end}}{{else if .IsPassword}}{{if .IsNullable}}request.{{.Field|raw}}?.takeIf { it.isNotBlank() }?.let { passwordEncoder.encode(it){{if boot4}}!!{{end}} }{{else}}if (request.{{.Field|raw}}.isBlank()) "" else passwordEncoder.encode(request.{{.Field|raw}}){{if boot4}}!!{{end}}{{end}}{{else}}request.{{.Field|raw}}{{end}},
 {{end}}{{end}}        )
     }
 

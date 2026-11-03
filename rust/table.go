@@ -45,6 +45,7 @@ type rustCol struct {
 	RawSel   string // GetRaw select 식 (한정하지 않음)
 	Serde    string // #[serde(...)] 속성
 	Fill     string // NOT NULL 날짜 컬럼이 비어 있을 때 넣을 Rust 식 (Go dateFillExpr)
+	Filter   string // 목록 필터 연산자 (util.FilterCompare, 날짜 범위 / 바이트는 "")
 }
 
 // rustJoinCol 은 조인 테이블 컬럼 하나다 (left join 이라 모두 Option 으로 읽는다).
@@ -120,15 +121,21 @@ type table struct {
 	CreatedNow bool // Insert 가 createddate 를 현재 시각으로 넣는다 (문자열 컬럼)
 	AdminCheck bool
 	AdminLevel int
-	Compares   []config.GpaCompare
-	Qual       string
-	WherePref  string
-	OrderCol   string
-	Select     string // select ... from t left join ...
-	Count      string // select count(*) from t left join ...
-	RawSelect  string // select ... from t
-	OrderCols  [][2]string
-	EnumZero   map[string]bool
+	// Read 는 읽기 정책 (util.ReadPolicy: owner / login / public / self)
+	Read string
+	// ReadOwned 는 읽기에 세션 조건 / 소유권 검사를 붙이는지 (Read == owner 이고 jwt + session)
+	ReadOwned bool
+	// AdminRead 는 User(self) 읽기에서 관리자(adminLevel)는 모든 행을 읽는지
+	AdminRead bool
+	Compares  []config.GpaCompare
+	Qual      string
+	WherePref string
+	OrderCol  string
+	Select    string // select ... from t left join ...
+	Count     string // select count(*) from t left join ...
+	RawSelect string // select ... from t
+	OrderCols [][2]string
+	EnumZero  map[string]bool
 }
 
 func (t *table) isUser() bool { return t.Name == "User" }
@@ -314,16 +321,6 @@ func zeroCheck(w rustWhere, hasZero bool) string {
 	return w.Param + " != 0"
 }
 
-// compareColumn 은 Go compareColumn 과 같다 (compare 설정이 없으면 =).
-func compareColumn(name string, cols []config.GpaCompare) string {
-	for _, v := range cols {
-		if strings.EqualFold(v.Name, name) || strings.EqualFold(strings.ReplaceAll(v.Name, "_", ""), name) {
-			return v.Type
-		}
-	}
-	return "="
-}
-
 func qualify(on bool, table string, column string) string {
 	if on {
 		return table + "." + column
@@ -399,6 +396,7 @@ func buildTable(tableName string, prefix string, items []util.Column, db *sql.DB
 			c.Type = "Option<" + c.Base + ">"
 		}
 		c.Password = util.IsPasswordColumn(item.Name)
+		c.Filter = util.FilterCompare(item, gpa)
 		c.Serde = serdeAttr(c)
 		if c.Base == "String" && util.IsDateType(item.OriginalType) && !c.Nullable {
 			c.Fill = dateFill(item)
@@ -428,6 +426,9 @@ func buildTable(tableName string, prefix string, items []util.Column, db *sql.DB
 	adminLevel, adminErr := strconv.Atoi(strings.TrimSpace(cnf.AdminLevel))
 	t.AdminLevel = adminLevel
 	t.AdminCheck = t.Jwt && adminErr == nil && len(t.Protects) > 0
+	// 읽기 정책 (잘못된 read 는 main.go 가 미리 멈춘다)
+	t.Read = util.MustReadPolicy(t.Name, gpa, auth)
+	t.AdminRead = t.Read == util.ReadSelf && adminErr == nil
 
 	// enum
 	var joins []util.ResolvedJoin
@@ -553,6 +554,7 @@ func buildTable(tableName string, prefix string, items []util.Column, db *sql.DB
 			col := util.FindColumn(items, pair.Column)
 			t.Sessions = append(t.Sessions, rustSession{Key: pair.Key, Col: *t.col(col.Name), Column: col.Key, SQL: t.Qual + prefix + "_" + col.Key, Idx: len(t.Sessions)})
 		}
+		t.ReadOwned = t.Jwt && len(t.Sessions) > 0 && t.Read == util.ReadOwner
 
 		for _, fn := range util.ParseFuncs(tableName, gpa.Method, items) {
 			if t.IsView && (fn.Kind == "Update" || fn.Kind == "Delete") {

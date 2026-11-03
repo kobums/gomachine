@@ -76,7 +76,7 @@ func TestEnumCodesAgree(t *testing.T) {
 	}
 	for typeName, codes := range want {
 		// Go: 상수 값과 라벨 배열
-		goConst := regexp.MustCompile(`(?m)^\s*`+typeName+`\w+ `+typeName+` = (\d+)$`).FindAllStringSubmatch(string(goSrc), -1)
+		goConst := regexp.MustCompile(`(?m)^\s*`+typeName+`\w+\s+`+typeName+`\s+= (\d+)$`).FindAllStringSubmatch(string(goSrc), -1)
 		labels := regexp.MustCompile(`var ` + typeName + `s = \[\]string\{(.*)\}`).FindStringSubmatch(string(goSrc))
 		if labels == nil {
 			t.Fatalf("Go label array for %s not found:\n%s", typeName, goSrc)

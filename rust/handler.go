@@ -109,7 +109,7 @@ func (g *hgen) guard(fail string, zero, sess, own, useS bool) {
 // sessionWheres 는 세션 조건(Go filters / 커스텀 조회의 models.Where{Column, Session 값, "="})이다.
 func (g *hgen) sessionWheres() []string {
 	ret := make([]string, 0)
-	if !g.t.Jwt {
+	if !g.t.ReadOwned {
 		return ret
 	}
 	for _, s := range g.t.Sessions {
@@ -144,6 +144,89 @@ func (g *hgen) sessionArg() string {
 		return ", session"
 	}
 	return ""
+}
+
+// readSession 은 읽기 핸들러가 세션을 받는지다 (public 읽기는 받지 않는다).
+func (g *hgen) readSession() bool {
+	return g.t.Jwt && g.t.Read != util.ReadPublic
+}
+
+func (g *hgen) readSessionParam() string {
+	if g.readSession() {
+		return ", session: Option<Session>"
+	}
+	return ""
+}
+
+func (g *hgen) readSessionArg() string {
+	if g.readSession() {
+		return ", session"
+	}
+	return ""
+}
+
+// readGuard 는 읽기 정책의 세션 검사다. owner 는 예전 guard (sess / own 은 guard 와 같다), login 은 로그인만,
+// self(User) 는 s 를 꺼낸다 (selfFilter 가 쓴다), public 은 검사하지 않는다.
+func (g *hgen) readGuard(sess, own bool) {
+	switch g.t.Read {
+	case util.ReadOwner:
+		g.guard(failAuth, true, sess, own, false)
+	case util.ReadLogin:
+		g.guard(failAuth, false, false, false, false)
+	case util.ReadSelf:
+		g.guard(failAuth, false, false, false, true)
+	}
+}
+
+// adminOpt 는 is_admin 의 두 번째 인자다 (adminLevel 이 없으면 None = 관리자 없음).
+func (g *hgen) adminOpt() string {
+	if g.t.AdminRead {
+		return "Some(ADMIN_LEVEL)"
+	}
+	return "None"
+}
+
+// selfFilter 는 User(self) 읽기 조건이다: 관리자가 아니면 id = 세션 id 조건을 args 에 넣는다.
+// id 컬럼이 없으면 본인 행을 알 수 없으므로 관리자가 아니면 auth error 다.
+func (g *hgen) selfFilter(args string) {
+	t := g.t
+	if t.Read != util.ReadSelf {
+		return
+	}
+	if !t.HasId {
+		g.w("    // id 컬럼이 없어 본인 행을 알 수 없으므로 관리자만 읽을 수 있다.")
+		g.w("    if !is_admin(Some(&s), %s) {", g.adminOpt())
+		g.w("        %s", ret(failAuth))
+		g.w("    }")
+		return
+	}
+	push := fmt.Sprintf("%s.push(Where::eq(%s, s.id).into());", args, q(t.OrderKey))
+	if t.AdminRead {
+		g.w("    // 회원 정보는 본인 행만 읽는다 (관리자 제외).")
+		g.w("    if !is_admin(Some(&s), Some(ADMIN_LEVEL)) {")
+		g.w("        %s", push)
+		g.w("    }")
+	} else {
+		g.w("    // 회원 정보는 본인 행만 읽는다.")
+		g.w("    %s", push)
+	}
+}
+
+// selfArgs 는 커스텀 조회에 넘기는 User(self) 조건 슬라이스 식이다 (앞에 필요한 코드를 쓴다).
+func (g *hgen) selfArgs() string {
+	t := g.t
+	if !t.HasId {
+		g.selfFilter("")
+		return "&[]"
+	}
+	w := fmt.Sprintf("Where::eq(%s, s.id).into()", q(t.OrderKey))
+	if !t.AdminRead {
+		g.w("    // 회원 정보는 본인 행만 읽는다.")
+		return "&[" + w + "]"
+	}
+	g.w("    // 회원 정보는 본인 행만 읽는다 (관리자 제외).")
+	g.w("    let self_args: Vec<Arg> = if is_admin(Some(&s), Some(ADMIN_LEVEL)) { Vec::new() } else { vec![%s] };", w)
+	return "&self_args"
 }
 
 const (
@@ -193,7 +276,7 @@ func (g *hgen) filters() {
 	g.w("    let mut args: Vec<Arg> = Vec::new();")
 	for _, c := range cols {
 		key := c.Col.Key
-		cmp := compareColumn(c.Col.Name, t.Compares)
+		cmp := c.Filter
 		switch filterKind(c) {
 		case "range":
 			start, end := util.RangeParams(c.Col)
@@ -206,12 +289,14 @@ func (g *hgen) filters() {
 			g.w("        args.push(Where::new(%s, end, \"<=\").into());", q(key))
 			g.w("    }")
 		case "string":
-			if c.Col.Name != "Name" && c.Col.Name != "Title" && c.Col.Name != "Content" {
-				cmp = "like"
-			}
 			g.w("    let v = q.get(%s);", q(c.JSON))
 			g.w("    if !v.is_empty() {")
-			g.w("        args.push(Where::new(%s, v, %s).into());", q(key), q(cmp))
+			if cmp == "like" || cmp == "not like" {
+				// 부분 일치: %, _, ! 를 ! 로 escape 하고 양쪽에 % (util.LikePattern)
+				g.w("        args.push(like_filter(%s, v, %v));", q(t.WherePref+key), cmp == "not like")
+			} else {
+				g.w("        args.push(Where::new(%s, v, %s).into());", q(key), q(cmp))
+			}
 			g.w("    }")
 		default:
 			parse := map[string]string{"bool": "parse_bool", "float": "parse_float"}[filterKind(c)]
@@ -250,7 +335,7 @@ func (g *hgen) index() {
 	sw := g.sessionWheres()
 	g.w("")
 	g.w("/// GET /%s: 목록 (Go Index). page / pagesize 를 보내면 몇 번째 페이지든 total 도 돌려준다.", t.Domain)
-	g.w("async fn index(%s%s, query: QueryArg) -> Reply {", stateParam, g.sessionParam())
+	g.w("async fn index(%s%s, query: QueryArg) -> Reply {", stateParam, g.readSessionParam())
 	g.w("    let Some(q) = params::query_params(query) else {")
 	g.w("        %s", badReq)
 	g.w("    };")
@@ -263,10 +348,11 @@ func (g *hgen) index() {
 	g.w("    };")
 	g.w("    // page 0 은 전체 행, pagesize 는 10000 을 넘지 않는다 (Go / Spring 과 같다).")
 	g.w("    let pagesize = pagesize.min(10000);")
-	g.guard(failAuth, true, true, false, false)
+	g.readGuard(true, false)
 	for _, w := range sw {
 		g.w("    args.push(%s);", w)
 	}
+	g.selfFilter("args")
 	g.w("    // 개수는 페이지 / 정렬 없이 같은 조건으로 센다.")
 	g.w("    let count_args = args.clone();")
 	g.w("    let paged = page != 0 && pagesize != 0;")
@@ -293,22 +379,23 @@ func (g *hgen) count() {
 	g.route("get", "/"+t.Domain+"/count", "count")
 	sw := g.sessionWheres()
 	mut := ""
-	if len(sw) > 0 {
+	if len(sw) > 0 || (t.Read == util.ReadSelf && t.HasId) {
 		mut = "mut "
 	}
 	g.w("")
 	g.w("/// GET|POST /%s/count: 개수 (Go Count). total 과 count 가 같다.", t.Domain)
-	g.w("async fn count(%s%s, query: QueryArg) -> Reply {", stateParam, g.sessionParam())
+	g.w("async fn count(%s%s, query: QueryArg) -> Reply {", stateParam, g.readSessionParam())
 	g.w("    let Some(q) = params::query_params(query) else {")
 	g.w("        %s", badReq)
 	g.w("    };")
 	g.w("    let Ok(%sargs) = parse_filters(&q) else {", mut)
 	g.w("        %s", badReq)
 	g.w("    };")
-	g.guard(failAuth, true, true, false, false)
+	g.readGuard(true, false)
 	for _, w := range sw {
 		g.w("    args.push(%s);", w)
 	}
+	g.selfFilter("args")
 	g.w("    let total = %s::count(&pool, &args).await?;", t.Model)
 	g.w("    Ok(ApiResult::ok().set(\"total\", total).set(\"count\", total).into())")
 	g.w("}")
@@ -317,14 +404,26 @@ func (g *hgen) count() {
 func (g *hgen) read() {
 	t := g.t
 	g.route("get", "/"+t.Domain+"/{id}", "read")
-	owned := t.Jwt && len(t.Sessions) > 0
+	owned := t.ReadOwned
 	g.w("")
 	g.w("/// GET /%s/{id}: 한 행 (Go Read). 없으면 item: null%s.", t.Domain, map[bool]string{true: ", 세션이 있으면 없는 행은 error, 남의 행은 auth error"}[owned])
-	g.w("async fn read(%s%s, id: IdArg) -> Reply {", stateParam, g.sessionParam())
+	g.w("async fn read(%s%s, id: IdArg) -> Reply {", stateParam, g.readSessionParam())
 	g.w("    let Some(id) = params::path_id::<%s>(id) else {", t.IdType)
 	g.w("        %s", badReq)
 	g.w("    };")
-	g.guard(failAuth, true, owned, owned, false)
+	g.readGuard(owned, owned)
+	if t.Read == util.ReadSelf {
+		cond := g.idNeSession("id")
+		if t.AdminRead {
+			g.w("    // 회원 정보는 본인 행만 읽는다 (관리자 제외).")
+			cond = "!is_admin(Some(&s), Some(ADMIN_LEVEL)) && " + cond
+		} else {
+			g.w("    // 회원 정보는 본인 행만 읽는다.")
+		}
+		g.w("    if %s {", cond)
+		g.w("        %s", ret(failAuth))
+		g.w("    }")
+	}
 	g.w("    let item = %s::get(&pool, id).await?;", t.Model)
 	if owned {
 		g.w("    let Some(item) = item else {")
@@ -367,10 +466,15 @@ func (g *hgen) search() {
 	sw := g.sessionWheres()
 	g.w("")
 	g.w("/// GET /%s/search/{field}?{key}=값 (Go Search): 컬럼이 값과 같은 행 목록. 세션이 있으면 본인 소유 행만.", t.Domain)
-	g.w("async fn search(pool: MySqlPool%s, column: &'static str, value: Bind) -> Reply {", g.sessionParam())
-	g.guard(failAuth, true, true, false, false)
+	g.w("async fn search(pool: MySqlPool%s, column: &'static str, value: Bind) -> Reply {", g.readSessionParam())
+	g.readGuard(true, false)
 	args := append([]string{"Where::new(column, value, \"=\").into()"}, sw...)
-	g.w("    let args: Vec<Arg> = vec![%s];", strings.Join(args, ", "))
+	mut := ""
+	if t.Read == util.ReadSelf && t.HasId {
+		mut = "mut "
+	}
+	g.w("    let %sargs: Vec<Arg> = vec![%s];", mut, strings.Join(args, ", "))
+	g.selfFilter("args")
 	g.w("    let items = %s::find(&pool, &args).await?;", t.Model)
 	g.w("    Ok(ApiResult::ok().set(\"items\", &items).into())")
 	g.w("}")
@@ -380,7 +484,7 @@ func (g *hgen) search() {
 		fn := util.DedupeIdent("search_"+util.RustIdent(strings.ToLower(util.SanitizeIdent(seg, "v"))), used)
 		g.route("get", "/"+t.Domain+"/search/"+seg, fn)
 		g.w("")
-		g.w("async fn %s(%s%s, query: QueryArg) -> Reply {", fn, stateParam, g.sessionParam())
+		g.w("async fn %s(%s%s, query: QueryArg) -> Reply {", fn, stateParam, g.readSessionParam())
 		g.w("    let Some(q) = params::query_params(query) else {")
 		g.w("        %s", badReq)
 		g.w("    };")
@@ -394,12 +498,61 @@ func (g *hgen) search() {
 			g.w("        %s", badReq)
 			g.w("    };")
 		}
-		g.w("    search(pool%s, %s, %s).await", g.sessionArg(), q(c.Col.Key), bind)
+		g.w("    search(pool%s, %s, %s).await", g.readSessionArg(), q(c.Col.Key), bind)
 		g.w("}")
 	}
 }
 
-// protectInsert 는 Insert 의 보호 컬럼 처리다 (Go: 관리자가 아니면 0 값).
+// protectDefault 는 Insert 때 보호 컬럼에 넣는 값이다: DB 기본값이 상수면 그 값(util.DefaultLiteral), 아니면 0 값 / None.
+func protectDefault(c rustCol) string {
+	def := "Default::default()"
+	lit, ok := util.DefaultLiteral(c.Col)
+	if !ok {
+		return def
+	}
+	v := ""
+	switch {
+	case c.Enum != "":
+		if n, err := strconv.ParseInt(lit, 10, 32); err == nil {
+			v = c.Enum + "(" + strconv.FormatInt(n, 10) + ")"
+		}
+	case c.Base == "bool":
+		if f, err := strconv.ParseFloat(lit, 64); err == nil {
+			v = strconv.FormatBool(f != 0)
+		}
+	case c.Base == "f64":
+		if f, err := strconv.ParseFloat(lit, 64); err == nil {
+			v = strconv.FormatFloat(f, 'f', -1, 64)
+			if !strings.ContainsAny(v, ".eE") {
+				v += ".0"
+			}
+		}
+	case c.Base == "u32" || c.Base == "u64":
+		bits := map[string]int{"u32": 32, "u64": 64}[c.Base]
+		if n, err := strconv.ParseUint(lit, 10, bits); err == nil {
+			v = strconv.FormatUint(n, 10)
+		}
+	case rustIntTypes[c.Base]:
+		bits := map[string]int{"i8": 8, "i16": 16, "i32": 32}[c.Base]
+		if bits == 0 {
+			bits = 64
+		}
+		if n, err := strconv.ParseInt(lit, 10, bits); err == nil {
+			v = strconv.FormatInt(n, 10)
+		}
+	case c.Base == "String":
+		v = q(lit) + ".to_string()"
+	}
+	if v == "" {
+		return def
+	}
+	if c.Nullable {
+		return "Some(" + v + ")"
+	}
+	return v
+}
+
+// protectInsert 는 Insert 의 보호 컬럼 처리다 (Go: 관리자가 아니면 DB 기본값, 없으면 0 값).
 func (g *hgen) protectInsert(item string, indent string, admin string) {
 	t := g.t
 	if len(t.Protects) == 0 {
@@ -412,7 +565,7 @@ func (g *hgen) protectInsert(item string, indent string, admin string) {
 		inner = indent + "    "
 	}
 	for _, c := range t.Protects {
-		g.w("%s%s.%s = Default::default();", inner, item, c.Field)
+		g.w("%s%s.%s = %s;", inner, item, c.Field, protectDefault(c))
 	}
 	if t.AdminCheck {
 		g.w("%s}", indent)
@@ -793,6 +946,10 @@ func (g *hgen) custom(f rustFunc) {
 	noOwner := t.Jwt && t.isUser() && !t.HasId && (f.Kind == "Update" || f.Kind == "Delete")
 	rejectAll := noOwner || (locked && !t.AdminCheck)
 	owned := t.Jwt && len(t.Sessions) > 0
+	if read {
+		// 읽기는 정책을 따른다 (owner 일 때만 세션 조건 / 매개변수 덮어쓰기)
+		owned = t.ReadOwned
+	}
 
 	// 세션 값으로 바꾸는 매개변수 (Go: 세션 컬럼과 같은 조건, in 제외)
 	override := map[int]rustSession{}
@@ -807,12 +964,13 @@ func (g *hgen) custom(f rustFunc) {
 	}
 	userCheck := !rejectAll && !read && t.Jwt && t.isUser() && t.HasId
 	useS := userCheck || (locked && t.AdminCheck && !rejectAll)
+	withSession := t.Jwt && (!read || g.readSession())
 
 	params := make([]string, 0)
 	if !rejectAll {
 		params = append(params, stateParam)
 	}
-	if t.Jwt {
+	if withSession {
 		params = append(params, "session: Option<Session>")
 	}
 	if f.Kind == "Update" {
@@ -855,7 +1013,11 @@ func (g *hgen) custom(f rustFunc) {
 			g.w("    };")
 		}
 	}
-	g.guard(failAuth, true, owned && !rejectAll, owned && len(override) > 0 && !rejectAll, useS)
+	if read {
+		g.readGuard(owned, owned && len(override) > 0)
+	} else {
+		g.guard(failAuth, true, owned && !rejectAll, owned && len(override) > 0 && !rejectAll, useS)
+	}
 	if rejectAll {
 		if noOwner {
 			g.w("    // id 컬럼이 없어 본인 행인지 확인할 수 없으므로 회원 정보 수정 / 삭제는 거부한다.")
@@ -882,8 +1044,11 @@ func (g *hgen) custom(f rustFunc) {
 		args = append(args, w.Param)
 	}
 	if read {
-		sw := g.sessionWheres()
-		g.w("    let item = %s::%s(&pool, %s, &[%s]).await?;", t.Model, f.Fn, strings.Join(args, ", "), strings.Join(sw, ", "))
+		extra := "&[" + strings.Join(g.sessionWheres(), ", ") + "]"
+		if t.Read == util.ReadSelf {
+			extra = g.selfArgs()
+		}
+		g.w("    let item = %s::%s(&pool, %s, %s).await?;", t.Model, f.Fn, strings.Join(args, ", "), extra)
 		key := map[string]string{"Get": "item", "Find": "items", "Count": "count"}[f.Kind]
 		ref := "&"
 		if f.Kind == "Count" {

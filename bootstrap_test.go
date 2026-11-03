@@ -53,6 +53,13 @@ func TestBootstrapAssets(t *testing.T) {
 	if board == nil || len(board.Session) != 1 || strings.Title(board.Session[0].Key) != "Id" || board.Session[0].Column != "user" {
 		t.Errorf("board session: %+v", board)
 	}
+	// 게시판: 로그인 사용자는 모두 읽고, 작성자(user) 를 조인한다.
+	if board == nil || board.Read != "login" || len(board.Join) != 1 || board.Join[0].Name != "user" || board.Join[0].Column != "user" {
+		t.Errorf("board read / join: %+v", board)
+	}
+	if p, err := util.ReadPolicy("Board", board, cnf.Auth); p != util.ReadLogin || err != nil {
+		t.Errorf("board read policy = %q, %v", p, err)
+	}
 	if user := util.FindTableConfig(cnf.Gpa, "user_tb"); user == nil || !reflect.DeepEqual(user.Protect, []string{"level"}) {
 		t.Errorf("user protect: %+v", user)
 	}

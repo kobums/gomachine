@@ -8,6 +8,7 @@ import (
 	"gomachine/util"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -204,8 +205,80 @@ func isGenerated(path string) bool {
 	return strings.TrimRight(line, "\r") == GeneratedHeader
 }
 
+// rustfmtWarned 는 rustfmt 경고를 한 번만 찍기 위한 표시다.
+var rustfmtWarned bool
+
+// RustfmtEnabled 는 생성 .rs 를 rustfmt 로 정리할지다 (환경변수 GOMACHINE_RUSTFMT=0 / off / false 면 끈다).
+func RustfmtEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("GOMACHINE_RUSTFMT"))) {
+	case "0", "off", "false", "no":
+		return false
+	}
+	return true
+}
+
+// rustfmtConfigDir 은 path 위쪽(crate 루트까지)에서 rustfmt.toml / .rustfmt.toml 이 있는 디렉터리다. 없으면 "".
+func rustfmtConfigDir(path string) string {
+	dir := filepath.Dir(path)
+	for {
+		for _, name := range []string{"rustfmt.toml", ".rustfmt.toml"} {
+			if exists(filepath.Join(dir, name)) {
+				return dir
+			}
+		}
+		if exists(filepath.Join(dir, "Cargo.toml")) {
+			return ""
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// Rustfmt 는 content 를 rustfmt(--edition 2024, 프로젝트의 rustfmt.toml)로 정리한다. rustfmt 가 없거나 실패하면 그대로 돌려주고 경고를 한 번 찍는다.
+// 생성 파일은 정리한 내용으로 비교하므로 다시 생성해도 바뀌지 않는다 (rustfmt 가 있을 때와 없을 때의 출력은 다를 수 있다).
+func Rustfmt(path string, content string) string {
+	if !RustfmtEnabled() {
+		return content
+	}
+	bin, err := exec.LookPath("rustfmt")
+	if err != nil {
+		if !rustfmtWarned {
+			rustfmtWarned = true
+			log.Printf("WARNING: rust: rustfmt not found on PATH, generated .rs files are not formatted (cargo fmt changes them)")
+		}
+		return content
+	}
+	args := []string{"--edition", "2024", "--emit", "stdout"}
+	if dir := rustfmtConfigDir(path); dir != "" {
+		args = append(args, "--config-path", dir)
+	}
+	cmd := exec.Command(bin, args...)
+	cmd.Stdin = strings.NewReader(content)
+	var out, stderr bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil || out.Len() == 0 {
+		if !rustfmtWarned {
+			rustfmtWarned = true
+			log.Printf("WARNING: rust: rustfmt failed for %s (%v %s), written unformatted", path, err, strings.TrimSpace(stderr.String()))
+		}
+		return content
+	}
+	return out.String()
+}
+
 // write 는 생성 파일이면 내용이 바뀌었을 때만(머리줄 없는 기존 파일은 건너뛴다), 사용자 파일이면 없을 때만 쓴다.
+// .rs 는 rustfmt 로 정리한 내용을 쓴다.
 func write(path string, content string, userOwned bool) {
+	if userOwned && exists(path) {
+		return
+	}
+	if strings.HasSuffix(path, ".rs") {
+		content = Rustfmt(path, content)
+	}
 	var written bool
 	var err error
 	if userOwned {
@@ -281,7 +354,8 @@ func clockVars(tz string) ClockVars {
 	if label == "" {
 		label = "(empty) = Asia/Seoul"
 	}
-	v := ClockVars{TimezoneLabel: label, NowBody: seoulNow, TestNow: seoulTestNow}
+	// 기본(UTC+9) 본문은 rustfmt 기본 설정 모양으로 쓴다 (rustfmt 가 없어도 같은 출력).
+	v := ClockVars{TimezoneLabel: label, NowBody: strings.ReplaceAll(seoulNow, ".", "\n        ."), TestNow: seoulTestNow}
 	switch tz {
 	case "", "Asia/Seoul":
 		return v

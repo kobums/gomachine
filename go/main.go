@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"fmt"
+	"go/format"
 	"gomachine/config"
 	"gomachine/util"
 	"os"
@@ -207,6 +208,18 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 	v.Set("createdDefault", createdDefault)
 	v.Set("protects", protects)
 	v.Set("adminCheck", adminCheck)
+
+	// 읽기 정책 (owner / login / public / self). 쓰기는 정책과 상관없이 로그인 + 소유권 검사다.
+	readPolicy := util.MustReadPolicy(modelName, gpa, auth)
+	readSelf := readPolicy == util.ReadSelf
+	// self 읽기의 관리자 예외 (adminLevel 이 숫자일 때). isAdmin 은 보호 컬럼 / self 읽기 중 하나라도 쓰면 만든다.
+	adminRead := readSelf && adminErr == nil
+	v.Set("readPolicy", readPolicy)
+	v.Set("readAuth", auth == "jwt" && readPolicy != util.ReadPublic)
+	v.Set("readOwner", readPolicy == util.ReadOwner)
+	v.Set("readSelf", readSelf)
+	v.Set("adminRead", adminRead)
+	v.Set("adminFn", adminCheck || adminRead)
 	v.Set("adminLevelNum", adminLevelNum)
 
 	consts := make([]GoEnum, 0)
@@ -330,6 +343,10 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 	for i := range sessions {
 		sessions[i].SQL = qual + prefix + "_" + sessions[i].Column
 	}
+	// readGuard 는 읽기 핸들러 앞부분의 권한 검사다. ret 은 실패할 때 돌려줄 값 ("" 이면 return 만).
+	views.AddGlobal("readGuard", func(ret string) string {
+		return readGuardCode(auth, readPolicy, sessions, hasId, adminRead, ret)
+	})
 	v.Set("selectQuery", "select "+strings.Join(selectCols, ", ")+" from "+tableName)
 	v.Set("joinFrom", joinFrom.String())
 	v.Set("rawSelect", "select "+strings.Join(mainCols, ", ")+" from "+tableName)
@@ -479,6 +496,28 @@ func ProcessGo(packageName string, tableName string, prefix string, items []util
 		return expr
 	})
 
+	// 목록 필터 연산자 (모든 백엔드가 util.FilterCompare 로 같다). like 를 쓰면 rest 에 패턴 함수와 strings import 가 필요하다.
+	views.AddGlobal("filterOp", func(col util.Column) string { return util.FilterCompare(col, gpa) })
+	needsLike := false
+	for _, item := range items {
+		if isSearchColumn(item) && !util.IsRangeFilter(item.OriginalType) && item.Type == "string" {
+			if op := util.FilterCompare(item, gpa); op == "like" || op == "not like" {
+				needsLike = true
+			}
+		}
+	}
+	v.Set("needsLike", needsLike)
+	// 보호 컬럼의 Insert 값: DB 기본값(상수)이 있으면 그 값, 없으면 0 값.
+	views.AddGlobal("protectValue", func(name string) string {
+		for _, item := range items {
+			if item.Name == name {
+				if lit := goDefaultLiteral(item); lit != "" {
+					return lit
+				}
+			}
+		}
+		return "models." + inputModelName(modelName, items) + "{}." + name
+	})
 	v.Set("orderColumns", orderColumns)
 	v.Set("scanDecls", scan.decls.String())
 	v.Set("scanTargets", strings.Join(scan.targets, ", "))
@@ -759,6 +798,12 @@ func RoutesSource(names []string) string {
 
 // writeGo 는 생성 Go 파일을 쓴다 (디렉터리도 만든다). 머리줄 없는 사용자 파일이면 건너뛰고 false 를 돌려준다.
 func writeGo(path string, content string) bool {
+	// gofmt: 실패하면(템플릿 버그 등) 형식 없이 쓰고 경고한다.
+	if src, err := format.Source([]byte(content)); err == nil {
+		content = string(src)
+	} else {
+		log.Printf("WARNING: gofmt %s failed, written unformatted: %v", path, err)
+	}
 	if util.SkippedUserFile(path) {
 		util.WriteGenerated(path, content) // 경고를 찍는다
 		return false
@@ -1064,4 +1109,62 @@ func isDateLikeType(t string) bool {
 		return true
 	}
 	return false
+}
+
+// readGuardCode 는 읽기(Read / Index / Count / Search / 커스텀 Get·Find·Count) 앞의 권한 검사 코드다.
+// public 은 검사가 없고, login 은 로그인만, owner 는 세션 값도 확인한다. self(User) 는 id 컬럼이 없으면 관리자만 읽는다.
+func readGuardCode(auth string, policy string, sessions []GoSession, hasId bool, adminRead bool, ret string) string {
+	if auth != "jwt" || policy == util.ReadPublic {
+		return ""
+	}
+	fail := "c.Result[\"code\"] = \"auth error\"\nreturn"
+	if ret != "" {
+		fail += " " + ret
+	}
+	var b strings.Builder
+	b.WriteString("if c.Session == nil {\n" + fail + "\n}\n")
+	if policy == util.ReadOwner {
+		for _, s := range sessions {
+			fmt.Fprintf(&b, "if c.Session.%s == 0 {\n%s\n}\n", strings.Title(s.Key), fail)
+		}
+	}
+	if policy == util.ReadSelf && !hasId {
+		b.WriteString("// id 컬럼이 없어 본인 행을 고를 수 없으므로 관리자만 읽는다.\n")
+		if adminRead {
+			b.WriteString("if !c.isAdmin() {\n" + fail + "\n}\n")
+		} else {
+			b.WriteString("if c.Session != nil {\n" + fail + "\n}\n")
+		}
+	}
+	return b.String()
+}
+
+// goDefaultLiteral 은 컬럼 DB 기본값(util.DefaultLiteral)의 Go 상수 식이다. 쓸 수 없으면 "".
+// enum(상수 패키지의 int 타입)은 타입 없는 정수 상수로 넣는다.
+func goDefaultLiteral(col util.Column) string {
+	lit, ok := util.DefaultLiteral(col)
+	if !ok {
+		return ""
+	}
+	switch {
+	case col.Type == "bool":
+		f, err := strconv.ParseFloat(lit, 64)
+		if err != nil {
+			return ""
+		}
+		return strconv.FormatBool(f != 0)
+	case col.Type == "string":
+		return strconv.Quote(lit)
+	case col.Type == "float64":
+		if _, err := strconv.ParseFloat(lit, 64); err != nil {
+			return ""
+		}
+		return lit
+	case col.Type == "int" || col.Type == "int64" || (strings.Contains(col.Type, ".") && !strings.HasPrefix(col.Type, "[]")):
+		if _, err := strconv.ParseInt(lit, 10, 64); err != nil {
+			return ""
+		}
+		return lit
+	}
+	return ""
 }

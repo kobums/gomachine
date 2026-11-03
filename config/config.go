@@ -46,23 +46,28 @@ type Gpa struct {
 	Session []SessionPair `json:"session"`
 	Search  bool          `json:"search"`
 	Primary []string      `json:"primary"`
-	// REST Insert/Update 에서 클라이언트 값을 받지 않을 컬럼 (예: ["level"]). Insert 는 0 값, Update 는 기존 DB 값 유지.
+	// REST Insert/Update 에서 클라이언트 값을 받지 않을 컬럼 (예: ["level"]). Insert 는 DB 기본값(없으면 0 값), Update 는 기존 DB 값 유지.
 	Protect []string `json:"protect"`
+	// 읽기 정책 (auth=jwt): "owner"(본인 행만, session 필요) / "login"(로그인 사용자 모두) / "public"(비로그인 포함).
+	// 비어 있으면 session 이 있으면 owner, 없으면 login. 쓰기는 정책과 상관없이 로그인 + 소유권 검사. util.ReadPolicy 참고.
+	Read string `json:"read"`
 }
 
 type ModelConfig struct {
-	Buildtool           string `json:"buildtool"`
-	Store               string `json:"store"`
-	Server              string `json:"server"`
-	Database            string `json:"database"`
-	User                string `json:"user"`
-	Password            string `json:"password"`
-	Auth                string `json:"auth"`
-	AdminLevel          string `json:"adminLevel"`
-	Language            string `json:"language"`
-	GoModelFilePath     string `json:"goModelFilePath"`
-	DartModelFilePath   string `json:"dartModelFilePath"`
-	KotlinModelFilePath string `json:"kotlinModelFilePath"`
+	Buildtool string `json:"buildtool"`
+	Store     string `json:"store"`
+	Server    string `json:"server"`
+	// DB 포트 (없으면 3306). 환경변수 DB_PORT 가 우선한다.
+	Port                json.Number `json:"port"`
+	Database            string      `json:"database"`
+	User                string      `json:"user"`
+	Password            string      `json:"password"`
+	Auth                string      `json:"auth"`
+	AdminLevel          string      `json:"adminLevel"`
+	Language            string      `json:"language"`
+	GoModelFilePath     string      `json:"goModelFilePath"`
+	DartModelFilePath   string      `json:"dartModelFilePath"`
+	KotlinModelFilePath string      `json:"kotlinModelFilePath"`
 	// 생성되는 Kotlin 코드의 기본 패키지. 비어 있으면 예전 값 com.gowoobro.gymspring 을 쓴다.
 	// kotlinModelFilePath 는 이 패키지의 디렉터리(예: src/main/kotlin/com/example/app)를 가리켜야 한다.
 	KotlinPackage      string `json:"kotlinPackage"`
@@ -130,6 +135,12 @@ func Load(dir string) (ModelConfig, []string, error) {
 	}
 	if v := os.Getenv("DB_PASSWORD"); v != "" {
 		modelConfig.Password = v
+	}
+	if v := os.Getenv("DB_PORT"); v != "" {
+		modelConfig.Port = json.Number(v)
+	}
+	if v := os.Getenv("DB_NAME"); v != "" {
+		modelConfig.Database = v
 	}
 
 	return modelConfig, warnings, nil
@@ -393,4 +404,12 @@ func GoModule(dir string) string {
 		}
 	}
 	return ""
+}
+
+// GetPort 는 생성기가 접속할 DB 포트다 (model.json port / DB_PORT, 없으면 3306).
+func (c ModelConfig) GetPort() string {
+	if p := strings.TrimSpace(c.Port.String()); p != "" {
+		return p
+	}
+	return "3306"
 }
